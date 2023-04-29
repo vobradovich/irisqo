@@ -1,12 +1,13 @@
 use futures::{future::join_all, TryStreamExt};
 use tokio::{sync::RwLock, time};
-use tracing::{debug, error};
+#[allow(unused_imports)]
+use tracing::{debug, error, info, warn};
 
 use crate::{
     db,
     models::{AppState, Error},
 };
-use std::{sync::Arc, str::FromStr};
+use std::sync::Arc;
 
 #[derive(Debug)]
 pub struct BatchWorkerService {
@@ -24,7 +25,7 @@ impl BatchWorkerService {
     }
 
     pub async fn run(&self) -> Result<(), Error> {
-        debug!({ instance_id = self.app_state.instance_id }, "start");
+        info!({ instance_id = self.app_state.instance_id }, "start");
 
         let worker_count = self.app_state.worker_options.workers_count.unwrap_or(0);
         if worker_count == 0 {
@@ -43,7 +44,7 @@ impl BatchWorkerService {
         }
 
         join_all(self.running_workers.write().await.iter_mut()).await;
-        debug!({ instance_id = self.app_state.instance_id }, "stop");
+        info!({ instance_id = self.app_state.instance_id }, "stop");
         Ok(())
     }
 }
@@ -70,7 +71,6 @@ async fn run_job_batch(app_state: Arc<AppState>) -> Result<(), Error> {
         &app_state.instance_id,
         app_state.worker_options.prefetch,
     );
-    let client = hyper::Client::new();
 
     while let Some(entry) = rows.try_next().await? {
         debug!({ instance_id = app_state.instance_id, job_id = entry.id, retry = entry.retry }, "run");

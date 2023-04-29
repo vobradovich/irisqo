@@ -35,16 +35,10 @@ async fn main() {
 async fn start_http_server(state: &Arc<AppState>) {
     let addr = SocketAddr::from(([0, 0, 0, 0], 8102));
     let app = Router::new()
-        .route("/", get(handlers::root))
-        .route("/live", get(handlers::live))
-        .route("/ready", get(handlers::ready))
         .route("/http/*url", get(handlers::http::create))
-        .route("/https/*url", get(handlers::https::create))
-        .route(
-            "/jobs/:id",
-            get(handlers::jobs::get_by_id).delete(handlers::jobs::delete),
-        )
         .with_state(Arc::clone(state))
+        .nest("/api/v1", handlers::jobs::routes(Arc::clone(state)))
+        .merge(handlers::live::routes(Arc::clone(state)))
         .layer(TraceLayer::new_for_http());
     axum::Server::bind(&addr)
         .serve(app.into_make_service())

@@ -1,5 +1,5 @@
 use tokio::{select, time};
-use tracing::{debug, error, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::{
     db,
@@ -22,8 +22,13 @@ impl SchedulerService {
             warn!({ instance_id = self.app_state.instance_id }, "disabled");
             return Ok(());
         }
-        debug!({ instance_id = self.app_state.instance_id }, "start");
-        let t = self.app_state.scheduler_options.as_ref().unwrap().poll_interval;
+        info!({ instance_id = self.app_state.instance_id }, "start");
+        let t = self
+            .app_state
+            .scheduler_options
+            .as_ref()
+            .unwrap()
+            .poll_interval;
         let mut interval = time::interval(t);
         interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
         while !self.app_state.shutdown_token.is_cancelled() {
@@ -38,7 +43,7 @@ impl SchedulerService {
                 _ = self.app_state.shutdown_token.cancelled() => {}
             );
         }
-        debug!({ instance_id = self.app_state.instance_id }, "stop");
+        info!({ instance_id = self.app_state.instance_id }, "stop");
         Ok(())
     }
 

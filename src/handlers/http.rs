@@ -1,25 +1,43 @@
-use crate::{db, models::AppState};
+use crate::{
+    db,
+    models::{AppState, Error, JobCreate, JobMeta},
+};
 use axum::{
     extract::{Path, RawQuery, State},
-    http::{StatusCode, HeaderMap, header}, response::IntoResponse,
+    http::{header, HeaderMap, StatusCode},
+    response::IntoResponse,
 };
+use hyper::Uri;
 use problemdetails::Problem;
 use std::sync::Arc;
+#[allow(unused_imports)]
+use tracing::{debug, error, info, warn};
 
 pub async fn create(
     State(state): State<Arc<AppState>>,
     Path(url): Path<String>,
-    query: RawQuery,
+    RawQuery(query): RawQuery,
     // body: RawBody
 ) -> Result<impl IntoResponse, Problem> {
-    let protocol = "http";
-    let full_url = match query.0 {
-        Some(qs) => format!("{protocol}://{url}?{qs}"),
-        None => format!("{protocol}://{url}"),
+    let uri = Uri::try_from(url).map_err(|_| Error::InvalidUri)?;
+    let protocol = uri.scheme_str().unwrap_or("null");
+    let full_url = match query {
+        Some(qs) => format!("{uri}?{qs}"),
+        None => uri.to_string(),
     };
-    let id = db::jobs::enqueue(&state.pool, protocol, &full_url).await?;
+    let job_create = JobCreate {
+        meta: JobMeta::default(),
+        headers: None,
+        body: None,
+        at: None,
+    };
+    debug!("{:?}", serde_json::to_string(&job_create.meta));
+    let id = db::jobs::enqueue(&state.pool, protocol, full_url.as_str()).await?;
     let mut headers = HeaderMap::new();
-    headers.insert(header::LOCATION, format!("/jobs/{}", id).parse().unwrap() );
-    headers.insert("job-id", id.into() );
+    headers.insert(
+        header::LOCATION,
+        format!("/api/v1/jobs/{}", id).parse().unwrap(),
+    );
+    headers.insert("job-id", id.into());
     Ok((StatusCode::CREATED, headers))
 }

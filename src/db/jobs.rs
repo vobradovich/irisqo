@@ -1,5 +1,5 @@
 use crate::models::Error;
-use crate::models::{JobRow, JobQueueEntry};
+use crate::models::{JobRow, JobQueueRow};
 use futures::stream::BoxStream;
 use sqlx::{Pool, Postgres};
 
@@ -93,12 +93,12 @@ pub async fn assign_enqueued(pool: &Pool<Postgres>, instance_id: &str, prefetch:
     Ok(0)
 }
 
-pub fn fetch_enqueued<'a>(pool: &'a Pool<Postgres>, instance_id: &'a str, prefetch: i32) -> BoxStream<'a, Result<JobQueueEntry, sqlx::Error>> {
+pub fn fetch_enqueued<'a>(pool: &'a Pool<Postgres>, instance_id: &'a str, prefetch: i32) -> BoxStream<'a, Result<JobQueueRow, sqlx::Error>> {
     const SQL: &str = "WITH a AS (
         SELECT id FROM enqueued WHERE lock_at IS NULL ORDER BY retry, id LIMIT $1 FOR UPDATE SKIP LOCKED
     )
     UPDATE enqueued SET instance_id = $2, lock_at = now() WHERE id = ANY(SELECT id FROM a) RETURNING id, retry";
-    let res = sqlx::query_as::<_, JobQueueEntry>(SQL)
+    let res = sqlx::query_as::<_, JobQueueRow>(SQL)
         .bind(prefetch)
         .bind(instance_id)
         .fetch(pool);
@@ -106,12 +106,12 @@ pub fn fetch_enqueued<'a>(pool: &'a Pool<Postgres>, instance_id: &'a str, prefet
 }
 
 #[allow(dead_code, unused_variables)]
-pub async fn fetch_optional(pool: &Pool<Postgres>, instance_id: &str) -> Result<Option<JobQueueEntry>, sqlx::Error> {
+pub async fn fetch_optional(pool: &Pool<Postgres>, instance_id: &str) -> Result<Option<JobQueueRow>, sqlx::Error> {
     const SQL: &str = "WITH a AS (
         SELECT id FROM enqueued WHERE lock_at IS NULL ORDER BY retry, id LIMIT 1 FOR UPDATE SKIP LOCKED
     )
     UPDATE enqueued SET instance_id = $2, lock_at = now() WHERE id = ANY(SELECT id FROM a) RETURNING id, retry";
-    let res = sqlx::query_as::<_, JobQueueEntry>(SQL)
+    let res = sqlx::query_as::<_, JobQueueRow>(SQL)
         .bind(instance_id)
         .fetch_optional(pool)
         .await;

@@ -11,18 +11,28 @@ pub enum Error {
 
     #[error(transparent)]
     IoError(#[from] std::io::Error),
+
+    #[error(transparent)]
+    HttpError(#[from] axum::http::Error),
+
+    #[error("Invalid Url")]
+    InvalidUri,
 }
 
 impl From<Error> for Problem {
     fn from(item: Error) -> Problem {
         match item {
+            Error::InvalidUri => problemdetails::new(StatusCode::BAD_REQUEST)
+                // .with_type("https://example.com/probs/out-of-credit")
+                .with_title(StatusCode::BAD_REQUEST.to_string())
+                .with_detail(item.to_string()),
             Error::DbError(sqlx::Error::RowNotFound) => problemdetails::new(StatusCode::NOT_FOUND)
                 // .with_type("https://example.com/probs/out-of-credit")
-                .with_title(StatusCode::NOT_FOUND.as_str())
+                .with_title(StatusCode::NOT_FOUND.to_string())
                 .with_detail(item.to_string()),
             _ => problemdetails::new(StatusCode::INTERNAL_SERVER_ERROR)
                 // .with_type("https://example.com/probs/out-of-credit")
-                .with_title(StatusCode::INTERNAL_SERVER_ERROR.as_str())
+                .with_title(StatusCode::INTERNAL_SERVER_ERROR.to_string())
                 .with_detail(item.to_string()),
         }
     }

@@ -11,8 +11,9 @@ CREATE TABLE IF NOT EXISTS jobs (
 	created_at timestamptz NOT NULL DEFAULT NOW(),
 	protocol varchar(16) NOT NULL,
 	url varchar(1024) NOT NULL,
+	meta jsonb NULL,
 	headers jsonb NULL,
-	body text
+	body BYTEA NULL
 );
 
 CREATE TABLE IF NOT EXISTS scheduled (

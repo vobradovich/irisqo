@@ -100,8 +100,6 @@ async fn run_job_batch(app_state: Arc<AppState>) -> Result<(), Error> {
         debug!({ instance_id = app_state.instance_id, job_id = entry.id, retry = entry.retry }, "run");
 
         // todo: exec
-        let client = hyper::Client::new();
-
         // let url = "http://httpbin.org/ip".parse::<hyper::Uri>().unwrap();
         // // Create an HTTP request with an empty body and a HOST header
         // let req = hyper::Request::builder()

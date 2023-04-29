@@ -1,4 +1,5 @@
 use dotenv::dotenv;
+use hyper::{client::HttpConnector, Body, Client};
 use sqlx::{
     postgres::{PgConnectOptions, PgPoolOptions},
     Pool, Postgres,
@@ -11,6 +12,7 @@ use tokio_util::sync::CancellationToken;
 pub struct AppState {
     pub instance_id: String,
     pub pool: Pool<Postgres>,
+    pub client: Client<HttpConnector, Body>,
     pub scheduler_options: Option<SchedulerOptions>,
     pub worker_options: WorkerOptions,
     pub shutdown_token: CancellationToken,
@@ -48,13 +50,14 @@ impl AppState {
         let state = AppState {
             instance_id,
             pool,
+            client: hyper::Client::new(),
             scheduler_options: Some(SchedulerOptions {
                 poll_interval: Duration::from_millis(5000),
                 prefetch: 1000,
             }),
             worker_options: WorkerOptions {
-                workers_count: Some(10),
-                poll_interval: Duration::from_millis(100),
+                workers_count: Some(4),
+                poll_interval: Duration::from_millis(1000),
                 prefetch: 10,
             },
             shutdown_token: CancellationToken::new(),

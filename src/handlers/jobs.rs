@@ -3,12 +3,19 @@ use axum::{
     extract::{Path, State},
     http::StatusCode,
     response::{IntoResponse, Response},
-    Json,
+    routing::get,
+    Json, Router,
 };
 use problemdetails::Problem;
 use std::sync::Arc;
 
-pub async fn delete(
+pub fn routes(state: Arc<AppState>) -> Router {
+    Router::new()
+        .route("/jobs/:id", get(get_by_id).delete(delete_by_id))
+        .with_state(state)
+}
+
+async fn delete_by_id(
     State(state): State<Arc<AppState>>,
     Path(id): Path<i64>,
 ) -> Result<StatusCode, Problem> {
@@ -16,7 +23,7 @@ pub async fn delete(
     Ok(StatusCode::NO_CONTENT)
 }
 
-pub async fn get_by_id(
+async fn get_by_id(
     State(state): State<Arc<AppState>>,
     Path(id): Path<i64>,
 ) -> Result<Response, Problem> {
