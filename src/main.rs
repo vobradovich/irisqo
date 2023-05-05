@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use axum::{routing::get, Router};
+use axum::Router;
 use models::AppState;
 use tokio::signal;
 use tower_http::trace::TraceLayer;
@@ -35,10 +35,9 @@ async fn main() {
 async fn start_http_server(state: &Arc<AppState>) {
     let addr = SocketAddr::from(([0, 0, 0, 0], 8102));
     let app = Router::new()
-        .route("/http/*url", get(handlers::http::create))
-        .with_state(Arc::clone(state))
-        .nest("/api/v1", handlers::jobs::routes(Arc::clone(state)))
+        .merge(handlers::http::routes(Arc::clone(state)))
         .merge(handlers::live::routes(Arc::clone(state)))
+        .nest("/api/v1", handlers::jobs::routes(Arc::clone(state)))
         .layer(TraceLayer::new_for_http());
     axum::Server::bind(&addr)
         .serve(app.into_make_service())

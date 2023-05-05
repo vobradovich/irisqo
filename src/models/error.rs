@@ -6,6 +6,10 @@ use problemdetails::Problem;
 pub enum Error {
     // #[error("Entity Not Found - {0}[{1}] ")]
     // EntityNotFound(&'static str, String),
+
+    #[error("Job Not Found - {0}")]
+    JobNotFound(i64),
+
     #[error(transparent)]
     DbError(#[from] sqlx::Error),
 

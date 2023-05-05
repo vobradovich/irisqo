@@ -1,16 +1,29 @@
 use crate::models::Error;
-use crate::models::{JobRow, JobQueueRow};
+use crate::models::{JobRow, JobQueueRow, JobCreate, JobProtocol};
 use futures::stream::BoxStream;
-use sqlx::{Pool, Postgres};
+use sqlx::{types::Json, Pool, Postgres};
 
-pub async fn enqueue(pool: &Pool<Postgres>, protocol: &str, url: &str) -> Result<i64, Error> {
+pub async fn enqueue(pool: &Pool<Postgres>, job: JobCreate) -> Result<i64, Error> {
     const SQL: &str = "WITH a AS (
-        INSERT INTO jobs(protocol, url) VALUES ($1, $2) RETURNING id
+        INSERT INTO jobs(protocol, url, meta, headers, body) VALUES ($1, $2, $3, $4, $5) RETURNING id
     )
     INSERT INTO enqueued SELECT id FROM a RETURNING id";
+    let meta = job.meta;
+    let headers = job.headers;
+    let body: Option<&[u8]> = match job.body.is_empty() {
+        true => None,
+        false => Some(job.body.as_ref()),
+    };
+    let (p, u) = match &meta.protocol {
+        JobProtocol::Http(h) => ("http", h.url.to_string()),
+        _ => ("null", String::new())
+    };
     let job_id = sqlx::query_scalar::<_, i64>(SQL)
-        .bind(protocol)
-        .bind(url)
+        .bind(p)
+        .bind(&u)
+        .bind(Json(meta))
+        .bind(Json(headers))
+        .bind(body)
         .fetch_one(pool)
         .await?;
     Ok(job_id)
@@ -61,17 +74,13 @@ pub async fn succeed(pool: &Pool<Postgres>, job_id: i64) -> Result<u64, Error> {
     Ok(res.rows_affected())
 }
 
-#[allow(dead_code, unused_variables)]
 pub async fn fail(pool: &Pool<Postgres>, job_id: i64) -> Result<u64, Error> {
-    const SQL: &str = "WITH b AS (
-        WITH a AS (
-            SELECT id, retry FROM enqueued WHERE id = $1 FOR UPDATE SKIP LOCKED
+    const SQL: &str = "WITH a AS (
+            DELETE FROM enqueued WHERE id = $1 RETURNING id, retry, instance_id
         )
-        INSERT INTO failed SELECT id, retry FROM a RETURNING id
-    )
-    DELETE FROM enqueued WHERE id = $1";
+        INSERT INTO history SELECT id, retry, 'failed' as status, instance_id FROM a RETURNING id";
     let res = sqlx::query(SQL)
-        .bind(1000)
+        .bind(job_id)
         .execute(pool)
         .await?;
     Ok(res.rows_affected())

@@ -3,7 +3,7 @@ CREATE TYPE instance_status AS ENUM ('live', 'dead');
 CREATE TABLE IF NOT EXISTS instances (
 	id varchar(64) PRIMARY KEY,
 	last_at timestamptz NOT NULL DEFAULT NOW(),
-	status instance_status NOT NULL DEFAULT 'live',
+	status instance_status NOT NULL DEFAULT 'live'
 );
 
 CREATE TABLE IF NOT EXISTS jobs (
@@ -62,7 +62,7 @@ CREATE TABLE IF NOT EXISTS history (
 	status job_status NOT NULL,
 	instance_id varchar(64) NOT NULL,
 	at timestamptz NOT NULL DEFAULT NOW(),
-	completed bool GENERATED ALWAYS AS (status = ANY('succeeded', 'failed', 'cancelled')) STORED,
+	completed bool GENERATED ALWAYS AS (status IN ('succeeded', 'failed', 'cancelled')) STORED,
 
 	CONSTRAINT fk_jobs_id FOREIGN KEY (id)
         REFERENCES jobs (id) MATCH SIMPLE

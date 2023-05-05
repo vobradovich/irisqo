@@ -1,5 +1,6 @@
 use std::{collections::HashMap, time::SystemTime};
 
+use axum::body::Bytes;
 use hyper::{header, HeaderMap, Method, Uri};
 use serde::{Deserialize, Serialize};
 use sqlx::types::Json;
@@ -11,7 +12,7 @@ pub struct JobRow {
     pub id: i64,
     pub protocol: String,
     pub url: String,
-    // pub meta: HashMap<String, String>,
+    pub meta: Option<Json<JobMeta>>,
     pub headers: Option<Json<HashMap<String, String>>>,
     pub body: Option<Vec<u8>>,
 }
@@ -26,7 +27,7 @@ pub struct JobQueueRow {
 pub struct JobCreate {
     pub meta: JobMeta,
     pub headers: Option<HashMap<String, String>>,
-    pub body: Option<Vec<u8>>,
+    pub body: Bytes,
     pub at: Option<SystemTime>,
 }
 
@@ -35,8 +36,11 @@ pub struct JobMeta {
     #[serde(flatten)]
     pub protocol: JobProtocol,
     #[serde(flatten)]
-    pub retry: JobRetryBackoff,
+    pub retry: JobRetry,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub delay: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -52,22 +56,31 @@ pub enum JobProtocol {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-#[serde(tag = "retry_backoff")]
+#[serde(tag = "retry")]
 #[serde(rename_all = "snake_case")]
-pub enum JobRetryBackoff {
+pub enum JobRetry {
     #[default]
     None,
     Immediate {
-        retry: u32,
+        retry_count: u32,
     },
     Fixed {
-        retry: u32,
+        retry_count: u32,
         retry_delay: u32,
     },
     Fibonacci {
-        retry: u32,
+        retry_count: u32,
         retry_delay: u32,
     },
+}
+
+impl JobRetry {
+    pub const fn is_none(&self) -> bool {
+        match self {
+            JobRetry::None => true,
+            _ => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -78,19 +91,12 @@ pub struct HttpMeta {
     pub url: hyper::Uri,
 }
 
-#[derive(Debug, Clone, sqlx::FromRow, Serialize)]
-pub struct JobEntry {
-    pub id: i64,
-    pub meta: JobMeta,
-    pub headers: Option<HashMap<String, String>>,
-    pub body: Option<Vec<u8>>,
-}
-
-impl TryFrom<JobEntry> for hyper::Request<hyper::Body> {
+impl TryFrom<JobRow> for hyper::Request<hyper::Body> {
     type Error = Error;
 
-    fn try_from(value: JobEntry) -> Result<Self, Self::Error> {
-        let JobProtocol::Http(meta) = value.meta.protocol else {
+    fn try_from(value: JobRow) -> Result<Self, Self::Error> {
+        let meta = value.meta.ok_or(Error::InvalidUri)?;
+        let JobProtocol::Http(meta) = meta.0.protocol else {
             return Err(Error::InvalidUri);
         };
         let body = match value.body {
@@ -99,7 +105,8 @@ impl TryFrom<JobEntry> for hyper::Request<hyper::Body> {
         };
         let mut req = hyper::Request::builder().method(meta.method).uri(meta.url);
         if let Some(headers) = value.headers {
-            let map = HeaderMap::try_from(&headers)?;
+            let headers = headers.as_ref();
+            let map = HeaderMap::try_from(headers)?;
             let headers_mut = req.headers_mut().unwrap();
             for (key, value) in map {
                 if let Some(key) = key {
@@ -112,11 +119,13 @@ impl TryFrom<JobEntry> for hyper::Request<hyper::Body> {
 }
 
 #[tokio::test]
-async fn job_entry_into_request_err() -> anyhow::Result<()> {
+async fn job_row_into_request_err() -> anyhow::Result<()> {
     // arrange
-    let job_entry = JobEntry {
+    let job_entry = JobRow {
         id: 0,
-        meta: JobMeta::default(),
+        protocol: "null".into(),
+        url: "".into(),
+        meta: Some(Json(JobMeta::default())),
         headers: None,
         body: None,
     };
@@ -130,25 +139,28 @@ async fn job_entry_into_request_err() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
-async fn job_entry_into_request_ok() -> anyhow::Result<()> {
+async fn job_row_into_request_ok() -> anyhow::Result<()> {
     // arrange
-    let job_entry = JobEntry {
+    let job_entry = JobRow {
         id: 0,
-        meta: JobMeta {
+        protocol: "http".into(),
+        url: "".into(),
+        meta: Some(Json(JobMeta {
             protocol: JobProtocol::Http(HttpMeta {
                 method: Method::GET,
                 url: Uri::try_from("http://localhost").unwrap(),
             }),
-            retry: JobRetryBackoff::Fixed {
-                retry: 3,
+            retry: JobRetry::Fixed {
+                retry_count: 3,
                 retry_delay: 1,
             },
             delay: Some(300),
-        },
-        headers: Some(HashMap::from([(
+            timeout: Some(2000),
+        })),
+        headers: Some(Json(HashMap::from([(
             header::CONTENT_LENGTH.to_string(),
             "123".into(),
-        )])),
+        )]))),
         body: None,
     };
     // act
