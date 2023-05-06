@@ -1,7 +1,10 @@
-use std::{collections::HashMap, time::SystemTime};
+use std::{collections::HashMap, str::FromStr, time::SystemTime};
 
 use axum::body::Bytes;
-use hyper::{header, HeaderMap, Method, Uri};
+use hyper::HeaderMap;
+#[cfg(test)]
+use hyper::{header, Method, Uri};
+
 use serde::{Deserialize, Serialize};
 use sqlx::types::Json;
 
@@ -28,18 +31,18 @@ pub struct JobCreate {
     pub meta: JobMeta,
     pub headers: Option<HashMap<String, String>>,
     pub body: Bytes,
-    pub at: Option<SystemTime>,
+    pub at: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct JobMeta {
-    #[serde(flatten)]
+    #[serde(flatten, default)]
     pub protocol: JobProtocol,
-    #[serde(flatten)]
+    #[serde(flatten, default)]
     pub retry: JobRetry,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub delay: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub timeout: Option<u32>,
 }
 
@@ -83,6 +86,58 @@ impl JobRetry {
     }
 }
 
+impl FromStr for JobRetry {
+    type Err = Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s.is_empty() {
+            return Ok(JobRetry::None);
+        }
+        let parts: Vec<&str> = s.split(['|', ',']).collect();
+        if parts.len() == 1 {
+            let retry_count: u32 = parts[0]
+                .parse()
+                .map_err(|_| Error::InvalidParams("retry"))?;
+            return Ok(JobRetry::Immediate { retry_count });
+        }
+
+        if parts.len() == 3 {
+            let retry_count: u32 = parts[0]
+                .parse()
+                .map_err(|_| Error::InvalidParams("retry"))?;
+            let retry_delay: u32 = parts[2]
+                .parse()
+                .map_err(|_| Error::InvalidParams("retry"))?;
+            let retry = match parts[1] {
+                "exponential" | "fibonacci" => JobRetry::Fibonacci {
+                    retry_count,
+                    retry_delay,
+                },
+                _ => JobRetry::Fixed {
+                    retry_count,
+                    retry_delay,
+                },
+            };
+            return Ok(retry);
+        }
+        Ok(JobRetry::None)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(tag = "schedule")]
+#[serde(rename_all = "snake_case")]
+pub enum JobSchedule {
+    #[default]
+    None,
+    Delay {
+        delay: u32,
+    },
+    At {
+        at: Option<SystemTime>,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HttpMeta {
     #[serde(with = "http_serde::method")]
@@ -95,9 +150,9 @@ impl TryFrom<JobRow> for hyper::Request<hyper::Body> {
     type Error = Error;
 
     fn try_from(value: JobRow) -> Result<Self, Self::Error> {
-        let meta = value.meta.ok_or(Error::InvalidUri)?;
+        let meta = value.meta.ok_or(Error::InvalidUrl)?;
         let JobProtocol::Http(meta) = meta.0.protocol else {
-            return Err(Error::InvalidUri);
+            return Err(Error::InvalidUrl);
         };
         let body = match value.body {
             Some(v) => hyper::Body::from(v),

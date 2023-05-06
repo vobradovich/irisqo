@@ -1,6 +1,6 @@
 use crate::models::Error;
 use sqlx::{Pool, Postgres};
-pub mod jobs;
+pub mod jobqueue;
 pub mod instances;
 
 pub async fn select_one(pool: &Pool<Postgres>) -> Result<(), Error> {

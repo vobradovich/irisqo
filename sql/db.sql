@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS jobs (
 
 CREATE TABLE IF NOT EXISTS scheduled (
 	id bigint NOT NULL,
-	at timestamptz NOT NULL,
+	at bigint NOT NULL,
 	retry int NOT NULL DEFAULT 0,
 	
 	CONSTRAINT pk_scheduled PRIMARY KEY (id),

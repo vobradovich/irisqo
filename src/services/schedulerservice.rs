@@ -50,7 +50,7 @@ impl SchedulerService {
     async fn tick(&self) -> Result<(), Error> {
         debug!({ instance_id = self.app_state.instance_id }, "tick");
         db::instances::live(&self.app_state.pool, &self.app_state.instance_id).await?;
-        let enqueued = db::jobs::enqueue_scheduled(&self.app_state.pool).await?;
+        let enqueued = db::jobqueue::enqueue_scheduled(&self.app_state.pool).await?;
         debug!({ instance_id = self.app_state.instance_id, enqueued = enqueued }, "db::jobs::enqueue_scheduled");
         Ok(())
     }

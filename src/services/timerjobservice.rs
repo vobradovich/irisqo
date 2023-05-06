@@ -90,7 +90,7 @@ pub async fn run_worker(app_state: Arc<AppState>, idx: usize) {
 
 async fn run_job_batch(app_state: Arc<AppState>) -> Result<(), Error> {
     // debug!({ instance_id = app_state.instance_id }, "run_job_batch");
-    let mut rows = db::jobs::fetch_enqueued(
+    let mut rows = db::jobqueue::fetch_enqueued(
         &app_state.pool,
         &app_state.instance_id,
         app_state.worker_options.prefetch,
@@ -112,7 +112,7 @@ async fn run_job_batch(app_state: Arc<AppState>) -> Result<(), Error> {
         // let res = client.request(req).await;
         // debug!({ instance_id = app_state.instance_id, job_id = entry.id, retry = entry.retry }, "response={:?}", res);
 
-        db::jobs::succeed(&app_state.pool, entry.id).await?;
+        db::jobqueue::succeed(&app_state.pool, entry.id).await?;
     }
     Ok(())
 }

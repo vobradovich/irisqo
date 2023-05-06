@@ -20,13 +20,16 @@ pub enum Error {
     HttpError(#[from] axum::http::Error),
 
     #[error("Invalid Url")]
-    InvalidUri,
+    InvalidUrl,
+
+    #[error("Invalid Params - {0}")]
+    InvalidParams(&'static str),
 }
 
 impl From<Error> for Problem {
     fn from(item: Error) -> Problem {
         match item {
-            Error::InvalidUri => problemdetails::new(StatusCode::BAD_REQUEST)
+            Error::InvalidUrl => problemdetails::new(StatusCode::BAD_REQUEST)
                 // .with_type("https://example.com/probs/out-of-credit")
                 .with_title(StatusCode::BAD_REQUEST.to_string())
                 .with_detail(item.to_string()),
