@@ -16,7 +16,7 @@ use problemdetails::Problem;
 use std::{
     collections::HashMap,
     sync::Arc,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{SystemTime, UNIX_EPOCH},
 };
 #[allow(unused_imports)]
 use tracing::{debug, error, info, warn};
@@ -45,8 +45,8 @@ async fn job_create(
 ) -> Result<impl IntoResponse, Problem> {
     let mut delay: Option<u32> = None;
     let mut at: Option<u64> = None;
-    let mut timeout: Option<u32> = None;
-    let mut retry = JobRetry::None;
+    let mut timeout: u32 = state.worker_options.timeout;
+    let mut retry: JobRetry = JobRetry::None;
 
     // Parse and truncate Query String
     let mut parsed_url = Url::parse(&url).map_err(|_| Error::InvalidUrl)?;
@@ -62,13 +62,16 @@ async fn job_create(
                 at = delay.and_then(|t| (now_secs + u64::from(t)).try_into().ok());
                 continue;
             }
-            if key == "_at" {
-                at = value.parse::<u64>().ok().filter(|&t| t > now_secs && i64::try_from(t).is_ok());
+            if key == "_delay_until" || key == "_until" {
+                at = value
+                    .parse::<u64>()
+                    .ok()
+                    .filter(|&t| t > now_secs && i64::try_from(t).is_ok());
                 delay = at.and_then(|t| (t - now_secs).try_into().ok());
                 continue;
             }
             if key == "_timeout" {
-                timeout = value.parse::<u32>().ok();
+                timeout = value.parse::<u32>().unwrap_or(state.worker_options.timeout);
                 continue;
             }
             if key == "_retry" {

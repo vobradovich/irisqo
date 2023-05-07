@@ -29,6 +29,7 @@ pub struct WorkerOptions {
     pub workers_count: Option<usize>,
     pub poll_interval: Duration,
     pub prefetch: i32,
+    pub timeout: u32,
 }
 
 impl AppState {
@@ -59,6 +60,7 @@ impl AppState {
                 workers_count: Some(4),
                 poll_interval: Duration::from_millis(1000),
                 prefetch: 10,
+                timeout: 2000,
             },
             shutdown_token: CancellationToken::new(),
         };

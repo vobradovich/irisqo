@@ -1,11 +1,11 @@
 use futures::{future::join_all, TryStreamExt};
-use tokio::{sync::RwLock, time};
+use tokio::{sync::RwLock, time, select};
 #[allow(unused_imports)]
 use tracing::{debug, error, info, warn};
 
 use crate::{
     db,
-    models::{AppState, Error},
+    models::{AppState, Error}, services::jobrunner,
 };
 use std::sync::Arc;
 
@@ -59,7 +59,10 @@ pub async fn run_worker(app_state: Arc<AppState>, idx: usize) {
         if let Err(err) = run_job_batch(state).await {
             error!({ instance_id = app_state.instance_id }, "error {}", err);
         }
-        interval.tick().await;
+        select!(
+            _ = interval.tick() => {},
+            _ = app_state.shutdown_token.cancelled() => {}
+        );
     }
     debug!({ instance_id = app_state.instance_id, idx }, "stop_worker");
 }
@@ -74,29 +77,7 @@ async fn run_job_batch(app_state: Arc<AppState>) -> Result<(), Error> {
 
     while let Some(entry) = rows.try_next().await? {
         debug!({ instance_id = app_state.instance_id, job_id = entry.id, retry = entry.retry }, "run");
-
-        // todo: exec
-        let job = db::jobqueue::get_by_id(&app_state.pool, entry.id)
-            .await?
-            .ok_or(Error::JobNotFound(entry.id))?;
-        let req = hyper::Request::<hyper::Body>::try_from(job)?;
-
-        // let url = hyper::Uri::from_str("http://httpbin.org/ip").unwrap();
-        // // Create an HTTP request with an empty body and a HOST header
-        // let req = hyper::Request::builder()
-        //     .method(hyper::Method::GET)
-        //     .uri(url)
-        //     // .header("user-agent", "the-awesome-agent/007")
-        //     .header("content-type", "application/json")
-        //     .body(hyper::Body::empty())
-        //     .unwrap();
-        let res = &app_state.client.request(req).await;
-        debug!({ instance_id = app_state.instance_id, job_id = entry.id, retry = entry.retry }, "response={:?}", res);
-        if let Err(_) = res {
-            db::jobqueue::fail(&app_state.pool, entry.id).await?;
-            continue;
-        }
-        db::jobqueue::succeed(&app_state.pool, entry.id).await?;
+        jobrunner::job_run(&app_state, entry).await?;
     }
     Ok(())
 }

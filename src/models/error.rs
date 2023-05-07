@@ -19,6 +19,9 @@ pub enum Error {
     #[error(transparent)]
     HttpError(#[from] axum::http::Error),
 
+    #[error(transparent)]
+    HyperError(#[from] hyper::Error),
+
     #[error("Invalid Url")]
     InvalidUrl,
 

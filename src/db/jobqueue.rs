@@ -5,13 +5,13 @@ use sqlx::{types::Json, Pool, Postgres};
 
 pub async fn enqueue(pool: &Pool<Postgres>, job: JobCreate) -> Result<i64, Error> {
     const SQL_ENQUEUE: &str = "WITH a AS (
-        INSERT INTO jobs(protocol, url, meta, headers, body) VALUES ($1, $2, $3, $4, $5) RETURNING id
+        INSERT INTO jobs(protocol, meta, headers, body) VALUES ($1, $2, $3, $4) RETURNING id
     )
     INSERT INTO enqueued SELECT id FROM a RETURNING id";
     const SQL_SCHEDULE: &str = "WITH a AS (
-        INSERT INTO jobs(protocol, url, meta, headers, body) VALUES ($1, $2, $3, $4, $5) RETURNING id
+        INSERT INTO jobs(protocol, meta, headers, body) VALUES ($1, $2, $3, $4) RETURNING id
     )
-    INSERT INTO scheduled SELECT id, $6 as at FROM a RETURNING id";
+    INSERT INTO scheduled SELECT id, $5 as at FROM a RETURNING id";
 
     let meta = job.meta;
     let headers = job.headers;
@@ -19,16 +19,15 @@ pub async fn enqueue(pool: &Pool<Postgres>, job: JobCreate) -> Result<i64, Error
         true => None,
         false => Some(job.body.as_ref()),
     };
-    let (p, u) = match &meta.protocol {
-        JobProtocol::Http(h) => ("http", h.url.to_string()),
-        _ => ("null", String::new()),
+    let protocol = match &meta.protocol {
+        JobProtocol::Http(_) => "http",
+        _ => "null",
     };
 
     let job_id = match job.at {
         Some(at) => {
             sqlx::query_scalar::<_, i64>(SQL_SCHEDULE)
-                .bind(p)
-                .bind(&u)
+                .bind(protocol)
                 .bind(Json(meta))
                 .bind(Json(headers))
                 .bind(body)
@@ -38,8 +37,7 @@ pub async fn enqueue(pool: &Pool<Postgres>, job: JobCreate) -> Result<i64, Error
         }
         None => {
             sqlx::query_scalar::<_, i64>(SQL_ENQUEUE)
-                .bind(p)
-                .bind(&u)
+                .bind(protocol)
                 .bind(Json(meta))
                 .bind(Json(headers))
                 .bind(body)
@@ -88,10 +86,29 @@ pub async fn succeed(pool: &Pool<Postgres>, job_id: i64) -> Result<u64, Error> {
 
 pub async fn fail(pool: &Pool<Postgres>, job_id: i64) -> Result<u64, Error> {
     const SQL: &str = "WITH a AS (
-            DELETE FROM enqueued WHERE id = $1 RETURNING id, retry, instance_id
-        )
-        INSERT INTO history SELECT id, retry, 'failed' as status, instance_id FROM a RETURNING id";
+        DELETE FROM enqueued WHERE id = $1 RETURNING id, retry, instance_id
+    )
+    INSERT INTO history SELECT id, retry, 'failed' as status, instance_id FROM a RETURNING id";
     let res = sqlx::query(SQL).bind(job_id).execute(pool).await?;
+    Ok(res.rows_affected())
+}
+
+pub async fn retry(pool: &Pool<Postgres>, job_id: i64, at: Option<u64>) -> Result<u64, Error> {
+    const SQL_ENQUEUE: &str = "UPDATE enqueued SET instance_id = null, lock_at = null, retry = retry + 1 WHERE id = $1 RETURNING id, retry";
+    const SQL_SCHEDULE: &str = "WITH a AS (
+        DELETE FROM enqueued WHERE id = $1 RETURNING id, retry, instance_id
+    )
+    INSERT INTO scheduled SELECT id, $2 as at, (retry + 1) as retry FROM a RETURNING id";
+    let res = match at {
+        Some(at) => {
+            sqlx::query(SQL_SCHEDULE)
+                .bind(job_id)
+                .bind(i64::try_from(at).unwrap())
+                .execute(pool)
+                .await?
+        }
+        None => sqlx::query(SQL_ENQUEUE).bind(job_id).execute(pool).await?,
+    };
     Ok(res.rows_affected())
 }
 
@@ -121,7 +138,7 @@ pub fn fetch_enqueued<'a>(
     prefetch: i32,
 ) -> BoxStream<'a, Result<JobQueueRow, sqlx::Error>> {
     const SQL: &str = "WITH a AS (
-        SELECT id FROM enqueued WHERE lock_at IS NULL ORDER BY retry, id LIMIT $1 FOR UPDATE SKIP LOCKED
+        SELECT id, retry FROM enqueued WHERE lock_at IS NULL ORDER BY retry, id LIMIT $1 FOR UPDATE SKIP LOCKED
     )
     UPDATE enqueued SET instance_id = $2, lock_at = now() WHERE id = ANY(SELECT id FROM a) RETURNING id, retry";
     let res = sqlx::query_as::<_, JobQueueRow>(SQL)

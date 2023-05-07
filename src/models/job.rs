@@ -1,4 +1,4 @@
-use std::{collections::HashMap, str::FromStr, time::SystemTime};
+use std::{collections::HashMap, time::SystemTime};
 
 use axum::body::Bytes;
 use hyper::HeaderMap;
@@ -8,14 +8,13 @@ use hyper::{header, Method, Uri};
 use serde::{Deserialize, Serialize};
 use sqlx::types::Json;
 
-use super::Error;
+use super::{Error, JobRetry};
 
 #[derive(Debug, Clone, sqlx::FromRow, Serialize)]
 pub struct JobRow {
     pub id: i64,
     pub protocol: String,
-    pub url: String,
-    pub meta: Option<Json<JobMeta>>,
+    pub meta: Json<JobMeta>,
     pub headers: Option<Json<HashMap<String, String>>>,
     pub body: Option<Vec<u8>>,
 }
@@ -42,8 +41,7 @@ pub struct JobMeta {
     pub retry: JobRetry,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub delay: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub timeout: Option<u32>,
+    pub timeout: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -56,72 +54,6 @@ pub enum JobProtocol {
     // Kafka,
     // Redis,
     // RabbitMq,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-#[serde(tag = "retry")]
-#[serde(rename_all = "snake_case")]
-pub enum JobRetry {
-    #[default]
-    None,
-    Immediate {
-        retry_count: u32,
-    },
-    Fixed {
-        retry_count: u32,
-        retry_delay: u32,
-    },
-    Fibonacci {
-        retry_count: u32,
-        retry_delay: u32,
-    },
-}
-
-impl JobRetry {
-    pub const fn is_none(&self) -> bool {
-        match self {
-            JobRetry::None => true,
-            _ => false,
-        }
-    }
-}
-
-impl FromStr for JobRetry {
-    type Err = Error;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        if s.is_empty() {
-            return Ok(JobRetry::None);
-        }
-        let parts: Vec<&str> = s.split(['|', ',']).collect();
-        if parts.len() == 1 {
-            let retry_count: u32 = parts[0]
-                .parse()
-                .map_err(|_| Error::InvalidParams("retry"))?;
-            return Ok(JobRetry::Immediate { retry_count });
-        }
-
-        if parts.len() == 3 {
-            let retry_count: u32 = parts[0]
-                .parse()
-                .map_err(|_| Error::InvalidParams("retry"))?;
-            let retry_delay: u32 = parts[2]
-                .parse()
-                .map_err(|_| Error::InvalidParams("retry"))?;
-            let retry = match parts[1] {
-                "exponential" | "fibonacci" => JobRetry::Fibonacci {
-                    retry_count,
-                    retry_delay,
-                },
-                _ => JobRetry::Fixed {
-                    retry_count,
-                    retry_delay,
-                },
-            };
-            return Ok(retry);
-        }
-        Ok(JobRetry::None)
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -150,8 +82,8 @@ impl TryFrom<JobRow> for hyper::Request<hyper::Body> {
     type Error = Error;
 
     fn try_from(value: JobRow) -> Result<Self, Self::Error> {
-        let meta = value.meta.ok_or(Error::InvalidUrl)?;
-        let JobProtocol::Http(meta) = meta.0.protocol else {
+        let meta = value.meta.0;
+        let JobProtocol::Http(meta) = meta.protocol else {
             return Err(Error::InvalidUrl);
         };
         let body = match value.body {
@@ -179,8 +111,7 @@ async fn job_row_into_request_err() -> anyhow::Result<()> {
     let job_entry = JobRow {
         id: 0,
         protocol: "null".into(),
-        url: "".into(),
-        meta: Some(Json(JobMeta::default())),
+        meta: Json(JobMeta::default()),
         headers: None,
         body: None,
     };
@@ -199,8 +130,7 @@ async fn job_row_into_request_ok() -> anyhow::Result<()> {
     let job_entry = JobRow {
         id: 0,
         protocol: "http".into(),
-        url: "".into(),
-        meta: Some(Json(JobMeta {
+        meta: Json(JobMeta {
             protocol: JobProtocol::Http(HttpMeta {
                 method: Method::GET,
                 url: Uri::try_from("http://localhost").unwrap(),
@@ -210,8 +140,8 @@ async fn job_row_into_request_ok() -> anyhow::Result<()> {
                 retry_delay: 1,
             },
             delay: Some(300),
-            timeout: Some(2000),
-        })),
+            timeout: 2000,
+        }),
         headers: Some(Json(HashMap::from([(
             header::CONTENT_LENGTH.to_string(),
             "123".into(),
