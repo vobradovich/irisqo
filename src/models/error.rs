@@ -1,14 +1,17 @@
 use axum::http::StatusCode;
 use problemdetails::Problem;
+use tokio::time::error::Elapsed;
 
 // region:    Error
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
     // #[error("Entity Not Found - {0}[{1}] ")]
     // EntityNotFound(&'static str, String),
-
     #[error("Job Not Found - {0}")]
     JobNotFound(i64),
+
+    #[error(transparent)]
+    Timeout(#[from] Elapsed),
 
     #[error(transparent)]
     DbError(#[from] sqlx::Error),

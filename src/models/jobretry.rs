@@ -48,6 +48,23 @@ impl JobRetry {
         }
         x
     }
+
+    pub fn next_retry_in(&self, retry: u32) -> Option<u32> {
+        match self {
+            JobRetry::None => None,
+            JobRetry::Immediate { retry_count } => (retry < *retry_count).then_some(0),
+            JobRetry::Fixed {
+                retry_count,
+                retry_delay,
+            } => (retry < *retry_count).then_some(*retry_delay),
+            JobRetry::Fibonacci {
+                retry_count,
+                retry_delay,
+            } => {
+                (retry < *retry_count).then_some(*retry_delay * JobRetry::fibonacci(retry as usize))
+            }
+        }
+    }
 }
 
 impl FromStr for JobRetry {
@@ -88,7 +105,7 @@ impl FromStr for JobRetry {
 #[tokio::test]
 async fn job_retry_from_str_err() -> anyhow::Result<()> {
     // arrange
-    let s = "test".to_string();
+    let s = "test";
     // act
     let job_retry: Result<JobRetry, _> = s.parse();
 
@@ -100,7 +117,7 @@ async fn job_retry_from_str_err() -> anyhow::Result<()> {
 #[tokio::test]
 async fn job_retry_from_str_empty() -> anyhow::Result<()> {
     // arrange
-    let s = "".to_string();
+    let s = "";
     // act
     let job_retry: Result<JobRetry, _> = s.parse();
 
@@ -113,7 +130,7 @@ async fn job_retry_from_str_empty() -> anyhow::Result<()> {
 #[tokio::test]
 async fn job_retry_from_str_fixed() -> anyhow::Result<()> {
     // arrange
-    let s = "3".to_string();
+    let s = "3";
     // act
     let job_retry: Result<JobRetry, _> = s.parse();
 
@@ -126,12 +143,18 @@ async fn job_retry_from_str_fixed() -> anyhow::Result<()> {
 #[tokio::test]
 async fn job_retry_from_str_fibonacci() -> anyhow::Result<()> {
     // arrange
-    let s = "3|fibonacci|15".to_string();
+    let s = "3|fibonacci|15";
     // act
     let job_retry: Result<JobRetry, _> = s.parse();
 
     // assert
     assert!(job_retry.is_ok());
-    assert_eq!(JobRetry::Fibonacci { retry_count: 3, retry_delay: 15 }, job_retry.unwrap());
+    assert_eq!(
+        JobRetry::Fibonacci {
+            retry_count: 3,
+            retry_delay: 15
+        },
+        job_retry.unwrap()
+    );
     Ok(())
 }

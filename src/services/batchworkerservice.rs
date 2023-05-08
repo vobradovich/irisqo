@@ -1,11 +1,12 @@
 use futures::{future::join_all, TryStreamExt};
-use tokio::{sync::RwLock, time, select};
+use tokio::{select, sync::RwLock, time};
 #[allow(unused_imports)]
 use tracing::{debug, error, info, warn};
 
 use crate::{
     db,
-    models::{AppState, Error}, services::jobrunner,
+    models::{AppState, Error},
+    services::jobrunner,
 };
 use std::sync::Arc;
 
@@ -76,8 +77,13 @@ async fn run_job_batch(app_state: Arc<AppState>) -> Result<(), Error> {
     );
 
     while let Some(entry) = rows.try_next().await? {
-        debug!({ instance_id = app_state.instance_id, job_id = entry.id, retry = entry.retry }, "run");
-        jobrunner::job_run(&app_state, entry).await?;
+        let job_id = entry.id;
+        let retry = entry.retry;
+        debug!({ instance_id = app_state.instance_id, job_id, retry }, "run");
+        let run_result = jobrunner::job_run(&app_state, entry).await;
+        if let Err(err) = run_result {
+            error!({ instance_id = app_state.instance_id, job_id, retry }, "run error {:?}", err);
+        }
     }
     Ok(())
 }
