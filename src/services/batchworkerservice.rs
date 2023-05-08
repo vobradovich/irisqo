@@ -79,7 +79,6 @@ async fn run_job_batch(app_state: Arc<AppState>) -> Result<(), Error> {
     while let Some(entry) = rows.try_next().await? {
         let job_id = entry.id;
         let retry = entry.retry;
-        debug!({ instance_id = app_state.instance_id, job_id, retry }, "run");
         let run_result = jobrunner::job_run(&app_state, entry).await;
         if let Err(err) = run_result {
             error!({ instance_id = app_state.instance_id, job_id, retry }, "run error {:?}", err);

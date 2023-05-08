@@ -60,7 +60,7 @@ impl AppState {
                 workers_count: Some(4),
                 poll_interval: Duration::from_millis(1000),
                 prefetch: 10,
-                timeout: 2000,
+                timeout: 3000,
             },
             shutdown_token: CancellationToken::new(),
         };

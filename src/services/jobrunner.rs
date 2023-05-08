@@ -3,12 +3,14 @@ use crate::{
     models::{AppState, Error, JobProtocol, JobQueueRow, JobRow},
 };
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use tokio::time::timeout;
+use tokio::time;
 #[allow(unused_imports)]
 use tracing::{debug, error, info, warn};
 
 pub async fn job_run(app_state: &AppState, entry: JobQueueRow) -> Result<(), Error> {
     let job_id = entry.id;
+    let retry = entry.retry;
+    debug!({ instance_id = app_state.instance_id, job_id, retry }, "==> run");
     let job = db::jobqueue::get_by_id(&app_state.pool, job_id)
         .await?
         .ok_or(Error::JobNotFound(job_id))?;
@@ -23,7 +25,7 @@ pub async fn job_run(app_state: &AppState, entry: JobQueueRow) -> Result<(), Err
         }
         Err(err) => match err {
             Error::HyperError(_) | Error::Timeout(_) => {
-                warn!({ instance_id = app_state.instance_id, job_id }, "call error {:?}", err);
+                warn!({ instance_id = app_state.instance_id, job_id }, "====> call error {:?}", err);
                 let retry = u32::try_from(entry.retry).unwrap_or(0);
                 let now_secs = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
@@ -47,7 +49,7 @@ pub async fn job_run(app_state: &AppState, entry: JobQueueRow) -> Result<(), Err
                 }
             }
             _ => {
-                error!({ instance_id = app_state.instance_id, job_id }, "error {:?}", err);
+                error!({ instance_id = app_state.instance_id, job_id }, "====> error {:?}", err);
                 db::jobqueue::fail(&app_state.pool, job_id).await?;
             }
         },
@@ -57,15 +59,12 @@ pub async fn job_run(app_state: &AppState, entry: JobQueueRow) -> Result<(), Err
 
 async fn job_run_http(app_state: &AppState, job: JobRow) -> Result<(), Error> {
     let job_id = job.id;
+    let timeout_ms = job.meta.timeout;
     let req = hyper::Request::<hyper::Body>::try_from(job)?;
     let future = app_state.client.request(req);
     // first '?' - timeout
     // second '?' - HyperError
-    let response = timeout(
-        Duration::from_millis(app_state.worker_options.timeout.into()),
-        future,
-    )
-    .await??;
-    debug!({ instance_id = app_state.instance_id, job_id }, "response={:?}", response);
+    let response = time::timeout(Duration::from_millis(timeout_ms.into()), future).await??;
+    debug!({ instance_id = app_state.instance_id, job_id }, "====> response={:?}", response);
     Ok(())
 }
