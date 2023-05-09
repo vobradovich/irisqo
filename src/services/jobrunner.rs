@@ -26,7 +26,7 @@ pub async fn job_run(app_state: &AppState, entry: JobQueueRow) -> Result<(), Err
         Err(err) => match err {
             Error::HyperError(_) | Error::Timeout(_) => {
                 warn!({ instance_id = app_state.instance_id, job_id }, "====> call error {:?}", err);
-                let retry = u32::try_from(entry.retry).unwrap_or(0);
+                let retry: u16 = entry.retry.try_into().unwrap_or(0);
                 let now_secs = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .unwrap()

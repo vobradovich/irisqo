@@ -2,21 +2,21 @@ use super::Error;
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
 #[serde(tag = "retry")]
 #[serde(rename_all = "snake_case")]
 pub enum JobRetry {
     #[default]
     None,
     Immediate {
-        retry_count: u32,
+        retry_count: u16,
     },
     Fixed {
-        retry_count: u32,
+        retry_count: u16,
         retry_delay: u32,
     },
     Fibonacci {
-        retry_count: u32,
+        retry_count: u16,
         retry_delay: u32,
     },
 }
@@ -49,20 +49,18 @@ impl JobRetry {
         x
     }
 
-    pub fn next_retry_in(&self, retry: u32) -> Option<u32> {
+    pub fn next_retry_in(self, retry: u16) -> Option<u32> {
         match self {
             JobRetry::None => None,
-            JobRetry::Immediate { retry_count } => (retry < *retry_count).then_some(0),
+            JobRetry::Immediate { retry_count } => (retry < retry_count).then_some(0),
             JobRetry::Fixed {
                 retry_count,
                 retry_delay,
-            } => (retry < *retry_count).then_some(*retry_delay),
+            } => (retry < retry_count).then_some(retry_delay),
             JobRetry::Fibonacci {
                 retry_count,
                 retry_delay,
-            } => {
-                (retry < *retry_count).then_some(*retry_delay * JobRetry::fibonacci(retry as usize))
-            }
+            } => (retry < retry_count).then_some(retry_delay * JobRetry::fibonacci(retry as usize)),
         }
     }
 }
@@ -75,7 +73,7 @@ impl FromStr for JobRetry {
             return Ok(JobRetry::None);
         }
         let parts: Vec<&str> = s.split(['|', ',']).collect();
-        let retry_count: u32 = parts[0]
+        let retry_count: u16 = parts[0]
             .parse()
             .map_err(|_| Error::InvalidParams("retry"))?;
 

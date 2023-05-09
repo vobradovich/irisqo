@@ -33,6 +33,7 @@ pub struct WorkerOptions {
 }
 
 impl AppState {
+    #[must_use]
     pub async fn new() -> Arc<AppState> {
         dotenv().ok();
         let hostname = whoami::hostname();
