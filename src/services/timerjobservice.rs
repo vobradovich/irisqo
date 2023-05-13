@@ -5,6 +5,7 @@ use tracing::{debug, error};
 use crate::{
     db,
     models::{AppState, Error},
+    services::jobrunner,
 };
 use std::sync::Arc;
 
@@ -97,22 +98,7 @@ async fn run_job_batch(app_state: Arc<AppState>) -> Result<(), Error> {
     );
 
     while let Some(entry) = rows.try_next().await? {
-        debug!({ instance_id = app_state.instance_id, job_id = entry.id, retry = entry.retry }, "run");
-
-        // todo: exec
-        // let url = "http://httpbin.org/ip".parse::<hyper::Uri>().unwrap();
-        // // Create an HTTP request with an empty body and a HOST header
-        // let req = hyper::Request::builder()
-        //     .method(hyper::Method::GET)
-        //     .uri(url)
-        //     // .header("user-agent", "the-awesome-agent/007")
-        //     .header("content-type", "application/json")
-        //     .body(hyper::Body::empty())
-        //     .unwrap();
-        // let res = client.request(req).await;
-        // debug!({ instance_id = app_state.instance_id, job_id = entry.id, retry = entry.retry }, "response={:?}", res);
-
-        db::jobqueue::succeed(&app_state.pool, entry.id).await?;
+        jobrunner::job_run(&app_state, entry).await;
     }
     Ok(())
 }

@@ -1,5 +1,5 @@
-use crate::models::Error;
-use crate::models::{JobCreate, JobProtocol, JobQueueRow, JobRow};
+use crate::models::{Error, JobEntry};
+use crate::models::{JobCreate, JobProtocol, JobRow};
 use futures::stream::BoxStream;
 use sqlx::{types::Json, Pool, Postgres};
 
@@ -93,22 +93,22 @@ pub async fn fail(pool: &Pool<Postgres>, job_id: i64) -> Result<u64, Error> {
     Ok(res.rows_affected())
 }
 
-pub async fn retry(pool: &Pool<Postgres>, job_id: i64, at: Option<u64>) -> Result<u64, Error> {
-    const SQL_ENQUEUE: &str = "UPDATE enqueued SET instance_id = null, lock_at = null, retry = retry + 1 WHERE id = $1 RETURNING id, retry";
-    const SQL_SCHEDULE: &str = "WITH a AS (
+pub async fn unlock(pool: &Pool<Postgres>, job_id: i64) -> Result<u64, Error> {
+    const SQL: &str = "UPDATE enqueued SET instance_id = null, lock_at = null, retry = retry + 1 WHERE id = $1 RETURNING id, retry";
+    let res = sqlx::query(SQL).bind(job_id).execute(pool).await?;
+    Ok(res.rows_affected())
+}
+
+pub async fn retry(pool: &Pool<Postgres>, job_id: i64, at: u64) -> Result<u64, Error> {
+    const SQL: &str = "WITH a AS (
         DELETE FROM enqueued WHERE id = $1 RETURNING id, retry, instance_id
     )
     INSERT INTO scheduled SELECT id, $2 as at, (retry + 1) as retry FROM a RETURNING id";
-    let res = match at {
-        Some(at) => {
-            sqlx::query(SQL_SCHEDULE)
-                .bind(job_id)
-                .bind(i64::try_from(at).unwrap())
-                .execute(pool)
-                .await?
-        }
-        None => sqlx::query(SQL_ENQUEUE).bind(job_id).execute(pool).await?,
-    };
+    let res = sqlx::query(SQL)
+        .bind(job_id)
+        .bind(i64::try_from(at).unwrap())
+        .execute(pool)
+        .await?;
     Ok(res.rows_affected())
 }
 
@@ -136,28 +136,28 @@ pub fn fetch_enqueued<'a>(
     pool: &'a Pool<Postgres>,
     instance_id: &'a str,
     prefetch: i32,
-) -> BoxStream<'a, Result<JobQueueRow, sqlx::Error>> {
+) -> BoxStream<'a, Result<JobEntry, sqlx::Error>> {
     const SQL: &str = "WITH a AS (
         SELECT id, retry FROM enqueued WHERE lock_at IS NULL ORDER BY retry, id LIMIT $1 FOR UPDATE SKIP LOCKED
     )
     UPDATE enqueued SET instance_id = $2, lock_at = now() WHERE id = ANY(SELECT id FROM a) RETURNING id, retry";
-    let res = sqlx::query_as::<_, JobQueueRow>(SQL)
+    let res = sqlx::query_as::<_, JobEntry>(SQL)
         .bind(prefetch)
         .bind(instance_id)
         .fetch(pool);
     res
 }
 
-#[allow(dead_code, unused_variables)]
 pub async fn fetch_optional(
     pool: &Pool<Postgres>,
     instance_id: &str,
-) -> Result<Option<JobQueueRow>, sqlx::Error> {
+) -> Result<Option<JobEntry>, sqlx::Error> {
     const SQL: &str = "WITH a AS (
-        SELECT id FROM enqueued WHERE lock_at IS NULL ORDER BY retry, id LIMIT 1 FOR UPDATE SKIP LOCKED
+        SELECT id, retry FROM enqueued WHERE lock_at IS NULL ORDER BY retry, id LIMIT $1 FOR UPDATE SKIP LOCKED
     )
     UPDATE enqueued SET instance_id = $2, lock_at = now() WHERE id = ANY(SELECT id FROM a) RETURNING id, retry";
-    let res = sqlx::query_as::<_, JobQueueRow>(SQL)
+    let res = sqlx::query_as::<_, JobEntry>(SQL)
+        .bind(1)
         .bind(instance_id)
         .fetch_optional(pool)
         .await;

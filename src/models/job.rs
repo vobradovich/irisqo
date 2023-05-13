@@ -25,6 +25,13 @@ pub struct JobQueueRow {
     pub retry: i32,
 }
 
+#[derive(Debug, Clone, Copy, sqlx::FromRow)]
+pub struct JobEntry {
+    pub id: i64,
+    pub retry: i32,
+}
+
+
 #[derive(Debug, Clone, Default)]
 pub struct JobCreate {
     pub meta: JobMeta,

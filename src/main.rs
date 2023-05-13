@@ -5,7 +5,8 @@ use axum::Router;
 use models::AppState;
 use tokio::signal;
 use tower_http::trace::TraceLayer;
-use tracing_subscriber::{prelude::__tracing_subscriber_SubscriberExt, util::SubscriberInitExt};
+use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 
 mod db;
 mod handlers;
@@ -16,9 +17,11 @@ mod services;
 async fn main() {
     tracing_subscriber::registry()
         .with(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "irisqo=debug,tower_http=debug".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                "irisqo=debug,tower_http=debug,axum_tracing_opentelemetry=debug,otel=debug".into()
+            }),
         )
+        .with(tracing_opentelemetry::layer())
         .with(tracing_subscriber::fmt::layer())
         .init();
 
@@ -39,6 +42,7 @@ async fn start_http_server(state: &Arc<AppState>) {
         .merge(handlers::live::routes(Arc::clone(state)))
         .nest("/api/v1", handlers::jobs::routes(Arc::clone(state)))
         .layer(TraceLayer::new_for_http());
+
     axum::Server::bind(&addr)
         .serve(app.into_make_service())
         .with_graceful_shutdown(shutdown_signal(Arc::clone(state)))
@@ -54,7 +58,7 @@ async fn start_scheduler_service(state: &Arc<AppState>) {
 
 async fn start_jobs_service(state: &Arc<AppState>) {
     let app_state = Arc::clone(state);
-    let service = services::BatchWorkerService::new(app_state);
+    let service = services::NaiveWorkerService::new(app_state);
     service.run().await.expect("Failed to run JobService");
 }
 

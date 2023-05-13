@@ -48,6 +48,11 @@ async fn job_create(
     let mut timeout: u32 = state.worker_options.timeout;
     let mut retry: JobRetry = JobRetry::None;
 
+    let span = tracing::span::Span::current();
+    // let trace_id = axum_tracing_opentelemetry::find_current_trace_id();
+    // warn!("span = {:?}, trace_id = {:?}", span, trace_id);
+
+
     // Parse and truncate Query String
     let mut parsed_url = Url::parse(&url).map_err(|_| Error::InvalidUrl)?;
     if let Some(qs) = query {

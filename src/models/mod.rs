@@ -5,6 +5,7 @@ pub use job::JobMeta;
 pub use job::JobProtocol;
 pub use job::JobQueueRow;
 pub use job::JobRow;
+pub use job::JobEntry;
 pub use jobretry::JobRetry;
 pub use state::AppState;
 

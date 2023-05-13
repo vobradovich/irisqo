@@ -1,15 +1,22 @@
 use crate::{
     db,
-    models::{AppState, Error, JobProtocol, JobQueueRow, JobRow},
+    models::{AppState, Error, JobEntry, JobProtocol, JobRow},
 };
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::time;
 #[allow(unused_imports)]
 use tracing::{debug, error, info, warn};
 
-pub async fn job_run(app_state: &AppState, entry: JobQueueRow) -> Result<(), Error> {
-    let job_id = entry.id;
-    let retry = entry.retry;
+pub async fn job_run(app_state: &AppState, entry: JobEntry) {
+    let run_result = job_run_with_error(&app_state, entry).await;
+    if let Err(err) = run_result {
+        let JobEntry { id: job_id, retry } = entry;
+        error!({ instance_id = app_state.instance_id, job_id, retry }, "run error {:?}", err);
+    }
+}
+
+async fn job_run_with_error(app_state: &AppState, entry: JobEntry) -> Result<(), Error> {
+    let JobEntry { id: job_id, retry } = entry;
     debug!({ instance_id = app_state.instance_id, job_id, retry }, "==> run");
     let job = db::jobqueue::get_by_id(&app_state.pool, job_id)
         .await?
@@ -25,7 +32,6 @@ pub async fn job_run(app_state: &AppState, entry: JobQueueRow) -> Result<(), Err
         }
         Err(err) => match err {
             Error::HyperError(_) | Error::Timeout(_) => {
-                warn!({ instance_id = app_state.instance_id, job_id }, "====> call error {:?}", err);
                 let retry: u16 = entry.retry.try_into().unwrap_or(0);
                 let now_secs = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
@@ -33,18 +39,17 @@ pub async fn job_run(app_state: &AppState, entry: JobQueueRow) -> Result<(), Err
                     .as_secs();
                 match meta.retry.next_retry_in(retry) {
                     None => {
+                        warn!({ instance_id = app_state.instance_id, job_id }, "====> fail {:?}", err);
                         db::jobqueue::fail(&app_state.pool, job_id).await?;
                     }
                     Some(0) => {
-                        db::jobqueue::retry(&app_state.pool, job_id, None).await?;
+                        info!({ instance_id = app_state.instance_id, job_id }, "====> unlock {:?}", err);
+                        db::jobqueue::unlock(&app_state.pool, job_id).await?;
                     }
                     Some(delay) => {
-                        db::jobqueue::retry(
-                            &app_state.pool,
-                            job_id,
-                            Some(now_secs + u64::from(delay)),
-                        )
-                        .await?;
+                        let at = now_secs + u64::from(delay);
+                        info!({ instance_id = app_state.instance_id, job_id }, "====> retry in {} {:?}", delay, err);
+                        db::jobqueue::retry(&app_state.pool, job_id, at).await?;
                     }
                 }
             }
