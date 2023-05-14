@@ -58,7 +58,7 @@ async fn start_scheduler_service(state: &Arc<AppState>) {
 
 async fn start_jobs_service(state: &Arc<AppState>) {
     let app_state = Arc::clone(state);
-    let service = services::NaiveWorkerService::new(app_state);
+    let service = services::ChannelWorkerService::new(app_state);
     service.run().await.expect("Failed to run JobService");
 }
 

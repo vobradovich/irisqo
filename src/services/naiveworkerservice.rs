@@ -51,15 +51,12 @@ impl NaiveWorkerService {
 }
 
 pub async fn run_worker(app_state: Arc<AppState>, idx: usize) {
-    debug!({ instance_id = app_state.instance_id, idx }, "run_worker");
+    info!({ instance_id = app_state.instance_id, idx }, "run_worker");
 
     let mut interval = time::interval(app_state.worker_options.poll_interval);
     interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
     while !app_state.shutdown_token.is_cancelled() {
         match run_job(&app_state).await {
-            Err(err) => {
-                error!({ instance_id = app_state.instance_id }, "error {}", err);
-            }
             Ok(true) => (),
             Ok(false) => {
                 select!(
@@ -67,9 +64,16 @@ pub async fn run_worker(app_state: Arc<AppState>, idx: usize) {
                     _ = app_state.shutdown_token.cancelled() => {}
                 );
             }
+            Err(err) => {
+                error!({ instance_id = app_state.instance_id }, "error {}", err);
+                select!(
+                    _ = interval.tick() => {},
+                    _ = app_state.shutdown_token.cancelled() => {}
+                );
+            }
         }
     }
-    debug!({ instance_id = app_state.instance_id, idx }, "stop_worker");
+    info!({ instance_id = app_state.instance_id, idx }, "stop_worker");
 }
 
 async fn run_job(app_state: &AppState) -> Result<bool, Error> {
