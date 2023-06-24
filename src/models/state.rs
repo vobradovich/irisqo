@@ -1,5 +1,6 @@
 use dotenv::dotenv;
 use hyper::{client::HttpConnector, Body, Client};
+use hyper_tls::HttpsConnector;
 use sqlx::{
     postgres::{PgConnectOptions, PgPoolOptions},
     Pool, Postgres,
@@ -12,7 +13,7 @@ use tokio_util::sync::CancellationToken;
 pub struct AppState {
     pub instance_id: String,
     pub pool: Pool<Postgres>,
-    pub client: Client<HttpConnector, Body>,
+    pub client: Client<HttpsConnector<HttpConnector>, Body>,
     pub scheduler_options: Option<SchedulerOptions>,
     pub worker_options: WorkerOptions,
     pub shutdown_token: CancellationToken,
@@ -49,10 +50,11 @@ impl AppState {
             .await
             .expect("Unable to connect to Postgres");
 
+        let https = hyper_tls::HttpsConnector::new();
         let state = AppState {
             instance_id,
             pool,
-            client: hyper::Client::new(),
+            client: hyper::Client::builder().build::<_, hyper::Body>(https),
             scheduler_options: Some(SchedulerOptions {
                 poll_interval: Duration::from_millis(5000),
                 prefetch: 1000,

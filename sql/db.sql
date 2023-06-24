@@ -40,28 +40,32 @@ CREATE TABLE IF NOT EXISTS enqueued (
         ON DELETE CASCADE
 );
 
-CREATE TABLE IF NOT EXISTS assigned (
+CREATE TYPE processed_status AS ENUM ('completed', 'failed', 'cancelled');
+
+CREATE TABLE IF NOT EXISTS processed (
 	id bigint NOT NULL,
 	retry int NOT NULL DEFAULT 0,
 	instance_id varchar(64) NOT NULL,
 	at timestamptz NOT NULL DEFAULT NOW(),
+	status processed_status NOT NULL,
+	meta jsonb NOT NULL,
+	headers jsonb NULL,
+	body BYTEA NULL,
 
-	CONSTRAINT pk_assigned PRIMARY KEY (id),
 	CONSTRAINT fk_jobs_id FOREIGN KEY (id)
         REFERENCES jobs (id) MATCH SIMPLE
         ON UPDATE NO ACTION
         ON DELETE CASCADE
 );
 
-CREATE TYPE job_status AS ENUM ('scheduled', 'enqueued', 'assigned', 'retried', 'succeeded', 'failed', 'cancelled');
+CREATE TYPE history_status AS ENUM ('scheduled', 'enqueued', 'assigned', 'retried', 'completed', 'failed', 'cancelled');
 
 CREATE TABLE IF NOT EXISTS history (
 	id bigint NOT NULL,
 	retry int NOT NULL DEFAULT 0,
-	status job_status NOT NULL,
+	status history_status NOT NULL,
 	instance_id varchar(64) NOT NULL,
 	at timestamptz NOT NULL DEFAULT NOW(),
-	completed bool GENERATED ALWAYS AS (status IN ('succeeded', 'failed', 'cancelled')) STORED,
 
 	CONSTRAINT fk_jobs_id FOREIGN KEY (id)
         REFERENCES jobs (id) MATCH SIMPLE

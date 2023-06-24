@@ -1,4 +1,4 @@
-use crate::models::{Error, JobEntry};
+use crate::models::{Error, JobEntry, JobResult};
 use crate::models::{JobCreate, JobProtocol, JobRow};
 use futures::stream::BoxStream;
 use sqlx::{types::Json, Pool, Postgres};
@@ -75,21 +75,45 @@ pub async fn enqueue_scheduled(pool: &Pool<Postgres>) -> Result<u64, Error> {
     Ok(res.rows_affected())
 }
 
-pub async fn succeed(pool: &Pool<Postgres>, job_id: i64) -> Result<u64, Error> {
+pub async fn complete(
+    pool: &Pool<Postgres>,
+    job_id: i64,
+    job_result: JobResult,
+) -> Result<u64, Error> {
     const SQL: &str = "WITH a AS (
         DELETE FROM enqueued WHERE id = $1 RETURNING id, retry, instance_id
     )
-    INSERT INTO history SELECT id, retry, 'succeeded' as status, instance_id FROM a RETURNING id";
-    let res = sqlx::query(SQL).bind(job_id).execute(pool).await?;
+    INSERT INTO processed SELECT id, retry, instance_id, now() as at, 'completed' as status, $2 as meta, $3 as headers, $4 as body FROM a RETURNING id";
+    let body: Option<&[u8]> = match job_result.body.is_empty() {
+        true => None,
+        false => Some(job_result.body.as_ref()),
+    };
+    let res = sqlx::query(SQL)
+        .bind(job_id)
+        .bind(Json(job_result.meta))
+        .bind(Json(job_result.headers))
+        .bind(body)
+        .execute(pool)
+        .await?;
     Ok(res.rows_affected())
 }
 
-pub async fn fail(pool: &Pool<Postgres>, job_id: i64) -> Result<u64, Error> {
+pub async fn fail(pool: &Pool<Postgres>, job_id: i64, job_result: JobResult) -> Result<u64, Error> {
     const SQL: &str = "WITH a AS (
         DELETE FROM enqueued WHERE id = $1 RETURNING id, retry, instance_id
     )
-    INSERT INTO history SELECT id, retry, 'failed' as status, instance_id FROM a RETURNING id";
-    let res = sqlx::query(SQL).bind(job_id).execute(pool).await?;
+    INSERT INTO processed SELECT id, retry, instance_id, now() as at, 'failed' as status, $2 as meta, $3 as headers, $4 as body FROM a RETURNING id";
+    let body: Option<&[u8]> = match job_result.body.is_empty() {
+        true => None,
+        false => Some(job_result.body.as_ref()),
+    };
+    let res = sqlx::query(SQL)
+        .bind(job_id)
+        .bind(Json(job_result.meta))
+        .bind(Json(job_result.headers))
+        .bind(body)
+        .execute(pool)
+        .await?;
     Ok(res.rows_affected())
 }
 
