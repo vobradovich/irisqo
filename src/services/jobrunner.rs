@@ -14,8 +14,8 @@ use tokio::time;
 use tracing::{debug, error, info, warn};
 
 pub async fn job_run(app_state: &AppState, entry: JobEntry) {
-    let run_result = job_run_with_error(&app_state, entry).await;
-    if let Err(err) = run_result {
+    let res = job_run_with_error(app_state, entry).await;
+    if let Err(err) = res {
         let JobEntry { id: job_id, retry } = entry;
         error!({ instance_id = app_state.instance_id, job_id, retry }, "run error {:?}", err);
     }
@@ -37,7 +37,7 @@ async fn job_run_with_error(app_state: &AppState, entry: JobEntry) -> Result<(),
             db::jobqueue::complete(&app_state.pool, job_id, result).await?;
         }
         Err(err) => {
-            retry_or_fail(app_state, entry, meta, err).await?;
+            on_error(app_state, entry, meta, err).await?;
         }
     }
     Ok(())
@@ -75,43 +75,66 @@ async fn job_run_http(app_state: &AppState, job: JobRow) -> Result<JobResult, Er
         headers: Some(header_hashmap),
         body: bytes,
     };
+    if status_code.is_server_error() {
+        return Err(Error::ServerError(job_result));
+    }
+    if status_code.is_client_error() {
+        return Err(Error::ClientError(job_result));
+    }
     Ok(job_result)
 }
 
-async fn retry_or_fail(
+async fn on_error(
     app_state: &AppState,
     entry: JobEntry,
     meta: JobMeta,
     err: Error,
 ) -> Result<(), Error> {
-    let JobEntry { id: job_id, retry } = entry;
+    let job_id = entry.id;
     match err {
         Error::HyperError(_) | Error::Timeout(_) => {
-            let retry: u16 = entry.retry.try_into().unwrap_or(0);
-            let now_secs = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_secs();
-            match meta.retry.next_retry_in(retry) {
-                None => {
-                    warn!({ instance_id = app_state.instance_id, job_id }, "====> fail {:?}", err);
-                    db::jobqueue::fail(&app_state.pool, job_id, err.into()).await?;
-                }
-                Some(0) => {
-                    info!({ instance_id = app_state.instance_id, job_id }, "====> unlock {:?}", err);
-                    db::jobqueue::unlock(&app_state.pool, job_id).await?;
-                }
-                Some(delay) => {
-                    let at = now_secs + u64::from(delay);
-                    info!({ instance_id = app_state.instance_id, job_id }, "====> retry in {} {:?}", delay, err);
-                    db::jobqueue::retry(&app_state.pool, job_id, at).await?;
-                }
-            }
+            info!({ instance_id = app_state.instance_id, job_id }, "====> error {:?}", err);
+            retry_or_fail(app_state, entry, meta, err.into()).await?;
+        }
+        Error::ServerError(res) => {
+            info!({ instance_id = app_state.instance_id, job_id }, "====> error {:?}", res.meta);
+            retry_or_fail(app_state, entry, meta, res).await?;
+        }
+        Error::ClientError(res) => {
+            info!({ instance_id = app_state.instance_id, job_id }, "====> error {:?}", res.meta);
+            db::jobqueue::fail(&app_state.pool, job_id, res).await?;
         }
         _ => {
             error!({ instance_id = app_state.instance_id, job_id }, "====> error {:?}", err);
             db::jobqueue::fail(&app_state.pool, job_id, err.into()).await?;
         }
     };
+    Ok(())
+}
+
+async fn retry_or_fail(
+    app_state: &AppState,
+    entry: JobEntry,
+    meta: JobMeta,
+    job_result: JobResult,
+) -> Result<(), Error> {
+    let JobEntry { id: job_id, retry } = entry;
+    let retry: u16 = retry.try_into().unwrap_or(0);
+    let now_secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    match meta.retry.next_retry_in(retry) {
+        None => {
+            db::jobqueue::fail(&app_state.pool, job_id, job_result).await?;
+        }
+        Some(0) => {
+            db::jobqueue::unlock(&app_state.pool, job_id).await?;
+        }
+        Some(delay) => {
+            let at = now_secs + u64::from(delay);
+            db::jobqueue::retry(&app_state.pool, job_id, at).await?;
+        }
+    }
     Ok(())
 }

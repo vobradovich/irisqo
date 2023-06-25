@@ -48,10 +48,9 @@ async fn job_create(
     let mut timeout: u32 = state.worker_options.timeout;
     let mut retry: JobRetry = JobRetry::None;
 
-    let span = tracing::span::Span::current();
+    let _span = tracing::span::Span::current();
     // let trace_id = axum_tracing_opentelemetry::find_current_trace_id();
     // warn!("span = {:?}, trace_id = {:?}", span, trace_id);
-
 
     // Parse and truncate Query String
     let mut parsed_url = Url::parse(&url).map_err(|_| Error::InvalidUrl)?;
@@ -64,7 +63,7 @@ async fn job_create(
         for (key, value) in params {
             if key == "_delay" {
                 delay = value.parse::<u32>().ok();
-                at = delay.and_then(|t| (now_secs + u64::from(t)).try_into().ok());
+                at = delay.map(|t| now_secs + u64::from(t));
                 continue;
             }
             if key == "_delay_until" || key == "_until" {

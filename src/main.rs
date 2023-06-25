@@ -41,6 +41,7 @@ async fn start_http_server(state: &Arc<AppState>) {
         .merge(handlers::http::routes(Arc::clone(state)))
         .merge(handlers::live::routes(Arc::clone(state)))
         .nest("/api/v1", handlers::jobs::routes(Arc::clone(state)))
+        .nest("/api/v1", handlers::results::routes(Arc::clone(state)))
         .layer(TraceLayer::new_for_http());
 
     axum::Server::bind(&addr)

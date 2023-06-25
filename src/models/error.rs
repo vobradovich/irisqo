@@ -2,6 +2,8 @@ use axum::http::StatusCode;
 use problemdetails::Problem;
 use tokio::time::error::Elapsed;
 
+use super::JobResult;
+
 // region:    Error
 #[derive(thiserror::Error, Debug)]
 pub enum Error {
@@ -30,6 +32,12 @@ pub enum Error {
 
     #[error("Invalid Params - {0}")]
     InvalidParams(&'static str),
+
+    #[error("Server Error")]
+    ServerError(JobResult),
+
+    #[error("Client Error")]
+    ClientError(JobResult),
 }
 
 impl From<Error> for Problem {

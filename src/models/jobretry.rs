@@ -23,10 +23,7 @@ pub enum JobRetry {
 
 impl JobRetry {
     pub const fn is_none(&self) -> bool {
-        match self {
-            JobRetry::None => true,
-            _ => false,
-        }
+        matches!(self, JobRetry::None)
     }
 
     pub const fn fibonacci(idx: usize) -> u32 {
@@ -93,7 +90,7 @@ impl FromStr for JobRetry {
                         retry_delay,
                     },
                 };
-                return Ok(retry);
+                Ok(retry)
             }
             _ => Ok(JobRetry::None),
         }
