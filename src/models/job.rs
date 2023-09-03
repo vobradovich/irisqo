@@ -56,7 +56,7 @@ pub struct JobMeta {
 #[serde(rename_all = "snake_case")]
 pub enum JobProtocol {
     #[default]
-    Null,
+    None,
     Http(HttpMeta),
     // Kafka,
     // Redis,

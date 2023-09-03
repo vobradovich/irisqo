@@ -3,9 +3,10 @@ use std::sync::Arc;
 
 use axum::Router;
 use models::AppState;
+use opentelemetry::trace::TracerProvider;
 use tokio::signal;
 use tower_http::trace::TraceLayer;
-use tracing_subscriber::prelude::__tracing_subscriber_SubscriberExt;
+use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 
 mod db;
@@ -15,13 +16,20 @@ mod services;
 
 #[tokio::main]
 async fn main() {
+    // Create a new OpenTelemetry trace pipeline that prints to stdout
+    let provider = opentelemetry::sdk::trace::TracerProvider::builder()
+        .with_simple_exporter(opentelemetry_stdout::SpanExporter::default())
+        .build();
+
+    let tracer = provider.tracer("irisqo");
+
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
                 "irisqo=debug,tower_http=debug,axum_tracing_opentelemetry=debug,otel=debug".into()
             }),
         )
-        .with(tracing_opentelemetry::layer())
+        .with(tracing_opentelemetry::layer().with_tracer(tracer))
         .with(tracing_subscriber::fmt::layer())
         .init();
 

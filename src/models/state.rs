@@ -38,7 +38,7 @@ impl AppState {
     pub async fn new() -> Arc<AppState> {
         dotenv().ok();
         let hostname = whoami::hostname();
-        let instance_id = format!("{}:1", hostname);
+        let instance_id = format!("{}:{}", hostname, ulid::Ulid::new());
         let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
         let conn = PgConnectOptions::from_str(&db_url)
             .expect("Unable to parse DATABASE_URL")

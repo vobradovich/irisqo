@@ -29,7 +29,7 @@ async fn job_run_with_error(app_state: &AppState, entry: JobEntry) -> Result<(),
         .ok_or(Error::JobNotFound(job_id))?;
     let meta = job.meta.0.clone();
     let job_result = match meta.protocol {
-        JobProtocol::Null => Ok(JobResult::default()),
+        JobProtocol::None => Ok(JobResult::default()),
         JobProtocol::Http(_) => job_run_http(app_state, job).await,
     };
     match job_result {

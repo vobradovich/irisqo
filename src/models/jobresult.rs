@@ -37,7 +37,7 @@ pub struct JobResultMeta {
 #[serde(rename_all = "snake_case")]
 pub enum JobResultType {
     #[default]
-    Null,
+    None,
     Timeout,
     Error {
         error: String,

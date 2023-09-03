@@ -95,7 +95,7 @@ async fn job_create(
     let scheme = &uri.scheme_str().unwrap_or("null").to_owned();
     let protocol = match scheme.as_str() {
         "http" | "https" => crate::models::JobProtocol::Http(HttpMeta { method, url: uri }),
-        _ => crate::models::JobProtocol::Null,
+        _ => crate::models::JobProtocol::None,
     };
 
     // Parse Headers

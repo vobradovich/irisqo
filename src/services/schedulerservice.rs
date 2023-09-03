@@ -5,7 +5,7 @@ use crate::{
     db,
     models::{AppState, Error},
 };
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 #[derive(Debug)]
 pub struct SchedulerService {
@@ -44,14 +44,16 @@ impl SchedulerService {
             );
         }
         info!({ instance_id = self.app_state.instance_id }, "stop");
+        db::instances::kill(&self.app_state.pool, &self.app_state.instance_id).await?;
         Ok(())
     }
 
     async fn tick(&self) -> Result<(), Error> {
         debug!({ instance_id = self.app_state.instance_id }, "tick");
         db::instances::live(&self.app_state.pool, &self.app_state.instance_id).await?;
+        let expired = db::instances::kill_expired(&self.app_state.pool, Duration::from_secs(30)).await?;
         let enqueued = db::jobqueue::enqueue_scheduled(&self.app_state.pool).await?;
-        debug!({ instance_id = self.app_state.instance_id, enqueued = enqueued }, "db::jobs::enqueue_scheduled");
+        debug!({ instance_id = self.app_state.instance_id, enqueued = enqueued, expired = expired }, "db::jobs::enqueue_scheduled");
         Ok(())
     }
 }

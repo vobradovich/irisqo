@@ -2,9 +2,13 @@
 
 'irisqo' is a proof-of-concept service for making asynchronous HTTP requests with delays and retries, similar to 'zeplo.io' or 'qstash'.
 
-### Features
+### Design
 - KISS (Keep It Simple)
-- WIP: Retries and Delays
-- WIP: Schedule, Intervals, and Cron
-- Persistent queue backed by 'Postgres' with lock-free queries.
-- Scalability
+
+### Features
+- [x] Persistent queue backed by 'Postgres' with lock-free queries.
+- [x] Scalability
+- [x] Retries and Delays
+- [ ] OpenTelemetry Tracing
+- [ ] Schedule, Intervals, and Cron
+- [ ] UI

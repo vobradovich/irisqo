@@ -156,6 +156,7 @@ pub async fn assign_enqueued(
     Ok(0)
 }
 
+#[allow(dead_code, unused_variables)]
 pub fn fetch_enqueued<'a>(
     pool: &'a Pool<Postgres>,
     instance_id: &'a str,

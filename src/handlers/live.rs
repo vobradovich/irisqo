@@ -1,10 +1,10 @@
 use crate::{db, models::AppState};
-use axum::{extract::State, http::StatusCode, response::IntoResponse, Router, routing::get};
+use axum::{extract::State, http::StatusCode, response::IntoResponse, routing::get, Router};
 use problemdetails::Problem;
 use std::sync::Arc;
 
 pub fn routes(state: Arc<AppState>) -> Router {
-	Router::new()
+    Router::new()
         .route("/", get(root))
         .route("/live", get(live))
         .route("/ready", get(ready))
