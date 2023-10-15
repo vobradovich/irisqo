@@ -1,6 +1,6 @@
 use crate::{
     db,
-    models::{AppState, Error, HttpMeta, JobCreate, JobMeta, JobRetry},
+    models::{AppState, Error, HttpMeta, JobCreate, JobMeta, JobRetry, JobSchedule},
 };
 use axum::{
     body::Bytes,
@@ -47,6 +47,8 @@ async fn job_create(
     let mut at: Option<u64> = None;
     let mut timeout: u32 = state.worker_options.timeout;
     let mut retry: JobRetry = JobRetry::None;
+    let mut schedule: Option<JobSchedule> = None;
+    let mut until: Option<u64> = None;
 
     let _span = tracing::span::Span::current();
     // let trace_id = axum_tracing_opentelemetry::find_current_trace_id();
@@ -66,7 +68,7 @@ async fn job_create(
                 at = delay.map(|t| now_secs + u64::from(t));
                 continue;
             }
-            if key == "_delay_until" || key == "_until" {
+            if key == "_delay_until" {
                 at = value
                     .parse::<u64>()
                     .ok()
@@ -80,6 +82,14 @@ async fn job_create(
             }
             if key == "_retry" {
                 retry = value.parse()?;
+                continue;
+            }
+            if key == "_interval" || key == "_cron" {
+                schedule = Some(value.parse()?);
+                continue;
+            }
+            if key == "_until" {
+                until = value.parse::<u64>().ok();
                 continue;
             }
             if value.is_empty() {
@@ -121,6 +131,8 @@ async fn job_create(
         headers: Some(header_hashmap),
         body,
         at,
+        schedule,
+        until,
     };
 
     debug!("{:?}", serde_json::to_string(&job_create.meta));

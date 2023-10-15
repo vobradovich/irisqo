@@ -12,13 +12,16 @@ CREATE TABLE IF NOT EXISTS jobs (
 	protocol varchar(16) NOT NULL,
 	meta jsonb NOT NULL,
 	headers jsonb NULL,
-	body BYTEA NULL
+	body BYTEA NULL,
+	schedule_id varchar(64) NULL,
+	CONSTRAINT fk_schedules_id FOREIGN KEY (schedule_id) REFERENCES schedules (schedule_id) MATCH SIMPLE ON UPDATE NO ACTION ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS scheduled (
 	id bigint NOT NULL,
 	at bigint NOT NULL,
 	retry int NOT NULL DEFAULT 0,
+	is_retried bool NOT NULL GENERATED ALWAYS AS (retry > 0) STORED,
 	
 	CONSTRAINT pk_scheduled PRIMARY KEY (id),
 	CONSTRAINT fk_jobs_id FOREIGN KEY (id)
@@ -58,7 +61,15 @@ CREATE TABLE IF NOT EXISTS processed (
         ON DELETE CASCADE
 );
 
-CREATE TYPE history_status AS ENUM ('scheduled', 'enqueued', 'assigned', 'retried', 'completed', 'failed', 'cancelled');
+CREATE TYPE history_status AS ENUM (
+	'scheduled',
+	'enqueued',
+	'assigned',
+	'retried',
+	'completed',
+	'failed',
+	'cancelled'
+);
 
 CREATE TABLE IF NOT EXISTS history (
 	id bigint NOT NULL,
@@ -66,13 +77,37 @@ CREATE TABLE IF NOT EXISTS history (
 	status history_status NOT NULL,
 	instance_id varchar(64) NOT NULL,
 	at timestamptz NOT NULL DEFAULT NOW(),
-
-	CONSTRAINT fk_jobs_id FOREIGN KEY (id)
-        REFERENCES jobs (id) MATCH SIMPLE
-        ON UPDATE NO ACTION
-        ON DELETE CASCADE
+	CONSTRAINT fk_jobs_id FOREIGN KEY (id) REFERENCES jobs (id) MATCH SIMPLE ON UPDATE NO ACTION ON DELETE CASCADE
 );
 
-CREATE INDEX IF NOT EXISTS ix_enqueued_retry_id
-    ON enqueued USING btree (retry ASC NULLS LAST, id ASC NULLS LAST)
-    WHERE lock_at IS NULL;
+CREATE TABLE IF NOT EXISTS schedules (
+	schedule_id varchar(64) PRIMARY KEY,
+	schedule varchar(1024) NOT NULL,
+	until bigint NULL,
+	last_id bigint NULL,
+	last_at bigint NULL,
+	next_id bigint NULL,
+	next_at bigint NULL,
+	inactive boolean NOT NULL DEFAULT FALSE,
+);
+
+CREATE INDEX IF NOT EXISTS ix_enqueued_retry_id ON enqueued
+	USING btree (retry ASC NULLS LAST, id ASC NULLS LAST)
+	WHERE lock_at IS NULL;
+
+
+-- select 'retried' as name, count(*) as count from public.scheduled where is_retried
+-- union all
+-- select 'scheduled' as name, count(*) as count from public.scheduled where not is_retried
+-- union all
+-- select 'enqueued' as name, count(*) as count from public.enqueued where lock_at is null
+-- union all
+-- select 'processing' as name, count(*) as count from public.enqueued where lock_at is not null
+-- union all 
+-- select status::text as name, count(*) as count from public.processed group by status;
+
+select (CASE is_retried WHEN TRUE THEN 'retried'::history_status ELSE 'scheduled'::history_status END) as name, count(*) as count from public.scheduled group by is_retried
+union all
+select (CASE lock_at is null WHEN TRUE THEN 'enqueued'::history_status ELSE 'assigned'::history_status END) as name, count(*) as count from public.enqueued group by lock_at is null
+union all
+select status::text::history_status as name, count(*) as count from public.processed group by status;

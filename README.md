@@ -10,5 +10,5 @@
 - [x] Scalability
 - [x] Retries and Delays
 - [ ] OpenTelemetry Tracing
-- [ ] Schedule, Intervals, and Cron
+- [ ] Schedules, Intervals, and Cron
 - [ ] UI

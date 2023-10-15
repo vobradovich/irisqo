@@ -43,8 +43,8 @@ impl SchedulerService {
                 _ = self.app_state.shutdown_token.cancelled() => {}
             );
         }
-        info!({ instance_id = self.app_state.instance_id }, "stop");
         db::instances::kill(&self.app_state.pool, &self.app_state.instance_id).await?;
+        info!({ instance_id = self.app_state.instance_id }, "stop");
         Ok(())
     }
 

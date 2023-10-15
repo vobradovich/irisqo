@@ -8,7 +8,7 @@ use hyper::{header, Method, Uri};
 use serde::{Deserialize, Serialize};
 use sqlx::types::Json;
 
-use super::{Error, JobRetry};
+use super::{Error, JobRetry, JobSchedule};
 
 #[derive(Debug, Clone, sqlx::FromRow, Serialize)]
 pub struct JobRow {
@@ -19,18 +19,11 @@ pub struct JobRow {
     pub body: Option<Vec<u8>>,
 }
 
-#[derive(Debug, sqlx::FromRow)]
-pub struct JobQueueRow {
-    pub id: i64,
-    pub retry: i32,
-}
-
 #[derive(Debug, Clone, Copy, sqlx::FromRow)]
 pub struct JobEntry {
     pub id: i64,
     pub retry: i32,
 }
-
 
 #[derive(Debug, Clone, Default)]
 pub struct JobCreate {
@@ -38,6 +31,8 @@ pub struct JobCreate {
     pub headers: Option<HashMap<String, String>>,
     pub body: Bytes,
     pub at: Option<u64>,
+    pub schedule: Option<JobSchedule>,
+    pub until: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -64,9 +59,8 @@ pub enum JobProtocol {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-#[serde(tag = "schedule")]
 #[serde(rename_all = "snake_case")]
-pub enum JobSchedule {
+pub enum JobDelay {
     #[default]
     None,
     Delay {
