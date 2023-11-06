@@ -21,7 +21,7 @@ pub async fn enqueue(pool: &Pool<Postgres>, job: JobCreate) -> Result<i64, Error
     };
     let protocol = match &meta.protocol {
         JobProtocol::Http(_) => "http",
-        _ => "null",
+        _ => "none",
     };
 
     let job_id = match job.at {
@@ -31,7 +31,7 @@ pub async fn enqueue(pool: &Pool<Postgres>, job: JobCreate) -> Result<i64, Error
                 .bind(Json(meta))
                 .bind(Json(headers))
                 .bind(body)
-                .bind(i64::try_from(at).unwrap())
+                .bind(at)
                 .fetch_one(pool)
                 .await?
         }
@@ -123,14 +123,14 @@ pub async fn unlock(pool: &Pool<Postgres>, job_id: i64) -> Result<u64, Error> {
     Ok(res.rows_affected())
 }
 
-pub async fn retry(pool: &Pool<Postgres>, job_id: i64, at: u64) -> Result<u64, Error> {
+pub async fn retry(pool: &Pool<Postgres>, job_id: i64, at: i64) -> Result<u64, Error> {
     const SQL: &str = "WITH a AS (
         DELETE FROM enqueued WHERE id = $1 RETURNING id, retry, instance_id
     )
     INSERT INTO scheduled SELECT id, $2 as at, (retry + 1) as retry FROM a RETURNING id";
     let res = sqlx::query(SQL)
         .bind(job_id)
-        .bind(i64::try_from(at).unwrap())
+        .bind(at)
         .execute(pool)
         .await?;
     Ok(res.rows_affected())

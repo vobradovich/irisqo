@@ -1,3 +1,4 @@
+use clap::Parser;
 use dotenv::dotenv;
 use hyper::{client::HttpConnector, Body, Client};
 use hyper_tls::HttpsConnector;
@@ -8,9 +9,18 @@ use sqlx::{
 use std::{str::FromStr, sync::Arc, time::Duration};
 use tokio_util::sync::CancellationToken;
 
+#[derive(Parser, Default, Debug)]
+pub struct Args {
+    #[arg(short = 'p')]
+    port: Option<u16>,
+    #[arg(short = 'w')]
+    workers: Option<usize>,
+}
+
 //type DbPool = Pool<Postgres>;
 #[derive(Debug)]
 pub struct AppState {
+    pub port: u16,
     pub instance_id: String,
     pub pool: Pool<Postgres>,
     pub client: Client<HttpsConnector<HttpConnector>, Body>,
@@ -36,6 +46,7 @@ pub struct WorkerOptions {
 impl AppState {
     #[must_use]
     pub async fn new() -> Arc<AppState> {
+        let args = Args::parse();
         dotenv().ok();
         let hostname = whoami::hostname();
         let instance_id = format!("{}:{}", hostname, ulid::Ulid::new());
@@ -52,6 +63,7 @@ impl AppState {
 
         let https = hyper_tls::HttpsConnector::new();
         let state = AppState {
+            port: args.port.unwrap_or(8102),
             instance_id,
             pool,
             client: hyper::Client::builder().build::<_, hyper::Body>(https),
@@ -60,7 +72,7 @@ impl AppState {
                 prefetch: 1000,
             }),
             worker_options: WorkerOptions {
-                workers_count: Some(4),
+                workers_count: Some(args.workers.unwrap_or(4)),
                 poll_interval: Duration::from_millis(1000),
                 prefetch: 10,
                 timeout: 3000,

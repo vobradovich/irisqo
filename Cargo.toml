@@ -11,7 +11,7 @@ license = "MIT"
 tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7" }
 futures = "0.3"
-async-channel = "1.9"
+async-channel = "2.1.0"
 # JSON libs
 serde = "1.0"
 serde_json = "1.0"
@@ -42,6 +42,8 @@ opentelemetry-stdout = { version = "*", features = ["metrics", "trace"] }
 tracing = { version = "0.1.37" }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-opentelemetry = { version = "0.21" }
+clap = { version = "4.4", features = ["derive"] }
+
 # DB
 sqlx = { version = "0.7", features = [
     "runtime-tokio-native-tls",

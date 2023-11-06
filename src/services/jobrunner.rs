@@ -2,12 +2,12 @@ use crate::{
     db,
     models::{
         AppState, Error, HttpResponseMeta, JobEntry, JobMeta, JobProtocol, JobResult,
-        JobResultMeta, JobResultType, JobRow,
+        JobResultMeta, JobResultType, JobRow, JobSchedule,
     },
 };
 use std::{
     collections::HashMap,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 use tokio::time;
 #[allow(unused_imports)]
@@ -120,10 +120,7 @@ async fn retry_or_fail(
 ) -> Result<(), Error> {
     let JobEntry { id: job_id, retry } = entry;
     let retry: u16 = retry.try_into().unwrap_or(0);
-    let now_secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_secs();
+    let now_secs = JobSchedule::now_secs();
     match meta.retry.next_retry_in(retry) {
         None => {
             db::jobqueue::fail(&app_state.pool, job_id, job_result).await?;
@@ -132,7 +129,7 @@ async fn retry_or_fail(
             db::jobqueue::unlock(&app_state.pool, job_id).await?;
         }
         Some(delay) => {
-            let at = now_secs + u64::from(delay);
+            let at = now_secs + i64::from(delay);
             db::jobqueue::retry(&app_state.pool, job_id, at).await?;
         }
     }

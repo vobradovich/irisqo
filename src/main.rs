@@ -32,7 +32,7 @@ async fn main() {
         .with(tracing_opentelemetry::layer().with_tracer(tracer))
         .with(tracing_subscriber::fmt::layer())
         .init();
-
+    
     let state = AppState::new().await;
     tokio::join!(
         start_http_server(&state),
@@ -44,7 +44,7 @@ async fn main() {
 }
 
 async fn start_http_server(state: &Arc<AppState>) {
-    let addr = SocketAddr::from(([0, 0, 0, 0], 8102));
+    let addr = SocketAddr::from(([0, 0, 0, 0], state.port));
     let app = Router::new()
         .merge(handlers::http::routes(Arc::clone(state)))
         .merge(handlers::live::routes(Arc::clone(state)))

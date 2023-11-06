@@ -1,6 +1,7 @@
 use std::{fmt::Display, str::FromStr};
 
 use super::Error;
+use chrono::{TimeZone, Utc};
 use cron::Schedule;
 use serde::{Deserialize, Serialize};
 
@@ -12,6 +13,27 @@ pub enum JobSchedule {
     Interval { interval: u32 },
     /// Cron string
     Cron { cron: String },
+}
+
+impl JobSchedule {
+    pub fn now_secs() -> i64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+    }
+    
+    pub fn next(&self, after_unix_sec: i64) -> Option<i64> {
+        let dt = Utc.timestamp_opt(after_unix_sec, 0).unwrap();
+        match &self {
+            JobSchedule::Interval { interval } => Some(after_unix_sec - (after_unix_sec % *interval as i64) + *interval as i64),
+            JobSchedule::Cron { cron } => Schedule::from_str(&cron)
+                .unwrap()
+                .after(&dt)
+                .map(|dt| dt.timestamp())
+                .next(),
+        }
+    }
 }
 
 impl Default for JobSchedule {
@@ -102,6 +124,23 @@ async fn schedule_from_str_interval() -> anyhow::Result<()> {
 }
 
 #[tokio::test]
+async fn schedule_from_str_interval_after() -> anyhow::Result<()> {
+    // arrange
+    let s = "300";
+    let now_secs = JobSchedule::now_secs();
+    let now_sec_to_5_min: i64 = now_secs - (now_secs % 300);
+
+    // act
+    let schedule: JobSchedule = s.parse().unwrap();
+    let next = schedule.next(now_secs);
+
+    // assert
+    assert!(next.is_some());
+    assert_eq!(now_sec_to_5_min + 300, next.unwrap());
+    Ok(())
+}
+
+#[tokio::test]
 async fn schedule_from_str_cron() -> anyhow::Result<()> {
     // arrange
     let s = "*/5 * * * *";
@@ -118,5 +157,23 @@ async fn schedule_from_str_cron() -> anyhow::Result<()> {
         ss
     );
     assert_eq!("0 */5 * * * *", ss.to_string());
+    Ok(())
+}
+
+#[tokio::test]
+async fn schedule_from_str_cron_after() -> anyhow::Result<()> {
+    // arrange
+    let s = "*/5 * * * *";
+    let now_secs = JobSchedule::now_secs();
+
+    let now_sec_to_5_min: i64 = now_secs - (now_secs % 300);
+
+    // act
+    let schedule: JobSchedule = s.parse().unwrap();
+    let next = schedule.next(now_secs);
+
+    // assert
+    assert!(next.is_some());
+    assert_eq!(now_sec_to_5_min + 300, next.unwrap());
     Ok(())
 }

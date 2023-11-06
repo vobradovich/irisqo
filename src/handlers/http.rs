@@ -13,11 +13,7 @@ use axum::{
 use hyper::{Method, Uri};
 use problemdetails::Problem;
 
-use std::{
-    collections::HashMap,
-    sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::{collections::HashMap, sync::Arc};
 #[allow(unused_imports)]
 use tracing::{debug, error, info, warn};
 use url::{form_urlencoded, Url};
@@ -44,11 +40,11 @@ async fn job_create(
     body: Bytes,
 ) -> Result<impl IntoResponse, Problem> {
     let mut delay: Option<u32> = None;
-    let mut at: Option<u64> = None;
+    let mut at: Option<i64> = None;
     let mut timeout: u32 = state.worker_options.timeout;
     let mut retry: JobRetry = JobRetry::None;
     let mut schedule: Option<JobSchedule> = None;
-    let mut until: Option<u64> = None;
+    let mut until: Option<i64> = None;
 
     let _span = tracing::span::Span::current();
     // let trace_id = axum_tracing_opentelemetry::find_current_trace_id();
@@ -58,21 +54,18 @@ async fn job_create(
     let mut parsed_url = Url::parse(&url).map_err(|_| Error::InvalidUrl)?;
     if let Some(qs) = query {
         let params = form_urlencoded::parse(qs.as_bytes());
-        let now_secs = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
+        let now_secs = JobSchedule::now_secs();
         for (key, value) in params {
             if key == "_delay" {
                 delay = value.parse::<u32>().ok();
-                at = delay.map(|t| now_secs + u64::from(t));
+                at = delay.map(|t| now_secs + i64::from(t));
                 continue;
             }
             if key == "_delay_until" {
                 at = value
-                    .parse::<u64>()
+                    .parse::<i64>()
                     .ok()
-                    .filter(|&t| t > now_secs && i64::try_from(t).is_ok());
+                    .filter(|&t| t > now_secs);
                 delay = at.and_then(|t| (t - now_secs).try_into().ok());
                 continue;
             }
@@ -89,7 +82,7 @@ async fn job_create(
                 continue;
             }
             if key == "_until" {
-                until = value.parse::<u64>().ok();
+                until = value.parse::<i64>().ok();
                 continue;
             }
             if value.is_empty() {

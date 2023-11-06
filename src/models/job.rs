@@ -30,9 +30,9 @@ pub struct JobCreate {
     pub meta: JobMeta,
     pub headers: Option<HashMap<String, String>>,
     pub body: Bytes,
-    pub at: Option<u64>,
+    pub at: Option<i64>,
     pub schedule: Option<JobSchedule>,
-    pub until: Option<u64>,
+    pub until: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -111,7 +111,7 @@ async fn job_row_into_request_err() -> anyhow::Result<()> {
     // arrange
     let job_entry = JobRow {
         id: 0,
-        protocol: "null".into(),
+        protocol: "none".into(),
         meta: Json(JobMeta::default()),
         headers: None,
         body: None,
