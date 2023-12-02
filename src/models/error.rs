@@ -27,6 +27,9 @@ pub enum Error {
     #[error(transparent)]
     HyperError(#[from] hyper::Error),
 
+    #[error(transparent)]
+    HyperClientError(#[from] hyper_util::client::legacy::Error),
+
     #[error("Invalid Url")]
     InvalidUrl,
 

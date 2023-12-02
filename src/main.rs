@@ -3,11 +3,13 @@ use std::sync::Arc;
 
 use axum::Router;
 use models::AppState;
-use opentelemetry::trace::TracerProvider;
+use opentelemetry::trace::TracerProvider as _;
+use opentelemetry_sdk::trace::TracerProvider;
+use opentelemetry_stdout as stdout;
+use tokio::net::TcpListener;
 use tokio::signal;
 use tower_http::trace::TraceLayer;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod db;
 mod handlers;
@@ -17,8 +19,8 @@ mod services;
 #[tokio::main]
 async fn main() {
     // Create a new OpenTelemetry trace pipeline that prints to stdout
-    let provider = opentelemetry::sdk::trace::TracerProvider::builder()
-        .with_simple_exporter(opentelemetry_stdout::SpanExporter::default())
+    let provider = TracerProvider::builder()
+        .with_simple_exporter(stdout::SpanExporter::default())
         .build();
 
     let tracer = provider.tracer("irisqo");
@@ -32,19 +34,20 @@ async fn main() {
         .with(tracing_opentelemetry::layer().with_tracer(tracer))
         .with(tracing_subscriber::fmt::layer())
         .init();
-    
+
     let state = AppState::new().await;
     tokio::join!(
         start_http_server(&state),
         start_scheduler_service(&state),
-        start_jobs_service(&state)
+        start_jobs_service(&state),
+        shutdown_signal(&state),
     );
 
-    println!("->> SHUTDOWN")
+    eprintln!("->> SHUTDOWN")
 }
 
 async fn start_http_server(state: &Arc<AppState>) {
-    let addr = SocketAddr::from(([0, 0, 0, 0], state.port));
+    let addr: SocketAddr = SocketAddr::from(([0, 0, 0, 0], state.port));
     let app = Router::new()
         .merge(handlers::http::routes(Arc::clone(state)))
         .merge(handlers::live::routes(Arc::clone(state)))
@@ -53,11 +56,9 @@ async fn start_http_server(state: &Arc<AppState>) {
         .nest("/api/v1", handlers::schedules::routes(Arc::clone(state)))
         .layer(TraceLayer::new_for_http());
 
-    axum::Server::bind(&addr)
-        .serve(app.into_make_service())
-        .with_graceful_shutdown(shutdown_signal(Arc::clone(state)))
-        .await
-        .unwrap();
+    let listener = TcpListener::bind(addr).await.unwrap();
+    tracing::info!("listen {:?}", addr);
+    axum::serve(listener, app.into_make_service()).await.expect("Failed to run Http");
 }
 
 async fn start_scheduler_service(state: &Arc<AppState>) {
@@ -72,7 +73,7 @@ async fn start_jobs_service(state: &Arc<AppState>) {
     service.run().await.expect("Failed to run JobService");
 }
 
-async fn shutdown_signal(state: Arc<AppState>) {
+async fn shutdown_signal(state: &Arc<AppState>) {
     let ctrl_c = async {
         signal::ctrl_c()
             .await

@@ -1,6 +1,9 @@
+use bytes::Bytes;
+use http_body_util::Full;
 use clap::Parser;
 use dotenv::dotenv;
-use hyper::{client::HttpConnector, Body, Client};
+use hyper_util::client::legacy::{Client, connect::HttpConnector};
+use hyper_util::rt::TokioExecutor;
 use hyper_tls::HttpsConnector;
 use sqlx::{
     postgres::{PgConnectOptions, PgPoolOptions},
@@ -23,7 +26,7 @@ pub struct AppState {
     pub port: u16,
     pub instance_id: String,
     pub pool: Pool<Postgres>,
-    pub client: Client<HttpsConnector<HttpConnector>, Body>,
+    pub client: Client<HttpsConnector<HttpConnector>, Full<Bytes>>,
     pub scheduler_options: Option<SchedulerOptions>,
     pub worker_options: WorkerOptions,
     pub shutdown_token: CancellationToken,
@@ -66,7 +69,7 @@ impl AppState {
             port: args.port.unwrap_or(8102),
             instance_id,
             pool,
-            client: hyper::Client::builder().build::<_, hyper::Body>(https),
+            client: Client::builder(TokioExecutor::new()).build::<_, Full<Bytes>>(https),
             scheduler_options: Some(SchedulerOptions {
                 poll_interval: Duration::from_millis(5000),
                 prefetch: 1000,

@@ -12,6 +12,8 @@ use std::{
 use tokio::time;
 #[allow(unused_imports)]
 use tracing::{debug, error, info, warn};
+use bytes::Bytes;
+use http_body_util::Full;
 
 pub async fn job_run(app_state: &AppState, entry: JobEntry) {
     let res = job_run_with_error(app_state, entry).await;
@@ -46,7 +48,7 @@ async fn job_run_with_error(app_state: &AppState, entry: JobEntry) -> Result<(),
 async fn job_run_http(app_state: &AppState, job: JobRow) -> Result<JobResult, Error> {
     let job_id = job.id;
     let timeout_ms = job.meta.timeout;
-    let req = hyper::Request::<hyper::Body>::try_from(job)?;
+    let req = hyper::Request::<Full<Bytes>>::try_from(job)?;
     let future = app_state.client.request(req);
     // first '?' - timeout
     // second '?' - HyperError
@@ -63,7 +65,8 @@ async fn job_run_http(app_state: &AppState, job: JobRow) -> Result<JobResult, Er
         }
     }
     // Body
-    let bytes = hyper::body::to_bytes(response.into_body()).await?;
+    let collected = http_body_util::BodyExt::collect(response.into_body()).await?;
+    let bytes = collected.to_bytes();
     // Result
     let job_result = JobResult {
         meta: JobResultMeta {

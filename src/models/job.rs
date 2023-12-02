@@ -1,6 +1,7 @@
 use std::{collections::HashMap, time::SystemTime};
 
-use axum::body::Bytes;
+use bytes::Bytes;
+use http_body_util::Full;
 use hyper::HeaderMap;
 #[cfg(test)]
 use hyper::{header, Method, Uri};
@@ -79,7 +80,7 @@ pub struct HttpMeta {
     pub url: hyper::Uri,
 }
 
-impl TryFrom<JobRow> for hyper::Request<hyper::Body> {
+impl TryFrom<JobRow> for hyper::Request<Full<Bytes>> {
     type Error = Error;
 
     fn try_from(value: JobRow) -> Result<Self, Self::Error> {
@@ -87,10 +88,8 @@ impl TryFrom<JobRow> for hyper::Request<hyper::Body> {
         let JobProtocol::Http(meta) = meta.protocol else {
             return Err(Error::InvalidUrl);
         };
-        let body = match value.body {
-            Some(v) => hyper::Body::from(v),
-            None => hyper::Body::empty(),
-        };
+
+        let body: Bytes = value.body.map_or(Bytes::new(), |b| Bytes::from(b));
         let mut req = hyper::Request::builder().method(meta.method).uri(meta.url);
         if let Some(headers) = value.headers {
             let headers = headers.as_ref();
@@ -102,7 +101,7 @@ impl TryFrom<JobRow> for hyper::Request<hyper::Body> {
                 }
             }
         };
-        Ok(req.body(body)?)
+        Ok(req.body(Full::from(body))?)
     }
 }
 
@@ -117,7 +116,7 @@ async fn job_row_into_request_err() -> anyhow::Result<()> {
         body: None,
     };
     // act
-    let req = hyper::Request::<hyper::Body>::try_from(job_entry);
+    let req = hyper::Request::<Full<Bytes>>::try_from(job_entry);
 
     // assert
     assert!(req.is_err());
@@ -150,7 +149,7 @@ async fn job_row_into_request_ok() -> anyhow::Result<()> {
         body: None,
     };
     // act
-    let req = hyper::Request::<hyper::Body>::try_from(job_entry);
+    let req = hyper::Request::<Full<Bytes>>::try_from(job_entry);
 
     // assert
     assert!(req.is_ok());
