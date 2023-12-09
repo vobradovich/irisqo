@@ -5,7 +5,6 @@ use bytes::Bytes;
 
 use hyper::{HeaderMap, StatusCode};
 use serde::{Deserialize, Serialize};
-use sqlx::types::Json;
 
 use super::Error;
 
@@ -15,15 +14,25 @@ pub struct JobResult {
     pub headers: Option<HashMap<String, String>>,
     pub body: Bytes,
 }
-type VecU8 = Vec<u8>;
 
-#[derive(Debug, Clone, sqlx::FromRow)]
+#[derive(sqlx::FromRow)]
 pub struct JobResultRow {
     pub id: i64,
-    pub meta: Json<JobResultMeta>,
-    pub headers: Option<Json<HashMap<String, String>>>,
-    #[sqlx(try_from = "VecU8")]
-    pub body: Bytes,
+    #[sqlx(json)]
+    pub meta: JobResultMeta,
+    #[sqlx(json)]
+    pub headers: Option<HashMap<String, String>>,
+    pub body: Option<Vec<u8>>,
+}
+
+impl From<JobResultRow> for JobResult {
+    fn from(value: JobResultRow) -> Self {
+        JobResult {
+            meta: value.meta,
+            headers: value.headers,
+            body: value.body.map_or(Bytes::new(), |v| Bytes::from(v)),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]

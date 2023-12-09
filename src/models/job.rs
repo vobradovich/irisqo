@@ -7,7 +7,6 @@ use hyper::HeaderMap;
 use hyper::{header, Method, Uri};
 
 use serde::{Deserialize, Serialize};
-use sqlx::types::Json;
 
 use super::{Error, JobRetry, JobSchedule};
 
@@ -15,8 +14,10 @@ use super::{Error, JobRetry, JobSchedule};
 pub struct JobRow {
     pub id: i64,
     pub protocol: String,
-    pub meta: Json<JobMeta>,
-    pub headers: Option<Json<HashMap<String, String>>>,
+    #[sqlx(json)]
+    pub meta: JobMeta,
+    #[sqlx(json)]
+    pub headers: Option<HashMap<String, String>>,
     pub body: Option<Vec<u8>>,
 }
 
@@ -84,7 +85,7 @@ impl TryFrom<JobRow> for hyper::Request<Full<Bytes>> {
     type Error = Error;
 
     fn try_from(value: JobRow) -> Result<Self, Self::Error> {
-        let meta = value.meta.0;
+        let meta = value.meta;
         let JobProtocol::Http(meta) = meta.protocol else {
             return Err(Error::InvalidUrl);
         };
@@ -92,8 +93,7 @@ impl TryFrom<JobRow> for hyper::Request<Full<Bytes>> {
         let body: Bytes = value.body.map_or(Bytes::new(), |b| Bytes::from(b));
         let mut req = hyper::Request::builder().method(meta.method).uri(meta.url);
         if let Some(headers) = value.headers {
-            let headers = headers.as_ref();
-            let map = HeaderMap::try_from(headers)?;
+            let map = HeaderMap::try_from(&headers)?;
             let headers_mut = req.headers_mut().unwrap();
             for (key, value) in map {
                 if let Some(key) = key {
@@ -111,7 +111,7 @@ async fn job_row_into_request_err() -> anyhow::Result<()> {
     let job_entry = JobRow {
         id: 0,
         protocol: "none".into(),
-        meta: Json(JobMeta::default()),
+        meta: JobMeta::default(),
         headers: None,
         body: None,
     };
@@ -130,7 +130,7 @@ async fn job_row_into_request_ok() -> anyhow::Result<()> {
     let job_entry = JobRow {
         id: 0,
         protocol: "http".into(),
-        meta: Json(JobMeta {
+        meta: JobMeta {
             protocol: JobProtocol::Http(HttpMeta {
                 method: Method::GET,
                 url: Uri::try_from("http://localhost").unwrap(),
@@ -141,11 +141,11 @@ async fn job_row_into_request_ok() -> anyhow::Result<()> {
             },
             delay: Some(300),
             timeout: 2000,
-        }),
-        headers: Some(Json(HashMap::from([(
+        },
+        headers: Some(HashMap::from([(
             header::CONTENT_LENGTH.to_string(),
             "123".into(),
-        )]))),
+        )])),
         body: None,
     };
     // act

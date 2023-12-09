@@ -25,11 +25,7 @@ async fn result_by_id(
 ) -> Result<Response, Problem> {
     let job_result = db::results::get_by_id(&state.pool, id)
         .await?
-        .map(|res| JobResult {
-            meta: res.meta.0,
-            headers: res.headers.map(|j| j.0),
-            body: res.body,
-        });
+        .map(JobResult::from);
     match job_result {
         None => Ok(StatusCode::NO_CONTENT.into_response()),
         Some(o) => Ok(Json(o).into_response()),
@@ -42,11 +38,7 @@ async fn result_by_id_raw(
 ) -> Result<Response, Problem> {
     let job_result = db::results::get_by_id(&state.pool, id)
         .await?
-        .map(|res| JobResult {
-            meta: res.meta.0,
-            headers: res.headers.map(|j| j.0),
-            body: res.body,
-        });
+        .map(JobResult::from);
     match job_result {
         None => Ok(StatusCode::NO_CONTENT.into_response()),
         Some(o) => Ok(o.into_response()),

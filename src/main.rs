@@ -28,7 +28,7 @@ async fn main() {
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-                "irisqo=debug,tower_http=debug,axum_tracing_opentelemetry=debug,otel=debug".into()
+                "irisqo=debug,tower_http=info,otel=debug".into()
             }),
         )
         .with(tracing_opentelemetry::layer().with_tracer(tracer))

@@ -1,0 +1,20 @@
+@host=http://localhost:8102
+
+###
+GET {{host}}
+
+###
+# @name getJob
+GET {{host}}/to/{{host}}
+
+###
+@job-id = {{getJob.response.headers.job-id}}
+
+###
+GET {{host}}/api/v1/jobs/{{job-id}}
+
+###
+GET {{host}}/api/v1/results/{{job-id}}
+
+###
+GET {{host}}/api/v1/results/{{job-id}}/raw
