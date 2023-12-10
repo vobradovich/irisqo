@@ -34,7 +34,7 @@ async fn job_run_with_error(app_state: &AppState, entry: JobEntry) -> Result<(),
     };
     match job_result {
         Ok(result) => {
-            crate::features::results::complete(&app_state.pool, job_id, result).await?;
+            results::complete(&app_state.pool, job_id, result).await?;
         }
         Err(err) => {
             on_error(app_state, entry, meta, err).await?;

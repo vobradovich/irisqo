@@ -5,7 +5,7 @@ GET {{host}}
 
 ###
 # @name getJob
-GET {{host}}/to/{{host}}
+GET {{host}}/to/{{host}}?_interval=60
 
 ###
 @job-id = {{getJob.response.headers.job-id}}

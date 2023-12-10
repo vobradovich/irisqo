@@ -4,7 +4,7 @@ use crate::models::{JobCreate, JobProtocol, JobRow};
 use futures::stream::BoxStream;
 use sqlx::{types::Json, Pool, Postgres};
 
-pub async fn enqueue(pool: &Pool<Postgres>, job: JobCreate) -> Result<i64, Error> {
+pub async fn enqueue(pool: &Pool<Postgres>, job: JobCreate) -> Result<(i64, Option<String>), Error> {
     const SQL_ENQUEUE: &str = "WITH a AS (
         INSERT INTO jobs(protocol, meta, headers, body) VALUES ($1, $2, $3, $4) RETURNING id
     )
@@ -15,13 +15,13 @@ pub async fn enqueue(pool: &Pool<Postgres>, job: JobCreate) -> Result<i64, Error
     INSERT INTO scheduled SELECT id, $5 as at FROM a RETURNING id";
 
     const SQL_SCHEDULE_S: &str = "
-    WITH b AS (
-        WITH a AS (
-            INSERT INTO jobs(protocol, meta, headers, body) VALUES ($1, $2, $3, $4) RETURNING id
-        )
-        INSERT INTO scheduled SELECT id, $5 as at FROM a RETURNING id
-    )
-    INSERT INTO schedules($6, $7, NULL, NULL, NULL, id, $5, FALSE)";
+    WITH a AS (
+        INSERT INTO jobs(protocol, meta, headers, body, schedule_id) VALUES ($1, $2, $3, $4, $6) RETURNING id
+    ), b AS (
+        INSERT INTO schedules SELECT $6 as schedule_id, $7 as schedule, id as next_id, $5 as next_at FROM a RETURNING next_id
+    ) 
+    INSERT INTO scheduled SELECT id, $5 as at FROM a RETURNING id
+    ";
 
 
     let meta = job.meta;
@@ -35,7 +35,7 @@ pub async fn enqueue(pool: &Pool<Postgres>, job: JobCreate) -> Result<i64, Error
         _ => "none",
     };
     if let Some(schedule) = job.schedule {
-        let schedule_id = ulid::Ulid::new();
+        let schedule_id = ulid::Ulid::new().to_string();
         let at = schedule.next(JobSchedule::now_secs());
         if let None = at {
             return  Err(Error::InvalidParams("schedule"));
@@ -47,11 +47,11 @@ pub async fn enqueue(pool: &Pool<Postgres>, job: JobCreate) -> Result<i64, Error
             .bind(Json(headers))
             .bind(body)
             .bind(at)
-            .bind(schedule_id.to_string())
+            .bind(&schedule_id)
             .bind(schedule.to_string())
             .fetch_one(pool)
             .await?;
-        return Ok(job_id);
+        return Ok((job_id, Some(schedule_id)));
     }
 
     let job_id = match job.at {
@@ -75,7 +75,7 @@ pub async fn enqueue(pool: &Pool<Postgres>, job: JobCreate) -> Result<i64, Error
                 .await?
         }
     };
-    Ok(job_id)
+    Ok((job_id, None))
 }
 
 pub async fn get_by_id(pool: &Pool<Postgres>, job_id: i64) -> Result<Option<JobRow>, Error> {

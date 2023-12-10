@@ -21,6 +21,7 @@ pub struct JobRow {
     #[sqlx(json)]
     pub headers: Option<HashMap<String, String>>,
     pub body: Option<Vec<u8>>,
+    pub schedule_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, sqlx::FromRow)]
@@ -116,6 +117,7 @@ async fn job_row_into_request_err() -> anyhow::Result<()> {
         meta: JobMeta::default(),
         headers: None,
         body: None,
+        schedule_id: None,
     };
     // act
     let req = hyper::Request::<Full<Bytes>>::try_from(job_entry);
@@ -149,6 +151,7 @@ async fn job_row_into_request_ok() -> anyhow::Result<()> {
             "123".into(),
         )])),
         body: None,
+        schedule_id: None,
     };
     // act
     let req = hyper::Request::<Full<Bytes>>::try_from(job_entry);

@@ -57,7 +57,8 @@ impl From<Error> for Problem {
             _ => problemdetails::new(StatusCode::INTERNAL_SERVER_ERROR)
                 // .with_type("https://example.com/probs/out-of-credit")
                 .with_title(StatusCode::INTERNAL_SERVER_ERROR.to_string())
-                .with_detail(item.to_string()),
+                .with_detail(item.to_string())
+                .with_instance(format!("{:?}", item)),
         }
     }
 }

@@ -30,7 +30,7 @@ impl ChannelWorkerService {
         let app_state = &self.app_state;
         info!({ instance_id = app_state.instance_id }, "start");
 
-        let worker_count = app_state.worker_options.workers_count.unwrap_or(0);
+        let worker_count = app_state.worker_options.workers_count;
         if worker_count == 0 {
             debug!({ instance_id = app_state.instance_id, worker_count }, "app_state.worker_options.workers_count equals to 0");
             return Ok(());

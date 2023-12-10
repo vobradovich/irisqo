@@ -35,14 +35,14 @@ pub struct AppState {
 #[derive(Debug)]
 pub struct SchedulerOptions {
     pub poll_interval: Duration,
-    pub prefetch: i32,
+    pub prefetch: u16,
 }
 
 #[derive(Debug)]
 pub struct WorkerOptions {
-    pub workers_count: Option<usize>,
+    pub workers_count: usize,
     pub poll_interval: Duration,
-    pub prefetch: i32,
+    pub prefetch: u16,
     pub timeout: u32,
 }
 
@@ -75,7 +75,7 @@ impl AppState {
                 prefetch: 1000,
             }),
             worker_options: WorkerOptions {
-                workers_count: Some(args.workers.unwrap_or(4)),
+                workers_count: args.workers.unwrap_or(4),
                 poll_interval: Duration::from_millis(1000),
                 prefetch: 10,
                 timeout: 3000,

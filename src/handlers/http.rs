@@ -1,6 +1,7 @@
 use crate::{
     db,
-    models::{AppState, Error, HttpMeta, JobCreate, JobMeta, JobRetry}, features::schedules::JobSchedule,
+    features::schedules::JobSchedule,
+    models::{AppState, Error, HttpMeta, JobCreate, JobMeta, JobRetry},
 };
 use axum::{
     body::Bytes,
@@ -62,10 +63,7 @@ async fn job_create(
                 continue;
             }
             if key == "_delay_until" {
-                at = value
-                    .parse::<i64>()
-                    .ok()
-                    .filter(|&t| t > now_secs);
+                at = value.parse::<i64>().ok().filter(|&t| t > now_secs);
                 delay = at.and_then(|t| (t - now_secs).try_into().ok());
                 continue;
             }
@@ -129,12 +127,15 @@ async fn job_create(
     };
 
     debug!("{:?}", serde_json::to_string(&job_create.meta));
-    let id = db::jobqueue::enqueue(&state.pool, job_create).await?;
+    let (job_id, schedule_id) = db::jobqueue::enqueue(&state.pool, job_create).await?;
     let mut headers = HeaderMap::new();
     headers.insert(
         header::LOCATION,
-        format!("/api/v1/jobs/{}", id).parse().unwrap(),
+        format!("/api/v1/jobs/{}", job_id).parse().unwrap(),
     );
-    headers.insert("job-id", id.into());
+    headers.insert("job-id", job_id.into());
+    if let Some(schedule_id) = schedule_id {
+        headers.insert("schedule-id", schedule_id.parse().unwrap());
+    }
     Ok((StatusCode::CREATED, headers))
 }
