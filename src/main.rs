@@ -1,3 +1,4 @@
+use std::future::IntoFuture;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -6,7 +7,7 @@ use models::AppState;
 use opentelemetry::trace::TracerProvider as _;
 use opentelemetry_sdk::trace::TracerProvider;
 use opentelemetry_stdout as stdout;
-use tokio::net::TcpListener;
+use tokio::{net::TcpListener, select};
 use tokio::signal;
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
@@ -58,7 +59,12 @@ async fn start_http_server(state: &Arc<AppState>) {
 
     let listener = TcpListener::bind(addr).await.unwrap();
     tracing::info!("listen {:?}", addr);
-    axum::serve(listener, app.into_make_service()).await.expect("Failed to run Http");
+    let server = axum::serve(listener, app.into_make_service()).into_future();
+    select! {
+        biased;        
+        _ = state.shutdown_token.cancelled() => {},
+        _ = server => {},
+    }
 }
 
 async fn start_scheduler_service(state: &Arc<AppState>) {

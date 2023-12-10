@@ -57,17 +57,11 @@ impl ChannelWorkerService {
                     let _ = tx.send(entry).await;
                 }
                 Ok(None) => {
-                    select!(
-                        _ = interval.tick() => {},
-                        _ = app_state.shutdown_token.cancelled() => {}
-                    );
+                    wait_tick_or_shutdown(&mut interval, app_state).await;
                 }
                 Err(err) => {
                     error!({ instance_id = app_state.instance_id }, "error {}", err);
-                    select!(
-                        _ = interval.tick() => {},
-                        _ = app_state.shutdown_token.cancelled() => {}
-                    );
+                    wait_tick_or_shutdown(&mut interval, app_state).await;
                 }
             }
         }
@@ -76,6 +70,15 @@ impl ChannelWorkerService {
         info!({ instance_id = app_state.instance_id }, "stop");
         Ok(())
     }
+}
+
+async fn wait_tick_or_shutdown(interval: &mut time::Interval, app_state: &Arc<AppState>) {
+    //_ = time::timeout(app_state.worker_options.poll_interval, app_state.shutdown_token.cancelled()).await;
+    select!(
+        biased;
+        _ = app_state.shutdown_token.cancelled() => {}
+        _ = interval.tick() => {},        
+    );
 }
 
 pub async fn run_worker(app_state: Arc<AppState>, idx: usize, rx: Receiver<JobEntry>) {
