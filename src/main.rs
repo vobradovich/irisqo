@@ -16,6 +16,7 @@ mod db;
 mod handlers;
 mod models;
 mod services;
+mod features;
 
 #[tokio::main]
 async fn main() {
@@ -53,8 +54,8 @@ async fn start_http_server(state: &Arc<AppState>) {
         .merge(handlers::http::routes(Arc::clone(state)))
         .merge(handlers::live::routes(Arc::clone(state)))
         .nest("/api/v1", handlers::jobs::routes(Arc::clone(state)))
-        .nest("/api/v1", handlers::results::routes(Arc::clone(state)))
-        .nest("/api/v1", handlers::schedules::routes(Arc::clone(state)))
+        .nest("/api/v1", features::results::routes(Arc::clone(state)))
+        .nest("/api/v1", features::schedules::routes(Arc::clone(state)))
         .layer(TraceLayer::new_for_http());
 
     let listener = TcpListener::bind(addr).await.unwrap();

@@ -2,7 +2,7 @@ use axum::http::StatusCode;
 use problemdetails::Problem;
 use tokio::time::error::Elapsed;
 
-use super::JobResult;
+use crate::features::results::JobResult;
 
 // region:    Error
 #[derive(thiserror::Error, Debug)]

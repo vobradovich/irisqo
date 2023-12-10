@@ -1,19 +1,17 @@
 use crate::{
     db,
-    models::{
-        AppState, Error, HttpResponseMeta, JobEntry, JobMeta, JobProtocol, JobResult,
-        JobResultMeta, JobResultType, JobRow, JobSchedule,
+    features::{
+        results::{self, JobResult},
+        schedules::JobSchedule,
     },
+    models::{AppState, Error, JobEntry, JobMeta, JobProtocol, JobRow},
 };
-use std::{
-    collections::HashMap,
-    time::Duration,
-};
+use bytes::Bytes;
+use http_body_util::Full;
+use std::{collections::HashMap, time::Duration};
 use tokio::time;
 #[allow(unused_imports)]
 use tracing::{debug, error, info, warn};
-use bytes::Bytes;
-use http_body_util::Full;
 
 pub async fn job_run(app_state: &AppState, entry: JobEntry) {
     let res = job_run_with_error(app_state, entry).await;
@@ -36,7 +34,7 @@ async fn job_run_with_error(app_state: &AppState, entry: JobEntry) -> Result<(),
     };
     match job_result {
         Ok(result) => {
-            db::jobqueue::complete(&app_state.pool, job_id, result).await?;
+            crate::features::results::complete(&app_state.pool, job_id, result).await?;
         }
         Err(err) => {
             on_error(app_state, entry, meta, err).await?;
@@ -68,16 +66,7 @@ async fn job_run_http(app_state: &AppState, job: JobRow) -> Result<JobResult, Er
     let collected = http_body_util::BodyExt::collect(response.into_body()).await?;
     let bytes = collected.to_bytes();
     // Result
-    let job_result = JobResult {
-        meta: JobResultMeta {
-            result: JobResultType::Http(HttpResponseMeta {
-                status_code,
-                version,
-            }),
-        },
-        headers: Some(header_hashmap),
-        body: bytes,
-    };
+    let job_result = JobResult::http(status_code, version, Some(header_hashmap), bytes);
     if status_code.is_server_error() {
         return Err(Error::ServerError(job_result));
     }
@@ -95,21 +84,17 @@ async fn on_error(
 ) -> Result<(), Error> {
     let job_id = entry.id;
     match err {
-        Error::HyperError(_) | Error::Timeout(_) => {
+        Error::HyperError(_) | Error::Timeout(_) | Error::ServerError(_) => {
             info!({ instance_id = app_state.instance_id, job_id }, "====> error {:?}", err);
             retry_or_fail(app_state, entry, meta, err.into()).await?;
         }
-        Error::ServerError(res) => {
-            info!({ instance_id = app_state.instance_id, job_id }, "====> error {:?}", res.meta);
-            retry_or_fail(app_state, entry, meta, res).await?;
-        }
         Error::ClientError(res) => {
             info!({ instance_id = app_state.instance_id, job_id }, "====> error {:?}", res.meta);
-            db::jobqueue::fail(&app_state.pool, job_id, res).await?;
+            results::fail(&app_state.pool, job_id, res).await?;
         }
         _ => {
             error!({ instance_id = app_state.instance_id, job_id }, "====> error {:?}", err);
-            db::jobqueue::fail(&app_state.pool, job_id, err.into()).await?;
+            results::fail(&app_state.pool, job_id, err.into()).await?;
         }
     };
     Ok(())
@@ -123,15 +108,15 @@ async fn retry_or_fail(
 ) -> Result<(), Error> {
     let JobEntry { id: job_id, retry } = entry;
     let retry: u16 = retry.try_into().unwrap_or(0);
-    let now_secs = JobSchedule::now_secs();
     match meta.retry.next_retry_in(retry) {
         None => {
-            db::jobqueue::fail(&app_state.pool, job_id, job_result).await?;
+            results::fail(&app_state.pool, job_id, job_result).await?;
         }
         Some(0) => {
             db::jobqueue::unlock(&app_state.pool, job_id).await?;
         }
         Some(delay) => {
+            let now_secs = JobSchedule::now_secs();
             let at = now_secs + i64::from(delay);
             db::jobqueue::retry(&app_state.pool, job_id, at).await?;
         }

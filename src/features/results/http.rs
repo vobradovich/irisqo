@@ -1,7 +1,4 @@
-use crate::{
-    db,
-    models::{AppState, JobResult},
-};
+use crate::models::AppState;
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -11,6 +8,8 @@ use axum::{
 };
 use problemdetails::Problem;
 use std::sync::Arc;
+
+use super::JobResult;
 
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
@@ -23,7 +22,7 @@ async fn result_by_id(
     State(state): State<Arc<AppState>>,
     Path(id): Path<i64>,
 ) -> Result<Response, Problem> {
-    let job_result = db::results::get_by_id(&state.pool, id)
+    let job_result = super::db::get_by_id(&state.pool, id)
         .await?
         .map(JobResult::from);
     match job_result {
@@ -36,7 +35,7 @@ async fn result_by_id_raw(
     State(state): State<Arc<AppState>>,
     Path(id): Path<i64>,
 ) -> Result<Response, Problem> {
-    let job_result = db::results::get_by_id(&state.pool, id)
+    let job_result = super::db::get_by_id(&state.pool, id)
         .await?
         .map(JobResult::from);
     match job_result {
@@ -44,4 +43,3 @@ async fn result_by_id_raw(
         Some(o) => Ok(o.into_response()),
     }
 }
-

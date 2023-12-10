@@ -8,7 +8,9 @@ use hyper::{header, Method, Uri};
 
 use serde::{Deserialize, Serialize};
 
-use super::{Error, JobRetry, JobSchedule};
+use crate::features::schedules::JobSchedule;
+
+use super::{Error, JobRetry};
 
 #[derive(Debug, Clone, sqlx::FromRow, Serialize)]
 pub struct JobRow {

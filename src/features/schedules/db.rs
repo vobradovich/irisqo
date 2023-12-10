@@ -1,6 +1,8 @@
-use crate::models::{Error, ScheduleRow};
+use crate::models::Error;
 
 use sqlx::{Pool, Postgres};
+
+use super::ScheduleRow;
 
 pub async fn get_by_id(
     pool: &Pool<Postgres>,
@@ -26,4 +28,16 @@ pub async fn get_all<'a>(
         .fetch_all(pool)
         .await?;
     Ok(res)
+}
+
+pub async fn disable(
+    pool: &Pool<Postgres>,
+    schedule_id: &str,
+) -> Result<u64, Error> {
+    const SQL: &str = "UPDATE schedules SET inactive = TRUE WHERE id = $1 RETURNING id";
+    let res = sqlx::query(SQL)
+        .bind(schedule_id)
+        .execute(pool)
+        .await?;
+    Ok(res.rows_affected())
 }

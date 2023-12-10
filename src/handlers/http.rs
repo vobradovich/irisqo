@@ -1,6 +1,6 @@
 use crate::{
     db,
-    models::{AppState, Error, HttpMeta, JobCreate, JobMeta, JobRetry, JobSchedule},
+    models::{AppState, Error, HttpMeta, JobCreate, JobMeta, JobRetry}, features::schedules::JobSchedule,
 };
 use axum::{
     body::Bytes,

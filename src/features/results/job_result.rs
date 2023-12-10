@@ -6,7 +6,7 @@ use bytes::Bytes;
 use hyper::{HeaderMap, StatusCode};
 use serde::{Deserialize, Serialize};
 
-use super::Error;
+use crate::models::Error;
 
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct JobResult {
@@ -30,7 +30,7 @@ impl From<JobResultRow> for JobResult {
         JobResult {
             meta: value.meta,
             headers: value.headers,
-            body: value.body.map_or(Bytes::new(), |v| Bytes::from(v)),
+            body: value.body.map_or(Bytes::new(), Bytes::from),
         }
     }
 }
@@ -47,6 +47,7 @@ pub struct JobResultMeta {
 pub enum JobResultType {
     #[default]
     None,
+    Cancelled,
     Timeout,
     Error {
         error: String,
@@ -65,18 +66,43 @@ pub struct HttpResponseMeta {
     pub version: hyper::Version,
 }
 
-impl From<Error> for JobResult {
-    fn from(value: Error) -> Self {
-        let result = match value {
-            Error::Timeout(_) => JobResultType::Timeout,
-            _ => JobResultType::Error {
-                error: value.to_string(),
+impl JobResult {
+    pub(crate) fn http(
+        status_code: hyper::StatusCode,
+        version: hyper::Version,
+        headers: Option<HashMap<String, String>>,
+        body: Bytes,
+    ) -> JobResult {
+        JobResult {
+            meta: JobResultMeta {
+                result: JobResultType::Http(HttpResponseMeta {
+                    status_code,
+                    version,
+                }),
             },
-        };
+            headers,
+            body,
+        }
+    }
+
+    fn with_type(result: JobResultType) -> JobResult {
         JobResult {
             meta: JobResultMeta { result },
             headers: None,
             body: Bytes::new(),
+        }
+    }
+}
+
+impl From<Error> for JobResult {
+    fn from(value: Error) -> Self {
+        match value {
+            Error::Timeout(_) => JobResult::with_type(JobResultType::Timeout),
+            Error::ClientError(res) => res,
+            Error::ServerError(res) => res,
+            _ => JobResult::with_type(JobResultType::Error {
+                error: value.to_string(),
+            }),
         }
     }
 }
@@ -95,7 +121,7 @@ impl IntoResponse for JobResult {
                     if let Some(key) = key {
                         if key.to_string().starts_with("content") {
                             headers_mut.insert(key, value);
-                        }                            
+                        }
                     }
                 }
             };

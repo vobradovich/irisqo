@@ -1,6 +1,6 @@
 use std::{fmt::Display, str::FromStr};
 
-use super::Error;
+use crate::models::Error;
 use chrono::{TimeZone, Utc};
 use cron::Schedule;
 use serde::{Deserialize, Serialize};
@@ -82,18 +82,6 @@ impl Display for JobSchedule {
             JobSchedule::Cron { cron } => write!(f, "{}", cron),
         }
     }
-}
-
-#[derive(Debug, Clone, sqlx::FromRow, Serialize)]
-pub struct ScheduleRow {
-    pub schedule_id: String,
-    pub schedule: String,
-    pub until: Option<i64>,
-    pub last_id: Option<i64>,
-    pub last_at: Option<i64>,
-    pub next_id: Option<i64>,
-    pub next_at: Option<i64>,
-    pub inactive: bool,
 }
 
 #[tokio::test]
