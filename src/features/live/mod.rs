@@ -1,6 +1,8 @@
-use crate::{db, models::AppState};
+use crate::models::AppState;
+use crate::models::Error;
 use axum::{extract::State, http::StatusCode, response::IntoResponse, routing::get, Router};
 use problemdetails::Problem;
+use sqlx::{Pool, Postgres};
 use std::sync::Arc;
 
 pub fn routes(state: Arc<AppState>) -> Router {
@@ -20,6 +22,11 @@ async fn live() -> impl IntoResponse {
 }
 
 async fn ready(State(state): State<Arc<AppState>>) -> Result<StatusCode, Problem> {
-    db::select_one(&state.pool).await?;
+    select_one(&state.pool).await?;
     Ok(StatusCode::OK)
+}
+
+async fn select_one(pool: &Pool<Postgres>) -> Result<(), Error> {
+    _ = sqlx::query("SELECT 1").fetch_one(pool).await?;
+    Ok(())
 }

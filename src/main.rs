@@ -52,7 +52,7 @@ async fn start_http_server(state: &Arc<AppState>) {
     let addr: SocketAddr = SocketAddr::from(([0, 0, 0, 0], state.port));
     let app = Router::new()
         .merge(handlers::http::routes(Arc::clone(state)))
-        .merge(handlers::live::routes(Arc::clone(state)))
+        .merge(features::live::routes(Arc::clone(state)))
         .nest("/api/v1", handlers::jobs::routes(Arc::clone(state)))
         .nest("/api/v1", features::results::routes(Arc::clone(state)))
         .nest("/api/v1", features::schedules::routes(Arc::clone(state)))
