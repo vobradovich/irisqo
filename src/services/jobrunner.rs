@@ -1,6 +1,7 @@
 use crate::{
     db,
     features::{
+        self,
         results::{self, JobResult},
         schedules::JobSchedule,
     },
@@ -28,16 +29,19 @@ async fn job_run_with_error(app_state: &AppState, entry: JobEntry) -> Result<(),
         .await?
         .ok_or(Error::JobNotFound(job_id))?;
     let meta = job.meta.clone();
+    let schedule_id = job.schedule_id.clone();
     let job_result = match meta.protocol {
         JobProtocol::None => Ok(JobResult::default()),
         JobProtocol::Http(_) => job_run_http(app_state, job).await,
     };
     match job_result {
         Ok(result) => {
-            results::complete(&app_state.pool, job_id, result).await?;
+            processed(app_state, job_id, schedule_id.as_deref(), result).await?;
         }
         Err(err) => {
-            on_error(app_state, entry, meta, err).await?;
+            if let Some(res) = on_error(app_state, entry, meta, err).await {
+                processed(app_state, job_id, schedule_id.as_deref(), res).await?;
+            }
         }
     }
     Ok(())
@@ -76,50 +80,88 @@ async fn job_run_http(app_state: &AppState, job: JobRow) -> Result<JobResult, Er
     Ok(job_result)
 }
 
+async fn processed(
+    app_state: &AppState,
+    job_id: i64,
+    schedule_id: Option<&str>,
+    result: JobResult,
+) -> Result<(), Error> {
+    results::processed(&app_state.pool, job_id, result).await?;
+    let next_at = schedule_next_at(app_state, schedule_id).await;
+    if let Some(next_at) = next_at {
+        let next_id = db::jobqueue::clone_at(&app_state.pool, job_id, next_at).await?;
+        debug!({ instance_id = app_state.instance_id, job_id, next_id, next_at }, "==> clone and schedule");
+    }
+    Ok(())
+}
+
+async fn schedule_next_at(app_state: &AppState, schedule_id: Option<&str>) -> Option<i64> {
+    if let Some(schedule_id) = schedule_id {
+        let schedule_row = features::schedules::get_by_id(&app_state.pool, schedule_id).await.map_err(|err| {
+            error!({ instance_id = app_state.instance_id, schedule_id }, "schedules::get_by_id error {:?}", err);
+        }).unwrap_or_default();
+        if let Some(row) = schedule_row {
+            if row.inactive {
+                return None;
+            }
+            let schedule: Option<JobSchedule> = row.schedule.parse().map_err(|err| {
+                error!({ instance_id = app_state.instance_id, schedule_id }, "JobSchedule::parse error {:?}", err);
+            }).ok();
+            let next_at = schedule
+                .map(|s| s.next(JobSchedule::now_secs(), row.until))
+                .unwrap_or_default();
+            return next_at;
+        }
+        return None;
+    }
+    None
+}
+
 async fn on_error(
     app_state: &AppState,
     entry: JobEntry,
     meta: JobMeta,
     err: Error,
-) -> Result<(), Error> {
+) -> Option<JobResult> {
     let job_id = entry.id;
     match err {
         Error::HyperError(_) | Error::Timeout(_) | Error::ServerError(_) => {
             info!({ instance_id = app_state.instance_id, job_id }, "====> error {:?}", err);
-            retry_or_fail(app_state, entry, meta, err.into()).await?;
+            let res = retry_or_fail(app_state, entry, meta).await;
+            if let Ok(_) = res {
+                return None;
+            }
+            info!({ instance_id = app_state.instance_id, job_id }, "====> retry_or_fail {:?}", res.err());
+            let job_result: JobResult = err.into();
+            Some(job_result)
         }
         Error::ClientError(res) => {
             info!({ instance_id = app_state.instance_id, job_id }, "====> error {:?}", res.meta);
-            results::fail(&app_state.pool, job_id, res).await?;
+            Some(res)
         }
         _ => {
             error!({ instance_id = app_state.instance_id, job_id }, "====> error {:?}", err);
-            results::fail(&app_state.pool, job_id, err.into()).await?;
+            let job_result: JobResult = err.into();
+            Some(job_result)
         }
-    };
-    Ok(())
+    }
 }
 
-async fn retry_or_fail(
-    app_state: &AppState,
-    entry: JobEntry,
-    meta: JobMeta,
-    job_result: JobResult,
-) -> Result<(), Error> {
+async fn retry_or_fail(app_state: &AppState, entry: JobEntry, meta: JobMeta) -> Result<(), Error> {
     let JobEntry { id: job_id, retry } = entry;
-    let retry: u16 = retry.try_into().unwrap_or(0);
+    let retry: u16 = retry.try_into().unwrap_or(u16::MAX);
     match meta.retry.next_retry_in(retry) {
-        None => {
-            results::fail(&app_state.pool, job_id, job_result).await?;
-        }
+        None => Err(Error::RetriesExceeded),
         Some(0) => {
             db::jobqueue::unlock(&app_state.pool, job_id).await?;
+            Ok(())
         }
         Some(delay) => {
             let now_secs = JobSchedule::now_secs();
             let at = now_secs + i64::from(delay);
             db::jobqueue::retry(&app_state.pool, job_id, at).await?;
+            debug!({ instance_id = app_state.instance_id, job_id, retry }, "==> retry");
+            Ok(())
         }
     }
-    Ok(())
 }

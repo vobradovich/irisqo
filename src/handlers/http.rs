@@ -127,7 +127,7 @@ async fn job_create(
     };
 
     debug!("{:?}", serde_json::to_string(&job_create.meta));
-    let (job_id, schedule_id) = db::jobqueue::enqueue(&state.pool, job_create).await?;
+    let (job_id, schedule_id) = db::jobqueue::create(&state.pool, job_create).await?;
     let mut headers = HeaderMap::new();
     headers.insert(
         header::LOCATION,

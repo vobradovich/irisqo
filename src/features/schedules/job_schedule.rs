@@ -22,16 +22,28 @@ impl JobSchedule {
             .unwrap()
             .as_secs() as i64
     }
-    
-    pub fn next(&self, after_unix_sec: i64) -> Option<i64> {
+
+    pub fn next(&self, after_unix_sec: i64, until_unix_sec: Option<i64>) -> Option<i64> {
         let dt = Utc.timestamp_opt(after_unix_sec, 0).unwrap();
-        match &self {
-            JobSchedule::Interval { interval } => Some(after_unix_sec - (after_unix_sec % *interval as i64) + *interval as i64),
+        let next = match &self {
+            JobSchedule::Interval { interval } => {
+                Some(after_unix_sec - (after_unix_sec % *interval as i64) + *interval as i64)
+            }
             JobSchedule::Cron { cron } => Schedule::from_str(&cron)
                 .unwrap()
                 .after(&dt)
                 .map(|dt| dt.timestamp())
                 .next(),
+        };
+        match (next, until_unix_sec) {
+            (Some(n), Some(until)) => {
+                if n > until {
+                    None
+                } else {
+                    next
+                }
+            }
+            _ => next,
         }
     }
 }
@@ -120,11 +132,26 @@ async fn schedule_from_str_interval_after() -> anyhow::Result<()> {
 
     // act
     let schedule: JobSchedule = s.parse().unwrap();
-    let next = schedule.next(now_secs);
+    let next = schedule.next(now_secs, None);
 
     // assert
     assert!(next.is_some());
     assert_eq!(now_sec_to_5_min + 300, next.unwrap());
+    Ok(())
+}
+
+#[tokio::test]
+async fn schedule_from_str_interval_after_until() -> anyhow::Result<()> {
+    // arrange
+    let s = "300";
+    let now_secs = JobSchedule::now_secs();
+
+    // act
+    let schedule: JobSchedule = s.parse().unwrap();
+    let next = schedule.next(now_secs, Some(now_secs));
+
+    // assert
+    assert!(next.is_none());
     Ok(())
 }
 
@@ -158,7 +185,7 @@ async fn schedule_from_str_cron_after() -> anyhow::Result<()> {
 
     // act
     let schedule: JobSchedule = s.parse().unwrap();
-    let next = schedule.next(now_secs);
+    let next = schedule.next(now_secs, None);
 
     // assert
     assert!(next.is_some());

@@ -41,6 +41,9 @@ pub enum Error {
 
     #[error("Client Error")]
     ClientError(JobResult),
+
+    #[error("Retries Exceeded")]
+    RetriesExceeded,
 }
 
 impl From<Error> for Problem {

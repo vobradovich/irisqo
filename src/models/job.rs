@@ -93,7 +93,7 @@ impl TryFrom<JobRow> for hyper::Request<Full<Bytes>> {
             return Err(Error::InvalidUrl);
         };
 
-        let body: Bytes = value.body.map_or(Bytes::new(), |b| Bytes::from(b));
+        let body: Bytes = value.body.map_or(Bytes::new(), Bytes::from);
         let mut req = hyper::Request::builder().method(meta.method).uri(meta.url);
         if let Some(headers) = value.headers {
             let map = HeaderMap::try_from(&headers)?;
@@ -111,7 +111,7 @@ impl TryFrom<JobRow> for hyper::Request<Full<Bytes>> {
 #[tokio::test]
 async fn job_row_into_request_err() -> anyhow::Result<()> {
     // arrange
-    let job_entry = JobRow {
+    let job = JobRow {
         id: 0,
         protocol: "none".into(),
         meta: JobMeta::default(),
@@ -120,7 +120,7 @@ async fn job_row_into_request_err() -> anyhow::Result<()> {
         schedule_id: None,
     };
     // act
-    let req = hyper::Request::<Full<Bytes>>::try_from(job_entry);
+    let req = hyper::Request::<Full<Bytes>>::try_from(job);
 
     // assert
     assert!(req.is_err());
@@ -131,7 +131,7 @@ async fn job_row_into_request_err() -> anyhow::Result<()> {
 #[tokio::test]
 async fn job_row_into_request_ok() -> anyhow::Result<()> {
     // arrange
-    let job_entry = JobRow {
+    let job = JobRow {
         id: 0,
         protocol: "http".into(),
         meta: JobMeta {
@@ -154,7 +154,7 @@ async fn job_row_into_request_ok() -> anyhow::Result<()> {
         schedule_id: None,
     };
     // act
-    let req = hyper::Request::<Full<Bytes>>::try_from(job_entry);
+    let req = hyper::Request::<Full<Bytes>>::try_from(job);
 
     // assert
     assert!(req.is_ok());

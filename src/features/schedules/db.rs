@@ -8,7 +8,7 @@ pub async fn get_by_id(
     pool: &Pool<Postgres>,
     schedule_id: &str,
 ) -> Result<Option<ScheduleRow>, Error> {
-    const SQL: &str = "SELECT * FROM schedules WHERE id = $1";
+    const SQL: &str = "SELECT * FROM schedules WHERE schedule_id = $1";
     let row = sqlx::query_as::<_, ScheduleRow>(SQL)
         .bind(schedule_id)
         .fetch_optional(pool)

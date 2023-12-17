@@ -4,17 +4,79 @@ use crate::models::{JobCreate, JobProtocol, JobRow};
 use futures::stream::BoxStream;
 use sqlx::{types::Json, Pool, Postgres};
 
-pub async fn enqueue(pool: &Pool<Postgres>, job: JobCreate) -> Result<(i64, Option<String>), Error> {
-    const SQL_ENQUEUE: &str = "WITH a AS (
+pub async fn create(pool: &Pool<Postgres>, job: JobCreate) -> Result<(i64, Option<String>), Error> {
+    if job.schedule.is_some() {
+        return create_with_schedule(pool, job).await;
+    }
+    if job.at.is_some() {
+        return create_at(pool, job).await;
+    }
+    create_enqueue(pool, job).await
+}
+
+async fn create_enqueue(
+    pool: &Pool<Postgres>,
+    job: JobCreate,
+) -> Result<(i64, Option<String>), Error> {
+    const SQL: &str = "WITH a AS (
         INSERT INTO jobs(protocol, meta, headers, body) VALUES ($1, $2, $3, $4) RETURNING id
     )
     INSERT INTO enqueued SELECT id FROM a RETURNING id";
-    const SQL_SCHEDULE: &str = "WITH a AS (
+
+    let body: Option<&[u8]> = match job.body.is_empty() {
+        true => None,
+        false => Some(job.body.as_ref()),
+    };
+    let protocol = match &job.meta.protocol {
+        JobProtocol::Http(_) => "http",
+        _ => "none",
+    };
+
+    let job_id = sqlx::query_scalar::<_, i64>(SQL)
+        .bind(protocol)
+        .bind(Json(&job.meta))
+        .bind(Json(&job.headers))
+        .bind(body)
+        .fetch_one(pool)
+        .await?;
+    Ok((job_id, None))
+}
+
+async fn create_at(pool: &Pool<Postgres>, job: JobCreate) -> Result<(i64, Option<String>), Error> {
+    const SQL: &str = "
+    WITH a AS (
         INSERT INTO jobs(protocol, meta, headers, body) VALUES ($1, $2, $3, $4) RETURNING id
     )
-    INSERT INTO scheduled SELECT id, $5 as at FROM a RETURNING id";
+    INSERT INTO scheduled SELECT id, $5 as at FROM a RETURNING id
+    ";
 
-    const SQL_SCHEDULE_S: &str = "
+    let at = job.at.unwrap();
+
+    let body: Option<&[u8]> = match job.body.is_empty() {
+        true => None,
+        false => Some(job.body.as_ref()),
+    };
+    let protocol = match &job.meta.protocol {
+        JobProtocol::Http(_) => "http",
+        _ => "none",
+    };
+
+    let job_id = sqlx::query_scalar::<_, i64>(SQL)
+        .bind(protocol)
+        .bind(Json(&job.meta))
+        .bind(Json(&job.headers))
+        .bind(body)
+        .bind(at)
+        .fetch_one(pool)
+        .await?;
+    Ok((job_id, None))
+}
+
+async fn create_with_schedule(
+    pool: &Pool<Postgres>,
+    job: JobCreate,
+) -> Result<(i64, Option<String>), Error> {
+    const SQL: &str = "
     WITH a AS (
         INSERT INTO jobs(protocol, meta, headers, body, schedule_id) VALUES ($1, $2, $3, $4, $6) RETURNING id
     ), b AS (
@@ -23,59 +85,60 @@ pub async fn enqueue(pool: &Pool<Postgres>, job: JobCreate) -> Result<(i64, Opti
     INSERT INTO scheduled SELECT id, $5 as at FROM a RETURNING id
     ";
 
+    let schedule = job.schedule.unwrap();
 
-    let meta = job.meta;
-    let headers = job.headers;
     let body: Option<&[u8]> = match job.body.is_empty() {
         true => None,
         false => Some(job.body.as_ref()),
     };
-    let protocol = match &meta.protocol {
+    let protocol = match &job.meta.protocol {
         JobProtocol::Http(_) => "http",
         _ => "none",
     };
-    if let Some(schedule) = job.schedule {
-        let schedule_id = ulid::Ulid::new().to_string();
-        let at = schedule.next(JobSchedule::now_secs());
-        if let None = at {
-            return  Err(Error::InvalidParams("schedule"));
-        }
 
-        let job_id =  sqlx::query_scalar::<_, i64>(SQL_SCHEDULE_S)
-            .bind(protocol)
-            .bind(Json(meta))
-            .bind(Json(headers))
-            .bind(body)
-            .bind(at)
-            .bind(&schedule_id)
-            .bind(schedule.to_string())
-            .fetch_one(pool)
-            .await?;
-        return Ok((job_id, Some(schedule_id)));
+    let after = job.at.unwrap_or_else(|| JobSchedule::now_secs());
+    let at = schedule.next(after, job.until);
+    if let None = at {
+        return Err(Error::InvalidParams("schedule"));
     }
+    let schedule_id = ulid::Ulid::new().to_string();
 
-    let job_id = match job.at {
-        Some(at) => {
-            sqlx::query_scalar::<_, i64>(SQL_SCHEDULE)
-                .bind(protocol)
-                .bind(Json(meta))
-                .bind(Json(headers))
-                .bind(body)
-                .bind(at)
-                .fetch_one(pool)
-                .await?
-        }
-        None => {
-            sqlx::query_scalar::<_, i64>(SQL_ENQUEUE)
-                .bind(protocol)
-                .bind(Json(meta))
-                .bind(Json(headers))
-                .bind(body)
-                .fetch_one(pool)
-                .await?
-        }
-    };
-    Ok((job_id, None))
+    let job_id = sqlx::query_scalar::<_, i64>(SQL)
+        .bind(protocol)
+        .bind(Json(&job.meta))
+        .bind(Json(&job.headers))
+        .bind(body)
+        .bind(at)
+        .bind(&schedule_id)
+        .bind(schedule.to_string())
+        .fetch_one(pool)
+        .await?;
+    return Ok((job_id, Some(schedule_id)));
+}
+
+pub async fn clone_at(pool: &Pool<Postgres>, job_id: i64, at: i64) -> Result<i64, Error> {
+    const SQL: &str = "
+    WITH a AS (
+        INSERT INTO jobs(protocol, meta, headers, body, schedule_id)
+        SELECT protocol, meta, headers, body, schedule_id
+        FROM jobs
+        WHERE id = $1
+        RETURNING id, schedule_id
+    ), b AS (
+        UPDATE schedules
+        SET next_id = a.id, next_at = $2
+        FROM a
+        WHERE schedules.schedule_id = a.schedule_id
+    )
+    INSERT INTO scheduled SELECT id, $2 as at FROM a RETURNING id
+    ";
+
+    let job_id = sqlx::query_scalar::<_, i64>(SQL)
+        .bind(job_id)
+        .bind(at)
+        .fetch_one(pool)
+        .await?;
+    return Ok(job_id);
 }
 
 pub async fn get_by_id(pool: &Pool<Postgres>, job_id: i64) -> Result<Option<JobRow>, Error> {
@@ -105,8 +168,6 @@ pub async fn enqueue_scheduled(pool: &Pool<Postgres>) -> Result<u64, Error> {
     Ok(res.rows_affected())
 }
 
-
-
 pub async fn unlock(pool: &Pool<Postgres>, job_id: i64) -> Result<u64, Error> {
     const SQL: &str = "UPDATE enqueued SET instance_id = null, lock_at = null, retry = retry + 1 WHERE id = $1 RETURNING id, retry";
     let res = sqlx::query(SQL).bind(job_id).execute(pool).await?;
@@ -118,11 +179,7 @@ pub async fn retry(pool: &Pool<Postgres>, job_id: i64, at: i64) -> Result<u64, E
         DELETE FROM enqueued WHERE id = $1 RETURNING id, retry, instance_id
     )
     INSERT INTO scheduled SELECT id, $2 as at, (retry + 1) as retry FROM a RETURNING id";
-    let res = sqlx::query(SQL)
-        .bind(job_id)
-        .bind(at)
-        .execute(pool)
-        .await?;
+    let res = sqlx::query(SQL).bind(job_id).bind(at).execute(pool).await?;
     Ok(res.rows_affected())
 }
 

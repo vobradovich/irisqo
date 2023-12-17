@@ -21,3 +21,6 @@ GET {{host}}/api/v1/results/{{job-id}}/raw
 
 ###
 GET {{host}}/api/v1/instances
+
+###
+GET {{host}}/api/v1/schedules?limit=100
