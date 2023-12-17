@@ -1,4 +1,7 @@
-use crate::models::AppState;
+use crate::{
+    features::{Paging, PagingResult},
+    models::AppState,
+};
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
@@ -7,7 +10,6 @@ use axum::{
     Json, Router,
 };
 use problemdetails::Problem;
-use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 pub fn routes(state: Arc<AppState>) -> Router {
@@ -54,17 +56,4 @@ async fn disable(
         0 => Ok(StatusCode::NOT_FOUND.into_response()),
         _ => Ok(StatusCode::NO_CONTENT.into_response()),
     }
-}
-
-#[derive(Deserialize)]
-struct Paging {
-    limit: Option<i32>,
-    offset: Option<i32>,
-}
-
-#[derive(Serialize)]
-struct PagingResult<T> {
-    limit: i32,
-    offset: i32,
-    data: Vec<T>,
 }

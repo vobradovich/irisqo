@@ -42,6 +42,7 @@ async fn main() {
         start_http_server(&state),
         start_scheduler_service(&state),
         start_jobs_service(&state),
+        start_batch_jobs_service(&state),
         shutdown_signal(&state),
     );
 
@@ -56,6 +57,7 @@ async fn start_http_server(state: &Arc<AppState>) {
         .nest("/api/v1", handlers::jobs::routes(Arc::clone(state)))
         .nest("/api/v1", features::results::routes(Arc::clone(state)))
         .nest("/api/v1", features::schedules::routes(Arc::clone(state)))
+        .nest("/api/v1", features::instances::routes(Arc::clone(state)))
         .layer(TraceLayer::new_for_http());
 
     let listener = TcpListener::bind(addr).await.unwrap();
@@ -77,6 +79,12 @@ async fn start_scheduler_service(state: &Arc<AppState>) {
 async fn start_jobs_service(state: &Arc<AppState>) {
     let app_state = Arc::clone(state);
     let service = services::ChannelWorkerService::new(app_state);
+    service.run().await.expect("Failed to run JobService");
+}
+
+async fn start_batch_jobs_service(state: &Arc<AppState>) {
+    let app_state = Arc::clone(state);
+    let service = services::BatchWorkerService::new(app_state);
     service.run().await.expect("Failed to run JobService");
 }
 
