@@ -96,25 +96,19 @@ async fn processed(
 }
 
 async fn schedule_next_at(app_state: &AppState, schedule_id: Option<&str>) -> Option<i64> {
-    if let Some(schedule_id) = schedule_id {
-        let schedule_row = features::schedules::get_by_id(&app_state.pool, schedule_id).await.map_err(|err| {
-            error!({ instance_id = app_state.instance_id, schedule_id }, "schedules::get_by_id error {:?}", err);
-        }).unwrap_or_default();
-        if let Some(row) = schedule_row {
-            if row.inactive {
-                return None;
-            }
-            let schedule: Option<JobSchedule> = row.schedule.parse().map_err(|err| {
-                error!({ instance_id = app_state.instance_id, schedule_id }, "JobSchedule::parse error {:?}", err);
-            }).ok();
-            let next_at = schedule
-                .map(|s| s.next(JobSchedule::now_secs(), row.until))
-                .unwrap_or_default();
-            return next_at;
-        }
+    let schedule_id = schedule_id?;
+
+    let row = features::schedules::get_by_id(&app_state.pool, schedule_id).await.map_err(|err| {
+        error!({ instance_id = app_state.instance_id, schedule_id }, "schedules::get_by_id error {:?}", err);
+    }).ok()??;
+    if row.inactive {
         return None;
     }
-    None
+    let schedule = row.schedule.parse::<JobSchedule>().map_err(|err| {
+        error!({ instance_id = app_state.instance_id, schedule_id }, "JobSchedule::parse error {:?}", err);
+    }).ok()?;
+    let next_at = schedule.next(JobSchedule::now_secs(), row.until);
+    next_at
 }
 
 async fn on_error(
