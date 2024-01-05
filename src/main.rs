@@ -1,22 +1,21 @@
-use std::future::IntoFuture;
-use std::net::SocketAddr;
 use std::sync::Arc;
+use std::net::SocketAddr;
 
 use axum::Router;
 use models::AppState;
 use opentelemetry::trace::TracerProvider as _;
 use opentelemetry_sdk::trace::TracerProvider;
 use opentelemetry_stdout as stdout;
-use tokio::{net::TcpListener, select};
+use tokio::net::TcpListener;
 use tokio::signal;
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod db;
+mod features;
 mod handlers;
 mod models;
 mod services;
-mod features;
 
 #[tokio::main]
 async fn main() {
@@ -29,9 +28,8 @@ async fn main() {
 
     tracing_subscriber::registry()
         .with(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-                "irisqo=debug,tower_http=info,otel=debug".into()
-            }),
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "irisqo=debug,tower_http=info,otel=debug".into()),
         )
         .with(tracing_opentelemetry::layer().with_tracer(tracer))
         .with(tracing_subscriber::fmt::layer())
@@ -43,7 +41,6 @@ async fn main() {
         start_scheduler_service(&state),
         start_jobs_service(&state),
         start_batch_jobs_service(&state),
-        shutdown_signal(&state),
     );
 
     eprintln!("->> SHUTDOWN")
@@ -55,6 +52,7 @@ async fn start_http_server(state: &Arc<AppState>) {
         .merge(handlers::http::routes(Arc::clone(state)))
         .merge(features::live::routes(Arc::clone(state)))
         .nest("/api/v1", handlers::jobs::routes(Arc::clone(state)))
+        .nest("/api/v1", features::history::routes(Arc::clone(state)))
         .nest("/api/v1", features::results::routes(Arc::clone(state)))
         .nest("/api/v1", features::schedules::routes(Arc::clone(state)))
         .nest("/api/v1", features::instances::routes(Arc::clone(state)))
@@ -62,12 +60,11 @@ async fn start_http_server(state: &Arc<AppState>) {
 
     let listener = TcpListener::bind(addr).await.unwrap();
     tracing::info!("listen {:?}", addr);
-    let server = axum::serve(listener, app.into_make_service()).into_future();
-    select! {
-        biased;        
-        _ = state.shutdown_token.cancelled() => {},
-        _ = server => {},
-    }
+    axum::serve(listener, app.into_make_service())
+        .with_graceful_shutdown(shutdown_signal())
+        .await
+        .expect("Failed to run axum::serve");
+    state.shutdown_token.cancel();
 }
 
 async fn start_scheduler_service(state: &Arc<AppState>) {
@@ -88,7 +85,7 @@ async fn start_batch_jobs_service(state: &Arc<AppState>) {
     service.run().await.expect("Failed to run JobService");
 }
 
-async fn shutdown_signal(state: &Arc<AppState>) {
+async fn shutdown_signal() {
     let ctrl_c = async {
         signal::ctrl_c()
             .await
@@ -110,6 +107,5 @@ async fn shutdown_signal(state: &Arc<AppState>) {
         _ = ctrl_c => {},
         _ = terminate => {},
     }
-    state.shutdown_token.cancel();
     tracing::warn!("signal received, starting graceful shutdown");
 }

@@ -76,7 +76,7 @@ impl AppState {
             }),
             worker_options: WorkerOptions {
                 workers_count: args.workers.unwrap_or(4),
-                poll_interval: Duration::from_millis(1000),
+                poll_interval: Duration::from_millis(500),
                 prefetch: 10,
                 timeout: 3000,
             },

@@ -52,7 +52,7 @@ impl SchedulerService {
         debug!({ instance_id = self.app_state.instance_id }, "tick");
         db::instances::live(&self.app_state.pool, &self.app_state.instance_id).await?;
         let expired = db::instances::kill_expired(&self.app_state.pool, Duration::from_secs(30)).await?;
-        let enqueued = db::jobqueue::enqueue_scheduled(&self.app_state.pool).await?;
+        let enqueued = db::jobqueue::enqueue_scheduled(&self.app_state.pool, &self.app_state.instance_id).await?;
         debug!({ instance_id = self.app_state.instance_id, enqueued = enqueued, expired = expired }, "db::jobs::enqueue_scheduled");
         Ok(())
     }

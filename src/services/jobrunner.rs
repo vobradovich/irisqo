@@ -40,6 +40,7 @@ async fn job_run_with_error(app_state: &AppState, entry: JobEntry) -> Result<(),
         }
         Err(err) => {
             if let Some(res) = on_error(app_state, entry, meta, err).await {
+                warn!({ instance_id = app_state.instance_id, job_id }, "====> processed={:?}", &res.meta);
                 processed(app_state, job_id, schedule_id.as_deref(), res).await?;
             }
         }
@@ -89,7 +90,7 @@ async fn processed(
     results::processed(&app_state.pool, job_id, result).await?;
     let next_at = schedule_next_at(app_state, schedule_id).await;
     if let Some(next_at) = next_at {
-        let next_id = db::jobqueue::clone_at(&app_state.pool, job_id, next_at).await?;
+        let next_id = db::jobqueue::clone_at(&app_state.pool, job_id, next_at, &app_state.instance_id).await?;
         debug!({ instance_id = app_state.instance_id, job_id, next_id, next_at }, "==> clone and schedule");
     }
     Ok(())
@@ -147,7 +148,7 @@ async fn retry_or_fail(app_state: &AppState, entry: JobEntry, meta: JobMeta) -> 
     match meta.retry.next_retry_in(retry) {
         None => Err(Error::RetriesExceeded),
         Some(0) => {
-            db::jobqueue::unlock(&app_state.pool, job_id).await?;
+            db::jobqueue::unlock(&app_state.pool, job_id, &app_state.instance_id).await?;
             Ok(())
         }
         Some(delay) => {

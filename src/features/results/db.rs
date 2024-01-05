@@ -22,6 +22,8 @@ pub async fn processed(
 ) -> Result<u64, Error> {
     const SQL: &str = "WITH a AS (
         DELETE FROM enqueued WHERE id = $1 RETURNING id, retry, instance_id
+    ), hist AS (
+        INSERT INTO history SELECT id, retry, instance_id, now() as at, $2::history_status as status FROM a RETURNING id
     )
     INSERT INTO processed SELECT id, retry, instance_id, now() as at, $2::processed_status as status, $3 as meta, $4 as headers, $5 as body FROM a RETURNING id";
     let body: Option<&[u8]> = match job_result.body.is_empty() {
@@ -31,6 +33,7 @@ pub async fn processed(
     let status = match job_result.meta.result {
         JobResultType::Timeout | JobResultType::Error { .. } => "failed",
         JobResultType::Cancelled => "cancelled",
+        JobResultType::Http(ref meta) if meta.status_code.is_client_error() || meta.status_code.is_server_error() => "failed",
         _ => "completed",
     };
     let res = sqlx::query(SQL)

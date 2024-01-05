@@ -30,14 +30,15 @@ pub async fn get_all<'a>(
     Ok(res)
 }
 
-pub async fn disable(
-    pool: &Pool<Postgres>,
-    schedule_id: &str,
-) -> Result<u64, Error> {
-    const SQL: &str = "UPDATE schedules SET inactive = TRUE WHERE id = $1 RETURNING id";
-    let res = sqlx::query(SQL)
-        .bind(schedule_id)
-        .execute(pool)
-        .await?;
+pub async fn inactive(pool: &Pool<Postgres>, schedule_id: &str, inactive: bool) -> Result<u64, Error> {
+    const SQL: &str =
+        "UPDATE schedules SET inactive = $2 WHERE schedule_id = $1 RETURNING schedule_id";
+    let res = sqlx::query(SQL).bind(schedule_id).bind(inactive).execute(pool).await?;
+    Ok(res.rows_affected())
+}
+
+pub async fn delete(pool: &Pool<Postgres>, schedule_id: &str) -> Result<u64, Error> {
+    const SQL: &str = "DELETE FROM schedules WHERE schedule_id = $1";
+    let res = sqlx::query(SQL).bind(schedule_id).execute(pool).await?;
     Ok(res.rows_affected())
 }

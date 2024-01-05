@@ -10,6 +10,7 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route("/", get(root))
         .route("/live", get(live))
         .route("/ready", get(ready))
+        .route("/error", get(error))
         .with_state(state)
 }
 
@@ -24,6 +25,10 @@ async fn live() -> impl IntoResponse {
 async fn ready(State(state): State<Arc<AppState>>) -> Result<StatusCode, Problem> {
     select_one(&state.pool).await?;
     Ok(StatusCode::OK)
+}
+
+async fn error() -> impl IntoResponse {
+    StatusCode::INTERNAL_SERVER_ERROR
 }
 
 async fn select_one(pool: &Pool<Postgres>) -> Result<(), Error> {

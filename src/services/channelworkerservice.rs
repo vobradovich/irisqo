@@ -27,7 +27,7 @@ impl ChannelWorkerService {
     }
 
     pub async fn run(&self) -> Result<(), Error> {
-        let app_state = &self.app_state;
+        let app_state: &Arc<AppState> = &self.app_state;
         info!({ instance_id = app_state.instance_id }, "start");
 
         let worker_count = app_state.worker_options.workers_count;
@@ -51,7 +51,8 @@ impl ChannelWorkerService {
         }
 
         while !app_state.shutdown_token.is_cancelled() {
-            let fetch_result = db::jobqueue::fetch_optional(&app_state.pool, &app_state.instance_id).await;
+            let fetch_result =
+                db::jobqueue::fetch_optional(&app_state.pool, &app_state.instance_id).await;
             match fetch_result {
                 Ok(Some(entry)) => {
                     let _ = tx.send(entry).await;
@@ -77,7 +78,7 @@ async fn wait_tick_or_shutdown(interval: &mut time::Interval, app_state: &Arc<Ap
     select!(
         biased;
         _ = app_state.shutdown_token.cancelled() => {}
-        _ = interval.tick() => {},        
+        _ = interval.tick() => {},
     );
 }
 

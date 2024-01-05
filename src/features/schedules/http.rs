@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
-        .route("/schedules/:id", get(get_by_id).delete(disable))
+        .route("/schedules/:id", get(get_by_id).put(inactive).delete(delete))
         .route("/schedules", get(get_all))
         .with_state(state)
 }
@@ -47,11 +47,22 @@ async fn get_by_id(
     }
 }
 
-async fn disable(
+async fn inactive(
     State(state): State<Arc<AppState>>,
     Path(schedule_id): Path<String>,
 ) -> Result<Response, Problem> {
-    let rows = super::db::disable(&state.pool, &schedule_id).await?;
+    let rows = super::db::inactive(&state.pool, &schedule_id, true).await?;
+    match rows {
+        0 => Ok(StatusCode::NOT_FOUND.into_response()),
+        _ => Ok(StatusCode::NO_CONTENT.into_response()),
+    }
+}
+
+async fn delete(
+    State(state): State<Arc<AppState>>,
+    Path(schedule_id): Path<String>,
+) -> Result<Response, Problem> {
+    let rows = super::db::delete(&state.pool, &schedule_id).await?;
     match rows {
         0 => Ok(StatusCode::NOT_FOUND.into_response()),
         _ => Ok(StatusCode::NO_CONTENT.into_response()),

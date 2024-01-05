@@ -93,9 +93,9 @@ async fn job_create(
         }
     }
     let uri = Uri::try_from(parsed_url.as_str()).map_err(|_| Error::InvalidUrl)?;
-    let scheme = &uri.scheme_str().unwrap_or("null").to_owned();
-    let protocol = match scheme.as_str() {
-        "http" | "https" => crate::models::JobProtocol::Http(HttpMeta { method, url: uri }),
+    let scheme = uri.scheme_str();
+    let protocol = match scheme {
+        Some("http") | Some("https") => crate::models::JobProtocol::Http(HttpMeta { method, url: uri }),
         _ => crate::models::JobProtocol::None,
     };
 
@@ -127,7 +127,7 @@ async fn job_create(
     };
 
     debug!("{:?}", serde_json::to_string(&job_create.meta));
-    let (job_id, schedule_id) = db::jobqueue::create(&state.pool, job_create).await?;
+    let (job_id, schedule_id) = db::jobqueue::create(&state.pool, job_create, &state.instance_id).await?;
     let mut headers = HeaderMap::new();
     headers.insert(
         header::LOCATION,

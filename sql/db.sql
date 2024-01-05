@@ -64,12 +64,12 @@ CREATE TYPE history_status AS ENUM (
 );
 
 CREATE TABLE IF NOT EXISTS history (
-	id bigint NOT NULL,
+	id bigint NOT NULL REFERENCES jobs (id) MATCH SIMPLE ON UPDATE NO ACTION ON DELETE CASCADE,
 	retry int NOT NULL DEFAULT 0,
-	status history_status NOT NULL,
 	instance_id varchar(64) NOT NULL,
 	at timestamptz NOT NULL DEFAULT NOW(),
-	CONSTRAINT fk_jobs_id FOREIGN KEY (id) REFERENCES jobs (id) MATCH SIMPLE ON UPDATE NO ACTION ON DELETE CASCADE
+	status history_status NOT NULL,
+	message text NULL
 );
 
 CREATE INDEX IF NOT EXISTS ix_enqueued_retry_id ON enqueued
