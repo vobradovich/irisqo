@@ -2,6 +2,7 @@ use crate::{
     db,
     features::schedules::JobSchedule,
     models::{AppState, Error, HttpMeta, JobCreate, JobMeta, JobRetry},
+    otel,
 };
 use axum::{
     body::Bytes,
@@ -46,10 +47,7 @@ async fn job_create(
     let mut retry: JobRetry = JobRetry::None;
     let mut schedule: Option<JobSchedule> = None;
     let mut until: Option<i64> = None;
-
-    let _span = tracing::span::Span::current();
-    // let trace_id = axum_tracing_opentelemetry::find_current_trace_id();
-    // warn!("span = {:?}, trace_id = {:?}", span, trace_id);
+    let mut external_id: Option<String> = None;
 
     // Parse and truncate Query String
     let mut parsed_url = Url::parse(&url).map_err(|_| Error::InvalidUrl)?;
@@ -83,6 +81,10 @@ async fn job_create(
                 until = value.parse::<i64>().ok();
                 continue;
             }
+            if key == "_id" && !value.is_empty() && value.len() < 65 {
+                external_id = Some(value.to_string());
+                continue;
+            }
             if value.is_empty() {
                 parsed_url.query_pairs_mut().append_key_only(key.as_ref());
                 continue;
@@ -95,7 +97,9 @@ async fn job_create(
     let uri = Uri::try_from(parsed_url.as_str()).map_err(|_| Error::InvalidUrl)?;
     let scheme = uri.scheme_str();
     let protocol = match scheme {
-        Some("http") | Some("https") => crate::models::JobProtocol::Http(HttpMeta { method, url: uri }),
+        Some("http") | Some("https") => {
+            crate::models::JobProtocol::Http(HttpMeta { method, url: uri })
+        }
         _ => crate::models::JobProtocol::None,
     };
 
@@ -111,31 +115,38 @@ async fn job_create(
             }
         }
     }
-
+    // OpenTelemetry TraceId
+    let trace_id = otel::current_trace_id();
+    // Build
     let job_create = JobCreate {
         meta: JobMeta {
             protocol,
             retry,
             delay,
             timeout,
+            trace_id,
         },
         headers: Some(header_hashmap),
         body,
         at,
         schedule,
         until,
+        external_id,
     };
 
     debug!("{:?}", serde_json::to_string(&job_create.meta));
-    let (job_id, schedule_id) = db::jobqueue::create(&state.pool, job_create, &state.instance_id).await?;
+    let job = db::jobqueue::create(&state.pool, job_create, &state.instance_id).await?;
     let mut headers = HeaderMap::new();
     headers.insert(
         header::LOCATION,
-        format!("/api/v1/jobs/{}", job_id).parse().unwrap(),
+        format!("/api/v1/requests/{}", job.id).parse().unwrap(),
     );
-    headers.insert("job-id", job_id.into());
-    if let Some(schedule_id) = schedule_id {
+    headers.insert("request-id", job.id.into());
+    if let Some(schedule_id) = job.schedule_id {
         headers.insert("schedule-id", schedule_id.parse().unwrap());
+    }
+    if let Some(external_id) = job.external_id {
+        headers.insert("external-id", external_id.parse().unwrap());
     }
     Ok((StatusCode::CREATED, headers))
 }

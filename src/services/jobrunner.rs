@@ -9,6 +9,7 @@ use crate::{
 };
 use bytes::Bytes;
 use http_body_util::Full;
+use opentelemetry::{global, trace::TraceContextExt};
 use std::{collections::HashMap, time::Duration};
 use tokio::time;
 #[allow(unused_imports)]
@@ -51,7 +52,18 @@ async fn job_run_with_error(app_state: &AppState, entry: JobEntry) -> Result<(),
 async fn job_run_http(app_state: &AppState, job: JobRow) -> Result<JobResult, Error> {
     let job_id = job.id;
     let timeout_ms = job.meta.timeout;
-    let req = hyper::Request::<Full<Bytes>>::try_from(job)?;
+    let mut req = hyper::Request::<Full<Bytes>>::try_from(job)?;
+    // OpenTelemetry
+    // let tracer = global::tracer("irisqo");
+    // let span = opentelemetry::trace::Tracer::span_builder(&tracer, String::from("job_run_http"))
+    //     .with_kind(opentelemetry::trace::SpanKind::Client)
+    //     .start(&tracer);
+    // let cx = opentelemetry::Context::current_with_span(span);
+
+    // global::get_text_map_propagator(|propagator| {
+    //     propagator.inject_context(&cx, &mut crate::otel::HeaderInjector(req.headers_mut()))
+    // });
+    // Call
     let future = app_state.client.request(req);
     // first '?' - timeout
     // second '?' - HyperError
@@ -90,7 +102,7 @@ async fn processed(
     results::processed(&app_state.pool, job_id, result).await?;
     let next_at = schedule_next_at(app_state, schedule_id).await;
     if let Some(next_at) = next_at {
-        let next_id = db::jobqueue::clone_at(&app_state.pool, job_id, next_at, &app_state.instance_id).await?;
+        let next_id = db::jobqueue::clone_schedule_at(&app_state.pool, job_id, next_at, &app_state.instance_id).await?;
         debug!({ instance_id = app_state.instance_id, job_id, next_id, next_at }, "==> clone and schedule");
     }
     Ok(())

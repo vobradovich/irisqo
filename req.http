@@ -4,24 +4,24 @@
 GET {{host}}
 
 ###
-# @name getJob
+# @name req
 GET {{host}}/to/{{host}}/error?_retry=3&_delay=5
 
 ###
-@job-id = {{getJob.response.headers.job-id}}
-@schedule-id = {{getJob.response.headers.schedule-id}}
+@request-id = {{req.response.headers.request-id}}
+@schedule-id = {{req.response.headers.schedule-id}}
 
 ###
-GET {{host}}/api/v1/jobs/{{job-id}}
+GET {{host}}/api/v1/requests/{{request-id}}
 
 ###
-GET {{host}}/api/v1/jobs/{{job-id}}/history
+GET {{host}}/api/v1/requests/{{request-id}}/history
 
 ###
-GET {{host}}/api/v1/results/{{job-id}}
+GET {{host}}/api/v1/requests/{{request-id}}/result
 
 ###
-GET {{host}}/api/v1/results/{{job-id}}/raw
+GET {{host}}/api/v1/requests/{{request-id}}/result/raw
 
 ###
 GET {{host}}/api/v1/instances
@@ -34,3 +34,6 @@ GET {{host}}/api/v1/schedules/{{schedule-id}}
 
 ###
 PUT {{host}}/api/v1/schedules/{{schedule-id}}
+
+###
+GET {{host}}/error

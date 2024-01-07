@@ -2,6 +2,7 @@ pub use error::Error;
 
 pub use job::HttpMeta;
 pub use job::JobCreate;
+pub use job::JobCreateRow;
 pub use job::JobEntry;
 pub use job::JobMeta;
 pub use job::JobProtocol;

@@ -17,7 +17,7 @@ mod jobhistory;
 
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
-        .route("/jobs/:id/history", get(get_history_by_id))
+        .route("/requests/:id/history", get(get_history_by_id))
         .with_state(state)
 }
 

@@ -1,5 +1,5 @@
-use std::sync::Arc;
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use axum::Router;
 use models::AppState;
@@ -15,24 +15,29 @@ mod db;
 mod features;
 mod handlers;
 mod models;
+mod otel;
 mod services;
 
 #[tokio::main]
 async fn main() {
+    opentelemetry::global::set_text_map_propagator(
+        opentelemetry_sdk::propagation::TraceContextPropagator::new(),
+    );
     // Create a new OpenTelemetry trace pipeline that prints to stdout
     let provider = TracerProvider::builder()
         .with_simple_exporter(stdout::SpanExporter::default())
         .build();
 
     let tracer = provider.tracer("irisqo");
+    opentelemetry::global::set_tracer_provider(provider);
 
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "irisqo=debug,tower_http=info,otel=debug".into()),
+                .unwrap_or_else(|_| "irisqo=debug,tower_http=debug,otel=info,sqlx=info".into()),
         )
-        .with(tracing_opentelemetry::layer().with_tracer(tracer))
         .with(tracing_subscriber::fmt::layer())
+        .with(tracing_opentelemetry::layer().with_tracer(tracer))
         .init();
 
     let state = AppState::new().await;
@@ -56,7 +61,7 @@ async fn start_http_server(state: &Arc<AppState>) {
         .nest("/api/v1", features::results::routes(Arc::clone(state)))
         .nest("/api/v1", features::schedules::routes(Arc::clone(state)))
         .nest("/api/v1", features::instances::routes(Arc::clone(state)))
-        .layer(TraceLayer::new_for_http());
+        .layer(TraceLayer::new_for_http().make_span_with(otel::make_span_from_request));
 
     let listener = TcpListener::bind(addr).await.unwrap();
     tracing::info!("listen {:?}", addr);

@@ -15,13 +15,13 @@ use super::{Error, JobRetry};
 #[derive(Debug, Clone, sqlx::FromRow, Serialize)]
 pub struct JobRow {
     pub id: i64,
-    pub protocol: String,
     #[sqlx(json)]
     pub meta: JobMeta,
     #[sqlx(json)]
     pub headers: Option<HashMap<String, String>>,
     pub body: Option<Vec<u8>>,
     pub schedule_id: Option<String>,
+    pub external_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, sqlx::FromRow)]
@@ -38,6 +38,14 @@ pub struct JobCreate {
     pub at: Option<i64>,
     pub schedule: Option<JobSchedule>,
     pub until: Option<i64>,
+    pub external_id: Option<String>,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+pub struct JobCreateRow {
+    pub id: i64,
+    pub schedule_id: Option<String>,
+    pub external_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -49,6 +57,7 @@ pub struct JobMeta {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub delay: Option<u32>,
     pub timeout: u32,
+    pub trace_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -113,11 +122,11 @@ async fn job_row_into_request_err() -> anyhow::Result<()> {
     // arrange
     let job = JobRow {
         id: 0,
-        protocol: "none".into(),
         meta: JobMeta::default(),
         headers: None,
         body: None,
         schedule_id: None,
+        external_id: None,
     };
     // act
     let req = hyper::Request::<Full<Bytes>>::try_from(job);
@@ -133,7 +142,6 @@ async fn job_row_into_request_ok() -> anyhow::Result<()> {
     // arrange
     let job = JobRow {
         id: 0,
-        protocol: "http".into(),
         meta: JobMeta {
             protocol: JobProtocol::Http(HttpMeta {
                 method: Method::GET,
@@ -145,6 +153,7 @@ async fn job_row_into_request_ok() -> anyhow::Result<()> {
             },
             delay: Some(300),
             timeout: 2000,
+            trace_id: None,
         },
         headers: Some(HashMap::from([(
             header::CONTENT_LENGTH.to_string(),
@@ -152,6 +161,7 @@ async fn job_row_into_request_ok() -> anyhow::Result<()> {
         )])),
         body: None,
         schedule_id: None,
+        external_id: None,
     };
     // act
     let req = hyper::Request::<Full<Bytes>>::try_from(job);

@@ -13,8 +13,8 @@ use super::JobResult;
 
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
-        .route("/results/:id", get(result_by_id))
-        .route("/results/:id/raw", get(result_by_id_raw))
+        .route("/requests/:id/result", get(result_by_id))
+        .route("/requests/:id/result/raw", get(result_by_id_raw))
         .with_state(state)
 }
 
