@@ -29,7 +29,7 @@ impl JobSchedule {
             JobSchedule::Interval { interval } => {
                 Some(after_unix_sec - (after_unix_sec % *interval as i64) + *interval as i64)
             }
-            JobSchedule::Cron { cron } => Schedule::from_str(&cron)
+            JobSchedule::Cron { cron } => Schedule::from_str(cron)
                 .unwrap()
                 .after(&dt)
                 .map(|dt| dt.timestamp())
@@ -83,7 +83,7 @@ impl FromStr for JobSchedule {
                 cron: s.to_string(),
             });
         }
-        return Err(Error::InvalidParams("schedule"));
+        Err(Error::InvalidParams("schedule"))
     }
 }
 

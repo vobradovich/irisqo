@@ -16,8 +16,8 @@ pub async fn get_by_id(
     Ok(row)
 }
 
-pub async fn get_all<'a>(
-    pool: &'a Pool<Postgres>,
+pub async fn get_all(
+    pool: &Pool<Postgres>,
     limit: i32,
     offset: i32,
 ) -> Result<Vec<ScheduleRow>, Error> {
@@ -30,10 +30,19 @@ pub async fn get_all<'a>(
     Ok(res)
 }
 
-pub async fn inactive(pool: &Pool<Postgres>, schedule_id: &str, inactive: bool) -> Result<u64, Error> {
-    const SQL: &str =
-        "UPDATE schedules SET inactive = $2 WHERE schedule_id = $1 RETURNING schedule_id";
-    let res = sqlx::query(SQL).bind(schedule_id).bind(inactive).execute(pool).await?;
+pub async fn inactive(
+    pool: &Pool<Postgres>,
+    schedule_id: &str,
+    inactive: bool,
+) -> Result<u64, Error> {
+    const SQL: &str = "
+    UPDATE schedules SET inactive = $2 WHERE schedule_id = $1 RETURNING schedule_id
+    ";
+    let res = sqlx::query(SQL)
+        .bind(schedule_id)
+        .bind(inactive)
+        .execute(pool)
+        .await?;
     Ok(res.rows_affected())
 }
 

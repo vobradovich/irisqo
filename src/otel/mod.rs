@@ -4,6 +4,7 @@ use std::borrow::Cow;
 use axum::extract::MatchedPath;
 use axum::http;
 pub use headerinjector::HeaderExtractor;
+#[allow(unused_imports)]
 pub use headerinjector::HeaderInjector;
 use hyper::Method;
 use hyper::Uri;

@@ -10,8 +10,8 @@ pub async fn live(pool: &Pool<Postgres>, instance_id: &str) -> Result<(), Error>
     Ok(())
 }
 
-pub(crate) async fn get_all<'a>(
-    pool: &'a Pool<Postgres>,
+pub(crate) async fn get_all(
+    pool: &Pool<Postgres>,
     limit: i32,
     offset: i32,
 ) -> Result<Vec<InstanceRow>, Error> {

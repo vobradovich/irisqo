@@ -9,6 +9,7 @@ use crate::{
 };
 use bytes::Bytes;
 use http_body_util::Full;
+#[allow(unused_imports)]
 use opentelemetry::{global, trace::TraceContextExt};
 use std::{collections::HashMap, time::Duration};
 use tokio::time;
@@ -54,7 +55,7 @@ async fn job_run_with_error(app_state: &AppState, entry: JobEntry) -> Result<(),
 async fn job_run_http(app_state: &AppState, job: JobRow) -> Result<JobResult, Error> {
     let job_id = job.id;
     let timeout_ms = job.meta.timeout;
-    let mut req = hyper::Request::<Full<Bytes>>::try_from(job)?;
+    let req = hyper::Request::<Full<Bytes>>::try_from(job)?;
     // OpenTelemetry
     // let tracer = global::tracer("irisqo");
     // let span = opentelemetry::trace::Tracer::span_builder(&tracer, String::from("job_run_http"))
@@ -122,8 +123,7 @@ async fn schedule_next_at(app_state: &AppState, schedule_id: Option<&str>) -> Op
     let schedule = row.schedule.parse::<JobSchedule>().map_err(|err| {
         error!({ instance_id = app_state.instance_id, schedule_id }, "JobSchedule::parse error {:?}", err);
     }).ok()?;
-    let next_at = schedule.next(JobSchedule::now_secs(), row.until);
-    next_at
+    schedule.next(JobSchedule::now_secs(), row.until)
 }
 
 async fn on_error(
@@ -137,7 +137,7 @@ async fn on_error(
         Error::HyperError(_) | Error::Timeout(_) | Error::ServerError(_) => {
             info!({ instance_id = app_state.instance_id, job_id }, "====> error {:?}", err);
             let res = retry_or_fail(app_state, entry, meta).await;
-            if let Ok(_) = res {
+            if res.is_ok() {
                 return None;
             }
             info!({ instance_id = app_state.instance_id, job_id }, "====> retry_or_fail {:?}", res.err());

@@ -43,9 +43,9 @@ async fn main() {
     let state = AppState::new().await;
     tokio::join!(
         start_http_server(&state),
-        start_scheduler_service(&state),
-        start_jobs_service(&state),
-        start_batch_jobs_service(&state),
+        services::start_scheduler_service(&state),
+        services::start_channel_jobs_service(&state),
+        services::start_batch_jobs_service(&state),
     );
 
     eprintln!("->> SHUTDOWN")
@@ -70,24 +70,6 @@ async fn start_http_server(state: &Arc<AppState>) {
         .await
         .expect("Failed to run axum::serve");
     state.shutdown_token.cancel();
-}
-
-async fn start_scheduler_service(state: &Arc<AppState>) {
-    let app_state = Arc::clone(state);
-    let service = services::SchedulerService::new(app_state);
-    service.run().await.expect("Failed to run SchedulerService");
-}
-
-async fn start_jobs_service(state: &Arc<AppState>) {
-    let app_state = Arc::clone(state);
-    let service = services::ChannelWorkerService::new(app_state);
-    service.run().await.expect("Failed to run JobService");
-}
-
-async fn start_batch_jobs_service(state: &Arc<AppState>) {
-    let app_state = Arc::clone(state);
-    let service = services::BatchWorkerService::new(app_state);
-    service.run().await.expect("Failed to run JobService");
 }
 
 async fn shutdown_signal() {

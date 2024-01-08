@@ -6,6 +6,7 @@ use crate::{features::results::JobResult, otel};
 
 // region:    Error
 #[derive(thiserror::Error, Debug)]
+#[allow(clippy::enum_variant_names)]
 pub enum Error {
     // #[error("Entity Not Found - {0}[{1}] ")]
     // EntityNotFound(&'static str, String),

@@ -123,9 +123,9 @@ async fn create_with_schedule(
         false => Some(job.body.as_ref()),
     };
 
-    let after = job.at.unwrap_or_else(|| JobSchedule::now_secs());
+    let after = job.at.unwrap_or_else(JobSchedule::now_secs);
     let at = schedule.next(after, job.until);
-    if let None = at {
+    if at.is_none() {
         return Err(Error::InvalidParams("schedule"));
     }
     let schedule_id = ulid::Ulid::new().to_string();
@@ -178,7 +178,7 @@ pub async fn clone_schedule_at(
         .bind(instance_id)
         .fetch_one(pool)
         .await?;
-    return Ok(job_id);
+    Ok(job_id)
 }
 
 pub async fn get_by_id(pool: &Pool<Postgres>, job_id: i64) -> Result<Option<JobRow>, Error> {
@@ -264,11 +264,10 @@ pub fn fetch_enqueued<'a>(
         INSERT INTO history SELECT id, retry, $2 as instance_id, now() as at, 'assigned'::history_status as status FROM a RETURNING id
     )
     UPDATE enqueued SET instance_id = $2, lock_at = now() WHERE id = ANY(SELECT id FROM a) RETURNING id, retry";
-    let res = sqlx::query_as::<_, JobEntry>(SQL)
+    sqlx::query_as::<_, JobEntry>(SQL)
         .bind(prefetch)
         .bind(instance_id)
-        .fetch(pool);
-    res
+        .fetch(pool)
 }
 
 pub async fn fetch_optional(
@@ -281,10 +280,9 @@ pub async fn fetch_optional(
         INSERT INTO history SELECT id, retry, $2 as instance_id, now() as at, 'assigned'::history_status as status FROM a RETURNING id
     )
     UPDATE enqueued SET instance_id = $2, lock_at = now() WHERE id = ANY(SELECT id FROM a) RETURNING id, retry";
-    let res = sqlx::query_as::<_, JobEntry>(SQL)
+    sqlx::query_as::<_, JobEntry>(SQL)
         .bind(1)
         .bind(instance_id)
         .fetch_optional(pool)
-        .await;
-    res
+        .await
 }

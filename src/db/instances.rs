@@ -3,7 +3,7 @@ use std::time::Duration;
 use crate::models::Error;
 use sqlx::{Pool, Postgres};
 
-pub async fn kill_expired<'a>(pool: &'a Pool<Postgres>, expire: Duration) -> Result<u64, Error> {
+pub async fn kill_expired(pool: &Pool<Postgres>, expire: Duration) -> Result<u64, Error> {
     const SQL: &str = "
     WITH a AS (
         SELECT id FROM instances WHERE status = 'live' AND last_at < now() - $1 ORDER BY id FOR UPDATE SKIP LOCKED
@@ -15,8 +15,10 @@ pub async fn kill_expired<'a>(pool: &'a Pool<Postgres>, expire: Duration) -> Res
     Ok(res.rows_affected())
 }
 
-pub async fn kill<'a>(pool: &'a Pool<Postgres>, instance_id: &str) -> Result<u64, Error> {
-    const SQL: &str = "UPDATE instances SET status = 'dead' WHERE id = $1 RETURNING id";
+pub async fn kill(pool: &Pool<Postgres>, instance_id: &str) -> Result<u64, Error> {
+    const SQL: &str = "
+    UPDATE instances SET status = 'dead' WHERE id = $1 RETURNING id
+    ";
     let res = sqlx::query(SQL).bind(instance_id).execute(pool).await?;
     Ok(res.rows_affected())
 }
