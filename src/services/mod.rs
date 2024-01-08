@@ -4,7 +4,6 @@ mod naiveworkerservice;
 mod schedulerservice;
 mod timerjobservice;
 
-pub mod jobqueue;
 pub mod jobrunner;
 
 pub use batchworkerservice::BatchWorkerService;

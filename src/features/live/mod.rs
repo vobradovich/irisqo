@@ -16,7 +16,7 @@ pub fn routes(state: Arc<AppState>) -> Router {
 }
 
 async fn root() -> impl IntoResponse {
-    (StatusCode::OK, "Use /api/v1/jobs to get jobs.")
+    (StatusCode::OK, "Use /to/* to queue a request.")
 }
 
 async fn live() -> impl IntoResponse {

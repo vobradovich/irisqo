@@ -17,7 +17,7 @@
 ## API
 
 ### Queue
-To a queue a request, simply prefix a request with {{host}}/to/ and we’ll queue and forward the request with the exact same method/body/headers/query.
+To queue a request, simply prefix a request with {{host}}/to/ and we’ll queue and forward the request with the exact same method/body/headers/query.
 ```
 @host=http://localhost:8102
 
@@ -26,7 +26,7 @@ GET {{host}}/to/https://postman-echo.com/get
 ```
 
 Response Headers
-- `request-id` - this is the ID of the request
+- `job-id` - this is the ID of the request job
 - `schedule-id` - ID of the new schedule
 - `external-id` - optional external ID of the requestm from `_id` query parameter.
 

@@ -57,6 +57,7 @@ pub struct JobMeta {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub delay: Option<u32>,
     pub timeout: u32,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub trace_id: Option<String>,
 }
 

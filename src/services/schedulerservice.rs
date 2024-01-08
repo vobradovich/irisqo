@@ -1,9 +1,9 @@
 use tokio::{select, time};
 #[allow(unused_imports)]
-use tracing::{debug, error, info, warn, trace};
+use tracing::{debug, error, info, trace, warn};
 
 use crate::{
-    db,
+    db, features,
     models::{AppState, Error},
 };
 use std::{sync::Arc, time::Duration};
@@ -19,11 +19,12 @@ impl SchedulerService {
     }
 
     pub async fn run(&self) -> Result<(), Error> {
+        let instance_id = &self.app_state.instance_id;
         if self.app_state.scheduler_options.is_none() {
-            warn!({ instance_id = self.app_state.instance_id }, "disabled");
+            warn!({ instance_id }, "disabled");
             return Ok(());
         }
-        info!({ instance_id = self.app_state.instance_id }, "start");
+        info!({ instance_id }, "start");
         let t = self
             .app_state
             .scheduler_options
@@ -34,27 +35,27 @@ impl SchedulerService {
         interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
         while !self.app_state.shutdown_token.is_cancelled() {
             if let Err(err) = self.tick().await {
-                error!(
-                    { instance_id = self.app_state.instance_id },
-                    "error {}", err
-                );
+                error!({ instance_id }, "error {}", err);
             }
             select!(
-                _ = interval.tick() => {},
+                biased;
                 _ = self.app_state.shutdown_token.cancelled() => {}
+                _ = interval.tick() => {},
             );
         }
-        db::instances::kill(&self.app_state.pool, &self.app_state.instance_id).await?;
-        info!({ instance_id = self.app_state.instance_id }, "stop");
+        db::instances::kill(&self.app_state.pool, instance_id).await?;
+        info!({ instance_id }, "stop");
         Ok(())
     }
 
     async fn tick(&self) -> Result<(), Error> {
-        trace!({ instance_id = self.app_state.instance_id }, "tick");
-        db::instances::live(&self.app_state.pool, &self.app_state.instance_id).await?;
-        let expired = db::instances::kill_expired(&self.app_state.pool, Duration::from_secs(30)).await?;
-        let enqueued = db::jobqueue::enqueue_scheduled(&self.app_state.pool, &self.app_state.instance_id).await?;
-        debug!({ instance_id = self.app_state.instance_id, enqueued = enqueued, expired = expired }, "db::jobs::enqueue_scheduled");
+        let instance_id = &self.app_state.instance_id;
+        let pool = &self.app_state.pool;
+        trace!({ instance_id }, "tick");
+        features::instances::live(pool, instance_id).await?;
+        let expired = db::instances::kill_expired(pool, Duration::from_secs(30)).await?;
+        let enqueued = db::jobqueue::enqueue_scheduled(pool, instance_id).await?;
+        debug!({ instance_id, enqueued, expired }, "db::jobs::enqueue_scheduled");
         Ok(())
     }
 }

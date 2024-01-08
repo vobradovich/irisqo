@@ -139,9 +139,9 @@ async fn job_create(
     let mut headers = HeaderMap::new();
     headers.insert(
         header::LOCATION,
-        format!("/api/v1/requests/{}", job.id).parse().unwrap(),
+        format!("/api/v1/jobs/{}", job.id).parse().unwrap(),
     );
-    headers.insert("request-id", job.id.into());
+    headers.insert("job-id", job.id.into());
     if let Some(schedule_id) = job.schedule_id {
         headers.insert("schedule-id", schedule_id.parse().unwrap());
     }

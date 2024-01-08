@@ -3,13 +3,6 @@ use std::time::Duration;
 use crate::models::Error;
 use sqlx::{Pool, Postgres};
 
-pub async fn live(pool: &Pool<Postgres>, instance_id: &str) -> Result<(), Error> {
-    const SQL: &str =
-        "INSERT INTO instances(id) VALUES ($1) ON CONFLICT (id) DO UPDATE SET last_at = now()";
-    sqlx::query(SQL).bind(instance_id).execute(pool).await?;
-    Ok(())
-}
-
 pub async fn kill_expired<'a>(pool: &'a Pool<Postgres>, expire: Duration) -> Result<u64, Error> {
     const SQL: &str = "
     WITH a AS (

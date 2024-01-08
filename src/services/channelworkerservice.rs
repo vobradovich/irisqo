@@ -1,6 +1,6 @@
 use async_channel::Receiver;
 use futures::future::join_all;
-use tokio::{select, sync::RwLock, time};
+use tokio::{select, time};
 #[allow(unused_imports)]
 use tracing::{debug, error, info, warn};
 
@@ -14,25 +14,23 @@ use std::sync::Arc;
 #[derive(Debug)]
 pub struct ChannelWorkerService {
     app_state: Arc<AppState>,
-    running_workers: Arc<RwLock<Vec<tokio::task::JoinHandle<()>>>>,
 }
 
 impl ChannelWorkerService {
     pub fn new(app_state: Arc<AppState>) -> Self {
-        let running_workers = Arc::new(RwLock::new(Vec::new()));
         Self {
             app_state,
-            running_workers,
         }
     }
 
     pub async fn run(&self) -> Result<(), Error> {
+        let instance_id = &self.app_state.instance_id;
         let app_state: &Arc<AppState> = &self.app_state;
-        info!({ instance_id = app_state.instance_id }, "start");
+        info!({ instance_id }, "start");
 
         let worker_count = app_state.worker_options.workers_count;
         if worker_count == 0 {
-            debug!({ instance_id = app_state.instance_id, worker_count }, "app_state.worker_options.workers_count equals to 0");
+            debug!({ instance_id, worker_count }, "app_state.worker_options.workers_count equals to 0");
             return Ok(());
         }
 
@@ -41,13 +39,14 @@ impl ChannelWorkerService {
 
         let (tx, rx) = async_channel::bounded::<JobEntry>(1);
 
+        let mut running_workers: Vec<tokio::task::JoinHandle<()>> = Vec::with_capacity(worker_count);
         for idx in 0..worker_count {
             let join_handle = tokio::spawn({
                 let state = Arc::clone(app_state);
                 let rx_worker = rx.clone();
-                async move { run_worker(state, idx, rx_worker).await }
+                async move { run_worker(&state, idx, rx_worker).await }
             });
-            self.running_workers.write().await.push(join_handle);
+            running_workers.push(join_handle);
         }
 
         while !app_state.shutdown_token.is_cancelled() {
@@ -61,14 +60,14 @@ impl ChannelWorkerService {
                     wait_tick_or_shutdown(&mut interval, app_state).await;
                 }
                 Err(err) => {
-                    error!({ instance_id = app_state.instance_id }, "error {}", err);
+                    error!({ instance_id }, "error {}", err);
                     wait_tick_or_shutdown(&mut interval, app_state).await;
                 }
             }
         }
         tx.close();
-        join_all(self.running_workers.write().await.iter_mut()).await;
-        info!({ instance_id = app_state.instance_id }, "stop");
+        join_all(running_workers.iter_mut()).await;
+        info!({ instance_id }, "stop");
         Ok(())
     }
 }
@@ -82,10 +81,11 @@ async fn wait_tick_or_shutdown(interval: &mut time::Interval, app_state: &Arc<Ap
     );
 }
 
-pub async fn run_worker(app_state: Arc<AppState>, idx: usize, rx: Receiver<JobEntry>) {
-    info!({ instance_id = app_state.instance_id, idx }, "run_worker");
+pub async fn run_worker(app_state: &Arc<AppState>, idx: usize, rx: Receiver<JobEntry>) {
+    let instance_id = &app_state.instance_id;
+    info!({ instance_id, idx }, "run_worker");
     while let Ok(entry) = rx.recv().await {
-        jobrunner::job_run(&app_state, entry).await;
+        jobrunner::job_run(app_state, entry).await;
     }
-    info!({ instance_id = app_state.instance_id, idx }, "stop_worker");
+    info!({ instance_id, idx }, "stop_worker");
 }

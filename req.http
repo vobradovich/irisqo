@@ -8,20 +8,20 @@ GET {{host}}
 GET {{host}}/to/{{host}}/error?_retry=3&_delay=5
 
 ###
-@request-id = {{req.response.headers.request-id}}
+@job-id = {{req.response.headers.job-id}}
 @schedule-id = {{req.response.headers.schedule-id}}
 
 ###
-GET {{host}}/api/v1/requests/{{request-id}}
+GET {{host}}/api/v1/jobs/{{job-id}}
 
 ###
-GET {{host}}/api/v1/requests/{{request-id}}/history
+GET {{host}}/api/v1/jobs/{{job-id}}/history
 
 ###
-GET {{host}}/api/v1/requests/{{request-id}}/result
+GET {{host}}/api/v1/jobs/{{job-id}}/result
 
 ###
-GET {{host}}/api/v1/requests/{{request-id}}/result/raw
+GET {{host}}/api/v1/jobs/{{job-id}}/result/raw
 
 ###
 GET {{host}}/api/v1/instances

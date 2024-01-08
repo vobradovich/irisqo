@@ -16,16 +16,18 @@ use tokio::time;
 use tracing::{debug, error, info, warn};
 
 pub async fn job_run(app_state: &AppState, entry: JobEntry) {
+    let instance_id = &app_state.instance_id;
     let res = job_run_with_error(app_state, entry).await;
     if let Err(err) = res {
         let JobEntry { id: job_id, retry } = entry;
-        error!({ instance_id = app_state.instance_id, job_id, retry }, "run error {:?}", err);
+        error!({ instance_id, job_id, retry }, "run error {:?}", err);
     }
 }
 
 async fn job_run_with_error(app_state: &AppState, entry: JobEntry) -> Result<(), Error> {
+    let instance_id = &app_state.instance_id;
     let JobEntry { id: job_id, retry } = entry;
-    debug!({ instance_id = app_state.instance_id, job_id, retry }, "==> run");
+    debug!({ instance_id, job_id, retry }, "==> run");
     let job = db::jobqueue::get_by_id(&app_state.pool, job_id)
         .await?
         .ok_or(Error::JobNotFound(job_id))?;
@@ -41,7 +43,7 @@ async fn job_run_with_error(app_state: &AppState, entry: JobEntry) -> Result<(),
         }
         Err(err) => {
             if let Some(res) = on_error(app_state, entry, meta, err).await {
-                warn!({ instance_id = app_state.instance_id, job_id }, "====> processed={:?}", &res.meta);
+                warn!({ instance_id, job_id }, "====> processed={:?}", &res.meta);
                 processed(app_state, job_id, schedule_id.as_deref(), res).await?;
             }
         }
