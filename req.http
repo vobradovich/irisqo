@@ -5,7 +5,13 @@ GET {{host}}
 
 ###
 # @name req
-GET {{host}}/to/{{host}}/error?_retry=3&_delay=5
+POST {{host}}/to/{{host}}/echo?_retry=3&_delay=5
+content-type: application/json
+
+{
+    "name": "irisqo",
+    "time": "{{$timestamp}}"
+}
 
 ###
 @job-id = {{req.response.headers.job-id}}

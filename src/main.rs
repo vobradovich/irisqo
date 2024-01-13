@@ -56,6 +56,7 @@ async fn start_http_server(state: &Arc<AppState>) {
     let app = Router::new()
         .merge(handlers::http::routes(Arc::clone(state)))
         .merge(features::live::routes(Arc::clone(state)))
+        .merge(features::echo::routes(Arc::clone(state)))
         .nest("/api/v1", handlers::jobs::routes(Arc::clone(state)))
         .nest("/api/v1", features::history::routes(Arc::clone(state)))
         .nest("/api/v1", features::results::routes(Arc::clone(state)))

@@ -8,7 +8,7 @@ use crate::{
     models::{AppState, Error, JobEntry, JobMeta, JobProtocol, JobRow},
 };
 use bytes::Bytes;
-use http_body_util::Full;
+use http_body_util::{BodyExt, Full};
 #[allow(unused_imports)]
 use opentelemetry::{global, trace::TraceContextExt};
 use std::{collections::HashMap, time::Duration};
@@ -83,7 +83,7 @@ async fn job_run_http(app_state: &AppState, job: JobRow) -> Result<JobResult, Er
         }
     }
     // Body
-    let collected = http_body_util::BodyExt::collect(response.into_body()).await?;
+    let collected = response.into_body().collect().await?;
     let bytes = collected.to_bytes();
     // Result
     let job_result = JobResult::http(status_code, version, Some(header_hashmap), bytes);
@@ -105,7 +105,13 @@ async fn processed(
     results::processed(&app_state.pool, job_id, result).await?;
     let next_at = schedule_next_at(app_state, schedule_id).await;
     if let Some(next_at) = next_at {
-        let next_id = db::jobqueue::clone_schedule_at(&app_state.pool, job_id, next_at, &app_state.instance_id).await?;
+        let next_id = db::jobqueue::clone_schedule_at(
+            &app_state.pool,
+            job_id,
+            next_at,
+            &app_state.instance_id,
+        )
+        .await?;
         debug!({ instance_id = app_state.instance_id, job_id, next_id, next_at }, "==> clone and schedule");
     }
     Ok(())
