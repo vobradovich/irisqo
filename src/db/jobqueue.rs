@@ -107,7 +107,7 @@ async fn create_with_schedule(
 ) -> Result<JobCreateRow, Error> {
     const SQL: &str = "
     WITH a AS (
-        INSERT INTO jobs(meta, headers, body, schedule_id, external_id) VALUES ($1, $2, $3, $4, $6) RETURNING id
+        INSERT INTO jobs(meta, headers, body, external_id, schedule_id) VALUES ($1, $2, $3, $4, $6) RETURNING id
     ), b AS (
         INSERT INTO schedules SELECT $6 as schedule_id, $7 as schedule, id as next_id, $5 as next_at FROM a RETURNING next_id
     ), hist AS (
