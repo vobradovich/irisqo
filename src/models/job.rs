@@ -30,6 +30,13 @@ pub struct JobEntry {
     pub retry: i32,
 }
 
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct JobWithRetry {
+    #[sqlx(flatten)]
+    pub job: JobRow,
+    pub retry: i32,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct JobCreate {
     pub meta: JobMeta,

@@ -44,8 +44,7 @@ async fn main() {
     tokio::join!(
         start_http_server(&state),
         services::start_scheduler_service(&state),
-        services::start_channel_jobs_service(&state),
-        services::start_batch_jobs_service(&state),
+        services::start_channel_worker_service(&state),
     );
 
     eprintln!("->> SHUTDOWN")

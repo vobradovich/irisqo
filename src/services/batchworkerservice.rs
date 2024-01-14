@@ -68,7 +68,7 @@ pub async fn run_worker(app_state: Arc<AppState>, idx: usize) {
 async fn run_job_batch(app_state: &Arc<AppState>) -> Result<(), Error> {
     let instance_id = &app_state.instance_id;
     trace!({ instance_id }, "run_job_batch");
-    let mut rows = db::jobqueue::fetch_enqueued(
+    let mut rows = db::jobqueue::fetch_job_with_retry(
         &app_state.pool,
         instance_id,
         i32::from(app_state.worker_options.prefetch),

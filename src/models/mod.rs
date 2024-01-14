@@ -7,6 +7,7 @@ pub use job::JobEntry;
 pub use job::JobMeta;
 pub use job::JobProtocol;
 pub use job::JobRow;
+pub use job::JobWithRetry;
 pub use jobretry::JobRetry;
 pub use state::AppState;
 

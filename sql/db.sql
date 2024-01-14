@@ -111,3 +111,4 @@ INSERT INTO enqueued SELECT id FROM a RETURNING id
 SELECT p.id, p.status, p.at - j.created_at, p.instance_id FROM processed p
 inner join jobs j on j.id = p.id
 order by p.id desc
+limit 10

@@ -1,10 +1,10 @@
 use bytes::Bytes;
-use http_body_util::Full;
 use clap::Parser;
 use dotenv::dotenv;
-use hyper_util::client::legacy::{Client, connect::HttpConnector};
-use hyper_util::rt::TokioExecutor;
+use http_body_util::Full;
 use hyper_tls::HttpsConnector;
+use hyper_util::client::legacy::{connect::HttpConnector, Client};
+use hyper_util::rt::TokioExecutor;
 use sqlx::{
     postgres::{PgConnectOptions, PgPoolOptions},
     Pool, Postgres,
@@ -75,9 +75,9 @@ impl AppState {
                 prefetch: 1000,
             }),
             worker_options: WorkerOptions {
-                workers_count: args.workers.unwrap_or(4),
-                poll_interval: Duration::from_millis(500),
-                prefetch: 10,
+                workers_count: args.workers.unwrap_or(8),
+                poll_interval: Duration::from_millis(1000),
+                prefetch: 8,
                 timeout: 3000,
             },
             shutdown_token: CancellationToken::new(),

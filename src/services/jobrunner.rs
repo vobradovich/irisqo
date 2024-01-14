@@ -5,7 +5,7 @@ use crate::{
         results::{self, JobResult},
         schedules::JobSchedule,
     },
-    models::{AppState, Error, JobEntry, JobMeta, JobProtocol, JobRow},
+    models::{AppState, Error, JobEntry, JobMeta, JobProtocol, JobRow, JobWithRetry},
 };
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
@@ -16,22 +16,41 @@ use tokio::time;
 #[allow(unused_imports)]
 use tracing::{debug, error, info, warn};
 
-pub async fn job_run(app_state: &AppState, entry: JobEntry) {
+#[allow(dead_code)]
+pub async fn job_get_and_run(app_state: &AppState, entry: JobEntry) {
     let instance_id = &app_state.instance_id;
-    let res = job_run_with_error(app_state, entry).await;
-    if let Err(err) = res {
-        let JobEntry { id: job_id, retry } = entry;
-        error!({ instance_id, job_id, retry }, "run error {:?}", err);
+    let JobEntry { id: job_id, retry } = entry;
+    let job = db::jobqueue::get_by_id(&app_state.pool, job_id)
+        .await
+        .and_then(|o| o.ok_or(Error::JobNotFound(job_id)))
+        .map_err(|err| {
+            error!({ instance_id, job_id, retry }, "db::jobqueue::get_by_id error {:?}", err);
+        });
+    if let Ok(job) = job {
+        let job_with_retry = JobWithRetry { job, retry };
+        job_run(app_state, job_with_retry).await;
     }
 }
 
-async fn job_run_with_error(app_state: &AppState, entry: JobEntry) -> Result<(), Error> {
+pub async fn job_run(app_state: &AppState, job_with_retry: JobWithRetry) {
     let instance_id = &app_state.instance_id;
-    let JobEntry { id: job_id, retry } = entry;
+    let job_id = job_with_retry.job.id;
+    let retry = job_with_retry.retry;
+    _ = job_run_with_error(app_state, job_with_retry)
+        .await
+        .map_err(|err| {
+            error!({ instance_id, job_id, retry }, "run error {:?}", err);
+        });
+}
+
+async fn job_run_with_error(
+    app_state: &AppState,
+    job_with_retry: JobWithRetry,
+) -> Result<(), Error> {
+    let instance_id = &app_state.instance_id;
+    let JobWithRetry { job, retry } = job_with_retry;
+    let job_id = job.id;
     debug!({ instance_id, job_id, retry }, "==> run");
-    let job = db::jobqueue::get_by_id(&app_state.pool, job_id)
-        .await?
-        .ok_or(Error::JobNotFound(job_id))?;
     let meta = job.meta.clone();
     let schedule_id = job.schedule_id.clone();
     let job_result = match meta.protocol {
@@ -43,7 +62,8 @@ async fn job_run_with_error(app_state: &AppState, entry: JobEntry) -> Result<(),
             processed(app_state, job_id, schedule_id.as_deref(), result).await?;
         }
         Err(err) => {
-            if let Some(res) = on_error(app_state, entry, meta, err).await {
+            if let Some(res) = on_error(app_state, JobEntry { id: job_id, retry }, meta, err).await
+            {
                 warn!({ instance_id, job_id }, "====> processed={:?}", &res.meta);
                 processed(app_state, job_id, schedule_id.as_deref(), res).await?;
             }
@@ -163,19 +183,20 @@ async fn on_error(
 }
 
 async fn retry_or_fail(app_state: &AppState, entry: JobEntry, meta: JobMeta) -> Result<(), Error> {
+    let instance_id = &app_state.instance_id;
     let JobEntry { id: job_id, retry } = entry;
     let retry: u16 = retry.try_into().unwrap_or(u16::MAX);
     match meta.retry.next_retry_in(retry) {
         None => Err(Error::RetriesExceeded),
         Some(0) => {
-            db::jobqueue::unlock(&app_state.pool, job_id, &app_state.instance_id).await?;
+            db::jobqueue::unlock(&app_state.pool, job_id, instance_id).await?;
             Ok(())
         }
         Some(delay) => {
             let now_secs = JobSchedule::now_secs();
             let at = now_secs + i64::from(delay);
             db::jobqueue::retry(&app_state.pool, job_id, at).await?;
-            debug!({ instance_id = app_state.instance_id, job_id, retry }, "==> retry");
+            debug!({ instance_id, job_id, retry }, "==> retry");
             Ok(())
         }
     }

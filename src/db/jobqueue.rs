@@ -1,5 +1,5 @@
 use crate::features::schedules::JobSchedule;
-use crate::models::{Error, JobCreateRow, JobEntry};
+use crate::models::{Error, JobCreateRow, JobEntry, JobWithRetry};
 use crate::models::{JobCreate, JobRow};
 use futures::stream::BoxStream;
 use sqlx::{types::Json, Pool, Postgres};
@@ -270,6 +270,7 @@ pub fn fetch_enqueued<'a>(
         .fetch(pool)
 }
 
+#[allow(dead_code)]
 pub async fn fetch_optional(
     pool: &Pool<Postgres>,
     instance_id: &str,
@@ -285,4 +286,26 @@ pub async fn fetch_optional(
         .bind(instance_id)
         .fetch_optional(pool)
         .await
+}
+
+#[allow(dead_code, unused_variables)]
+pub fn fetch_job_with_retry<'a>(
+    pool: &'a Pool<Postgres>,
+    instance_id: &'a str,
+    prefetch: i32,
+) -> BoxStream<'a, Result<JobWithRetry, sqlx::Error>> {
+    const SQL: &str = "
+    WITH a AS (
+        SELECT id, retry FROM enqueued WHERE lock_at IS NULL ORDER BY retry, id LIMIT $1 FOR UPDATE SKIP LOCKED
+    ), b AS (
+        UPDATE enqueued SET instance_id = $2, lock_at = now() WHERE id = ANY(SELECT id FROM a) RETURNING id, retry
+    ), hist AS (
+        INSERT INTO history SELECT id, retry, $2 as instance_id, now() as at, 'assigned'::history_status as status FROM a RETURNING id
+    )
+    SELECT j.*, a.retry FROM a INNER JOIN jobs as j ON a.id = j.id
+    ";
+    sqlx::query_as::<_, JobWithRetry>(SQL)
+        .bind(prefetch)
+        .bind(instance_id)
+        .fetch(pool)
 }
