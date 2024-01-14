@@ -56,6 +56,11 @@ impl From<Error> for Problem {
                 .with_title(StatusCode::BAD_REQUEST.to_string())
                 .with_detail(item.to_string())
                 .with_value("trace-id", trace_id),
+            Error::InvalidParams(_) => problemdetails::new(StatusCode::BAD_REQUEST)
+                // .with_type("https://example.com/probs/out-of-credit")
+                .with_title(StatusCode::BAD_REQUEST.to_string())
+                .with_detail(item.to_string())
+                .with_value("trace-id", trace_id),
             Error::DbError(sqlx::Error::RowNotFound) => problemdetails::new(StatusCode::NOT_FOUND)
                 // .with_type("https://example.com/probs/out-of-credit")
                 .with_title(StatusCode::NOT_FOUND.to_string())

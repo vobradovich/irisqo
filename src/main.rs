@@ -61,7 +61,12 @@ async fn start_http_server(state: &Arc<AppState>) {
         .nest("/api/v1", features::results::routes(Arc::clone(state)))
         .nest("/api/v1", features::schedules::routes(Arc::clone(state)))
         .nest("/api/v1", features::instances::routes(Arc::clone(state)))
-        .layer(TraceLayer::new_for_http().make_span_with(otel::make_span_from_request));
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(otel::make_span_from_request)
+                .on_response(otel::on_response)
+                .on_failure(otel::on_failure),
+        );
 
     let listener = TcpListener::bind(addr).await.unwrap();
     tracing::info!("listen {:?}", addr);

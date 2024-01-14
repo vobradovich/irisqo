@@ -11,35 +11,35 @@ license = "MIT"
 tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7" }
 futures = "0.3"
-async-channel = "2.1.0"
+async-channel = "2.1"
 # JSON libs
 serde = "1.0"
 serde_json = { version = "1.0", features = ["raw_value"] }
 serde_derive = "1.0"
-http-serde = "2.0.0"
+http-serde = "2.0"
 serde_urlencoded = "0.7"
 # Web libs
 axum = "0.7"
 tower = "0.4"
 tower-http = { version = "0.5", features = ["trace"] }
 hyper = { version = "1.0", features = ["full"] }
-hyper-util = { version = "0.1.1", features = ["client-legacy"]}
+hyper-util = { version = "0.1", features = ["client-legacy"]}
 hyper-tls = { version = "0.6" }
 http-body-util = { version = "0.1" }
-url = { version = "2.4" }
+url = { version = "2.5" }
 # Configuration & Observability
 dotenv = "0.15.0"
 opentelemetry = { version = "0.21", features = [
     "metrics",
     "trace",
 ] }
-opentelemetry-otlp = { version = "0.14", features = [
-    "metrics",
-    "tls",
-    "trace",
-] }
+# opentelemetry-otlp = { version = "0.14", features = [
+#     "metrics",
+#     "tls",
+#     "trace",
+# ] }
 opentelemetry_sdk = "0.21"
-opentelemetry-http = { version = "0.10", features = ["hyper", "tokio"] }
+# opentelemetry-http = { version = "0.10", features = ["hyper", "tokio"] }
 opentelemetry-stdout = { version = "0.2", features = ["metrics", "trace"] }
 tracing = { version = "0.1" }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

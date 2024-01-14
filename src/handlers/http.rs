@@ -73,8 +73,16 @@ async fn job_create(
                 retry = value.parse()?;
                 continue;
             }
-            if key == "_interval" || key == "_cron" {
-                schedule = Some(value.parse()?);
+            if key == "_interval" {
+                let job_schedule = value
+                    .parse()
+                    .map_err(|_| Error::InvalidParams("interval"))?;
+                schedule = Some(job_schedule);
+                continue;
+            }
+            if key == "_cron" {
+                let job_schedule = value.parse().map_err(|_| Error::InvalidParams("cron"))?;
+                schedule = Some(job_schedule);
                 continue;
             }
             if key == "_until" {

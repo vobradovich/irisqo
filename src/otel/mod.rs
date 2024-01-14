@@ -6,10 +6,10 @@ use axum::http;
 pub use headerinjector::HeaderExtractor;
 #[allow(unused_imports)]
 pub use headerinjector::HeaderInjector;
-use hyper::Method;
 use hyper::Uri;
 use hyper::Version;
 use opentelemetry::Context;
+use tower_http::classify::ServerErrorsFailureClass;
 use tracing::field::Empty;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
@@ -34,7 +34,7 @@ pub fn current_trace_id() -> Option<String> {
 
 pub fn make_span_from_request<B>(request: &http::Request<B>) -> tracing::Span {
     let parent = extract_context(request.headers());
-    let http_method = http_method(request.method());
+    let http_method = request.method().as_str();
     let route = http_route(request);
     let span = tracing::info_span!(
         target: TRACING_TARGET,
@@ -57,6 +57,43 @@ pub fn make_span_from_request<B>(request: &http::Request<B>) -> tracing::Span {
     span
 }
 
+pub fn on_response<B>(
+    response: &http::Response<B>,
+    latency: std::time::Duration,
+    span: &tracing::Span,
+) {
+    let status = response.status().as_u16().to_string();
+    span.record("http.status_code", &tracing::field::display(status));
+    span.record("otel.status_code", "OK");
+
+    tracing::debug!(
+        "finished processing request latency={} ms status={}",
+        latency.as_millis(),
+        response.status().as_u16(),
+    );
+}
+
+pub fn on_failure(
+    failure_classification: ServerErrorsFailureClass,
+    latency: std::time::Duration,
+    span: &tracing::Span,
+) {
+    match failure_classification {
+        ServerErrorsFailureClass::StatusCode(status) if status.is_server_error() => {
+            span.record("otel.status_code", "ERROR");
+        }
+        ServerErrorsFailureClass::Error(ref s) => {
+            span.record("exception.message", s);
+        }
+        _ => {}
+    }
+    tracing::error!(
+        "request failed latency={} ms status={}",
+        latency.as_millis(),
+        failure_classification,
+    );
+}
+
 #[must_use]
 fn extract_context(headers: &http::HeaderMap) -> Context {
     let extractor = HeaderExtractor(headers);
@@ -69,23 +106,6 @@ fn http_route<B>(request: &http::Request<B>) -> &str {
         .extensions()
         .get::<MatchedPath>()
         .map_or_else(|| "", |mp| mp.as_str())
-}
-
-#[inline]
-#[must_use]
-fn http_method(method: &Method) -> Cow<'static, str> {
-    match method {
-        &Method::CONNECT => "CONNECT".into(),
-        &Method::DELETE => "DELETE".into(),
-        &Method::GET => "GET".into(),
-        &Method::HEAD => "HEAD".into(),
-        &Method::OPTIONS => "OPTIONS".into(),
-        &Method::PATCH => "PATCH".into(),
-        &Method::POST => "POST".into(),
-        &Method::PUT => "PUT".into(),
-        &Method::TRACE => "TRACE".into(),
-        other => other.to_string().into(),
-    }
 }
 
 #[inline]

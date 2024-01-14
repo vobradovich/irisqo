@@ -28,11 +28,10 @@ pub fn routes(state: Arc<AppState>) -> Router {
 async fn echo(method: Method, headers: HeaderMap, body: Body) -> impl IntoResponse {
     let mut response = body.into_response();
     let response_headers = response.headers_mut();
-    response_headers.insert("http-method", method.to_string().parse().unwrap());
+    response_headers.insert("http-method", method.as_str().parse().unwrap());
     for (k, v) in headers {
         if let Some(key) = k {
             if key.as_str().starts_with("content") {
-                warn!("{} {:?}", key, v);
                 response_headers.insert(key, v);
             }
         }
