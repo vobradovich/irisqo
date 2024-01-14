@@ -47,6 +47,10 @@ impl ChannelWorkerService {
             running_workers.push(join_handle);
         }
 
+        let shutdown_token: tokio_util::sync::WaitForCancellationFuture<'_> =
+            app_state.shutdown_token.cancelled();
+        tokio::pin!(shutdown_token);
+
         let mut empty: bool;
         while !app_state.shutdown_token.is_cancelled() {
             let mut rows = db::jobqueue::fetch_job_with_retry(
@@ -58,7 +62,7 @@ impl ChannelWorkerService {
             loop {
                 select!(
                     biased;
-                    _ = app_state.shutdown_token.cancelled() => break,
+                    _ = &mut shutdown_token => break,
                     res = rows.next() => match res {
                         Some(Ok(entry)) => {
                             _ = tx.send(entry).await;
@@ -73,7 +77,7 @@ impl ChannelWorkerService {
                 );
             }
             if empty {
-                wait_tick_or_shutdown(&mut interval, app_state).await;
+                wait_tick_or_shutdown(&mut interval, &mut shutdown_token).await;
             }
         }
         tx.close();
@@ -83,10 +87,13 @@ impl ChannelWorkerService {
     }
 }
 
-async fn wait_tick_or_shutdown(interval: &mut time::Interval, app_state: &Arc<AppState>) {
+async fn wait_tick_or_shutdown(
+    interval: &mut time::Interval,
+    shutdown_token: &mut std::pin::Pin<&mut tokio_util::sync::WaitForCancellationFuture<'_>>,
+) {
     select!(
         biased;
-        _ = app_state.shutdown_token.cancelled() => {},
+        _ = shutdown_token => {},
         _ = interval.tick() => {},
     );
 }
