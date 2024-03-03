@@ -64,7 +64,7 @@ async fn job_run_with_error(
         Err(err) => {
             if let Some(res) = on_error(app_state, JobEntry { id: job_id, retry }, meta, err).await
             {
-                warn!({ instance_id, job_id }, "====> processed={:?}", &res.meta);
+                warn!({ instance_id, job_id }, "====> job failed={:?}", &res.meta);
                 processed(app_state, job_id, schedule_id.as_deref(), res).await?;
             }
         }
@@ -160,19 +160,16 @@ async fn on_error(
 ) -> Option<JobResult> {
     let job_id = entry.id;
     match err {
-        Error::HyperError(_) | Error::Timeout(_) | Error::ServerError(_) => {
-            info!({ instance_id = app_state.instance_id, job_id }, "====> error {:?}", err);
+        Error::HyperError(_)
+        | Error::Timeout(_)
+        | Error::ServerError(_)
+        | Error::ClientError(_) => {
             let res = retry_or_fail(app_state, entry, meta).await;
             if res.is_ok() {
                 return None;
             }
-            info!({ instance_id = app_state.instance_id, job_id }, "====> retry_or_fail {:?}", res.err());
             let job_result: JobResult = err.into();
             Some(job_result)
-        }
-        Error::ClientError(res) => {
-            info!({ instance_id = app_state.instance_id, job_id }, "====> error {:?}", res.meta);
-            Some(res)
         }
         _ => {
             error!({ instance_id = app_state.instance_id, job_id }, "====> error {:?}", err);
@@ -190,6 +187,7 @@ async fn retry_or_fail(app_state: &AppState, entry: JobEntry, meta: JobMeta) -> 
         None => Err(Error::RetriesExceeded),
         Some(0) => {
             db::jobqueue::unlock(&app_state.pool, job_id, instance_id).await?;
+            debug!({ instance_id, job_id, retry }, "==> unlock");
             Ok(())
         }
         Some(delay) => {

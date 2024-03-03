@@ -44,7 +44,7 @@ opentelemetry-stdout = { version = "0.2", features = ["metrics", "trace"] }
 tracing = { version = "0.1" }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-opentelemetry = { version = "0.22" }
-clap = { version = "4.4", features = ["derive"] }
+xflags = { version = "0.3" }
 
 # DB
 sqlx = { version = "0.7", features = [
@@ -60,7 +60,7 @@ sqlx = { version = "0.7", features = [
 thiserror = "1.0"
 uuid = { version = "1.4", features = ["serde"] }
 chrono = { version = "0.4", features = ["serde"] }
-problemdetails = { version = "0.3", features = ["axum"] }
+problemdetails = { version = "0.4", features = ["axum"] }
 whoami = { version = "1.4" }
 bytes = { version = "1", features = ["serde"] }
 ulid = { version = "1" }

@@ -62,6 +62,9 @@ pub fn on_response<B>(
     latency: std::time::Duration,
     span: &tracing::Span,
 ) {
+    if response.status().is_client_error() || response.status().is_server_error() {
+        return;
+    }
     let status = response.status().as_u16().to_string();
     span.record("http.status_code", &tracing::field::display(status));
     span.record("otel.status_code", "OK");

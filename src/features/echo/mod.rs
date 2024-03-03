@@ -44,5 +44,5 @@ async fn error() -> impl IntoResponse {
     problemdetails::new(StatusCode::INTERNAL_SERVER_ERROR)
         // .with_type("https://example.com/probs/out-of-credit")
         .with_title(StatusCode::INTERNAL_SERVER_ERROR.to_string())
-        .with_value("trace-id", trace_id)
+        .with_value("trace_id", trace_id)
 }

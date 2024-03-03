@@ -1,5 +1,4 @@
 use bytes::Bytes;
-use clap::Parser;
 use dotenv::dotenv;
 use http_body_util::Full;
 use hyper_tls::HttpsConnector;
@@ -11,15 +10,6 @@ use sqlx::{
 };
 use std::{str::FromStr, sync::Arc, time::Duration};
 use tokio_util::sync::CancellationToken;
-
-#[derive(Parser, Default, Debug)]
-pub struct Args {
-    #[arg(short = 'p')]
-    port: Option<u16>,
-    #[arg(short = 'w')]
-    workers: Option<usize>,
-}
-
 //type DbPool = Pool<Postgres>;
 #[derive(Debug)]
 pub struct AppState {
@@ -49,7 +39,19 @@ pub struct WorkerOptions {
 impl AppState {
     #[must_use]
     pub async fn new() -> Arc<AppState> {
-        let args = Args::parse();
+        let flags = xflags::parse_or_exit! {
+            /// API Port number. Default: 8102
+            optional -p,--port n:u16
+            /// Workers count. Default: 8
+            optional -w,--workers n:usize
+            /// Worker Poll Interval in milliseconds. Default: 1000
+            optional --interval n:u64
+            /// Prefetch count. Default: 8
+            optional --prefetch n:u16
+            /// Default job timeout in milliseconds. Default: 3000
+            optional --timeout n:u32
+        };
+
         dotenv().ok();
         let hostname = whoami::hostname();
         let instance_id = format!("{}:{}", hostname, ulid::Ulid::new());
@@ -66,7 +68,7 @@ impl AppState {
 
         let https = hyper_tls::HttpsConnector::new();
         let state = AppState {
-            port: args.port.unwrap_or(8102),
+            port: flags.port.unwrap_or(8102),
             instance_id,
             pool,
             client: Client::builder(TokioExecutor::new()).build::<_, Full<Bytes>>(https),
@@ -75,10 +77,10 @@ impl AppState {
                 prefetch: 1000,
             }),
             worker_options: WorkerOptions {
-                workers_count: args.workers.unwrap_or(8),
-                poll_interval: Duration::from_millis(1000),
-                prefetch: 8,
-                timeout: 3000,
+                workers_count: flags.workers.unwrap_or(8),
+                poll_interval: Duration::from_millis(flags.interval.unwrap_or(1000)),
+                prefetch: flags.prefetch.unwrap_or(8),
+                timeout: flags.timeout.unwrap_or(3000),
             },
             shutdown_token: CancellationToken::new(),
         };
