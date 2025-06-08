@@ -20,7 +20,10 @@ pub async fn start_scheduler_service(state: &Arc<AppState>) {
 pub async fn start_channel_worker_service(state: &Arc<AppState>) {
     let app_state = Arc::clone(state);
     let service = channelworkerservice::ChannelWorkerService::new(app_state);
-    service.run().await.expect("Failed to run ChannelWorkerService");
+    service
+        .run()
+        .await
+        .expect("Failed to run ChannelWorkerService");
 }
 
 #[cfg(feature = "batch-worker")]

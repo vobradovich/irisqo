@@ -5,12 +5,12 @@ use crate::{
     otel,
 };
 use axum::{
+    Router,
     body::Bytes,
     extract::{Path, RawQuery, State},
-    http::{header, HeaderMap, StatusCode},
+    http::{HeaderMap, StatusCode, header},
     response::IntoResponse,
     routing::get,
-    Router,
 };
 use hyper::{Method, Uri};
 use problemdetails::Problem;
@@ -18,7 +18,7 @@ use problemdetails::Problem;
 use std::{collections::HashMap, sync::Arc};
 #[allow(unused_imports)]
 use tracing::{debug, error, info, warn};
-use url::{form_urlencoded, Url};
+use url::{Url, form_urlencoded};
 
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()

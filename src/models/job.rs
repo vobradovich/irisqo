@@ -4,7 +4,7 @@ use bytes::Bytes;
 use http_body_util::Full;
 use hyper::HeaderMap;
 #[cfg(test)]
-use hyper::{header, Method, Uri};
+use hyper::{Method, Uri, header};
 
 use serde::{Deserialize, Serialize};
 

@@ -1,9 +1,9 @@
 use crate::features::Paging;
 use crate::features::PagingResult;
 use crate::models::AppState;
-use axum::extract::Query;
 use axum::Json;
-use axum::{extract::State, response::IntoResponse, routing::get, Router};
+use axum::extract::Query;
+use axum::{Router, extract::State, response::IntoResponse, routing::get};
 use problemdetails::Problem;
 use std::sync::Arc;
 

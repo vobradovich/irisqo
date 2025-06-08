@@ -2,7 +2,7 @@ use crate::{
     features::results::job_result::{JobResultRow, JobResultType},
     models::Error,
 };
-use sqlx::{types::Json, Pool, Postgres};
+use sqlx::{Pool, Postgres, types::Json};
 
 use super::JobResult;
 
@@ -33,7 +33,11 @@ pub async fn processed(
     let status = match job_result.meta.result {
         JobResultType::Timeout | JobResultType::Error { .. } => "failed",
         JobResultType::Cancelled => "cancelled",
-        JobResultType::Http(ref meta) if meta.status_code.is_client_error() || meta.status_code.is_server_error() => "failed",
+        JobResultType::Http(ref meta)
+            if meta.status_code.is_client_error() || meta.status_code.is_server_error() =>
+        {
+            "failed"
+        }
         _ => "completed",
     };
     let res = sqlx::query(SQL)

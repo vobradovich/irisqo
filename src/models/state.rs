@@ -2,11 +2,11 @@ use bytes::Bytes;
 use dotenvy::dotenv;
 use http_body_util::Full;
 use hyper_tls::HttpsConnector;
-use hyper_util::client::legacy::{connect::HttpConnector, Client};
+use hyper_util::client::legacy::{Client, connect::HttpConnector};
 use hyper_util::rt::TokioExecutor;
 use sqlx::{
-    postgres::{PgConnectOptions, PgPoolOptions},
     Pool, Postgres,
+    postgres::{PgConnectOptions, PgPoolOptions},
 };
 use std::{str::FromStr, sync::Arc, time::Duration};
 use tokio_util::sync::CancellationToken;

@@ -2,7 +2,7 @@ use crate::features::schedules::JobSchedule;
 use crate::models::{Error, JobCreateRow, JobEntry, JobWithRetry};
 use crate::models::{JobCreate, JobRow};
 use futures::stream::BoxStream;
-use sqlx::{types::Json, Pool, Postgres};
+use sqlx::{Pool, Postgres, types::Json};
 
 pub async fn create(
     pool: &Pool<Postgres>,

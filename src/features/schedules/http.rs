@@ -3,18 +3,21 @@ use crate::{
     models::AppState,
 };
 use axum::{
+    Json, Router,
     extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::get,
-    Json, Router,
 };
 use problemdetails::Problem;
 use std::sync::Arc;
 
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
-        .route("/schedules/:id", get(get_by_id).put(inactive).delete(delete))
+        .route(
+            "/schedules/:id",
+            get(get_by_id).put(inactive).delete(delete),
+        )
         .route("/schedules", get(get_all))
         .with_state(state)
 }

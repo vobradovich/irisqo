@@ -1,4 +1,4 @@
-use futures::{future::join_all, TryStreamExt};
+use futures::{TryStreamExt, future::join_all};
 use tokio::{select, time};
 #[allow(unused_imports)]
 use tracing::{debug, error, info, trace, warn};
@@ -29,7 +29,8 @@ impl BatchWorkerService {
             return Ok(());
         }
         let workers_poll_interval = self.app_state.worker_options.poll_interval;
-        let mut running_workers: Vec<tokio::task::JoinHandle<()>> = Vec::with_capacity(worker_count);
+        let mut running_workers: Vec<tokio::task::JoinHandle<()>> =
+            Vec::with_capacity(worker_count);
         for idx in 0..worker_count {
             let join_handle = tokio::spawn({
                 let state = Arc::clone(&self.app_state);

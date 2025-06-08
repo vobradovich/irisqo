@@ -1,10 +1,10 @@
 use crate::models::AppState;
 use axum::{
+    Json, Router,
     extract::{Path, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::get,
-    Json, Router,
 };
 use problemdetails::Problem;
 use std::sync::Arc;

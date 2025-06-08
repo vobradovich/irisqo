@@ -1,9 +1,9 @@
 use crate::models::{AppState, Error};
 use axum::{
+    Json, Router,
     extract::{Path, Query, State},
     response::IntoResponse,
     routing::get,
-    Json, Router,
 };
 use problemdetails::Problem;
 use sqlx::{Pool, Postgres};

@@ -1,5 +1,5 @@
 use async_channel::Receiver;
-use futures::{future::join_all, StreamExt};
+use futures::{StreamExt, future::join_all};
 use tokio::{select, task::JoinHandle, time};
 #[allow(unused_imports)]
 use tracing::{debug, error, info, warn};

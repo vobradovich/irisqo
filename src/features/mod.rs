@@ -1,11 +1,11 @@
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
+pub mod echo;
+pub mod history;
 pub mod instances;
 pub mod live;
 pub mod results;
 pub mod schedules;
-pub mod history;
-pub mod echo;
 
 #[derive(Deserialize)]
 pub struct Paging {

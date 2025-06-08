@@ -1,5 +1,5 @@
-pub use http::routes;
 pub use db::live;
+pub use http::routes;
 
-mod http;
 mod db;
+mod http;

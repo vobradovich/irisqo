@@ -1,10 +1,10 @@
 use crate::models::AppState;
 use axum::{
+    Router,
     body::Body,
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::get,
-    Router,
 };
 use hyper::Method;
 

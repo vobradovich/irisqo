@@ -1,5 +1,5 @@
 use axum::http;
-use opentelemetry::propagation::{Injector, Extractor};
+use opentelemetry::propagation::{Extractor, Injector};
 
 pub struct HeaderInjector<'a>(pub &'a mut http::HeaderMap);
 
