@@ -1,5 +1,5 @@
 use bytes::Bytes;
-use dotenv::dotenv;
+use dotenvy::dotenv;
 use http_body_util::Full;
 use hyper_tls::HttpsConnector;
 use hyper_util::client::legacy::{connect::HttpConnector, Client};
@@ -10,6 +10,7 @@ use sqlx::{
 };
 use std::{str::FromStr, sync::Arc, time::Duration};
 use tokio_util::sync::CancellationToken;
+
 //type DbPool = Pool<Postgres>;
 #[derive(Debug)]
 pub struct AppState {
@@ -53,7 +54,7 @@ impl AppState {
         };
 
         dotenv().ok();
-        let hostname = whoami::hostname();
+        let hostname = whoami::fallible::hostname().expect("Unable to get hostname");
         let instance_id = format!("{}:{}", hostname, ulid::Ulid::new());
         let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
         let conn = PgConnectOptions::from_str(&db_url)

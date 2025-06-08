@@ -4,7 +4,7 @@ use std::sync::Arc;
 use axum::Router;
 use models::AppState;
 use opentelemetry::trace::TracerProvider as _;
-use opentelemetry_sdk::trace::TracerProvider;
+use opentelemetry_sdk::trace::SdkTracerProvider;
 use opentelemetry_stdout as stdout;
 use tokio::net::TcpListener;
 use tokio::signal;
@@ -24,7 +24,7 @@ async fn main() {
         opentelemetry_sdk::propagation::TraceContextPropagator::new(),
     );
     // Create a new OpenTelemetry trace pipeline that prints to stdout
-    let provider = TracerProvider::builder()
+    let provider = SdkTracerProvider::builder()
         .with_simple_exporter(stdout::SpanExporter::default())
         .build();
 

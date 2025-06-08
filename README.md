@@ -28,7 +28,7 @@ GET {{host}}/to/https://postman-echo.com/get
 Response Headers
 - `job-id` - this is the ID of the request job
 - `schedule-id` - ID of the new schedule
-- `external-id` - optional external ID of the requestm from `_id` query parameter.
+- `external-id` - optional external ID of the request from `_id` query parameter.
 
 ### Retry
 Automatically retry requests that fail by adding the `_retry` query parameter.
