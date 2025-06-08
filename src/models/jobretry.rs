@@ -153,3 +153,48 @@ async fn job_retry_from_str_fibonacci() -> anyhow::Result<()> {
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn job_retry_immediate_until_exhausted() -> anyhow::Result<()> {
+    // arrange
+    let retry = JobRetry::Immediate { retry_count: 3 };
+
+    // act & assert
+    assert_eq!(Some(0), retry.next_retry_in(0));
+    assert_eq!(Some(0), retry.next_retry_in(1));
+    assert_eq!(Some(0), retry.next_retry_in(2));
+    assert_eq!(None, retry.next_retry_in(3));
+    Ok(())
+}
+
+#[tokio::test]
+async fn job_retry_fixed_until_exhausted() -> anyhow::Result<()> {
+    // arrange
+    let retry = JobRetry::Fixed {
+        retry_count: 2,
+        retry_delay: 5,
+    };
+
+    // act & assert
+    assert_eq!(Some(5), retry.next_retry_in(0));
+    assert_eq!(Some(5), retry.next_retry_in(1));
+    assert_eq!(None, retry.next_retry_in(2));
+    Ok(())
+}
+
+#[tokio::test]
+async fn job_retry_fibonacci_until_exhausted() -> anyhow::Result<()> {
+    // arrange
+    let retry = JobRetry::Fibonacci {
+        retry_count: 4,
+        retry_delay: 2,
+    };
+
+    // act & assert
+    assert_eq!(Some(2 * JobRetry::fibonacci(0)), retry.next_retry_in(0));
+    assert_eq!(Some(2 * JobRetry::fibonacci(1)), retry.next_retry_in(1));
+    assert_eq!(Some(2 * JobRetry::fibonacci(2)), retry.next_retry_in(2));
+    assert_eq!(Some(2 * JobRetry::fibonacci(3)), retry.next_retry_in(3));
+    assert_eq!(None, retry.next_retry_in(4));
+    Ok(())
+}
