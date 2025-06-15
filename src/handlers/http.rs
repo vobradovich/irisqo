@@ -23,7 +23,7 @@ use url::{Url, form_urlencoded};
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
         .route(
-            "/to/*url",
+            "/to/{*url}",
             get(job_create)
                 .post(job_create)
                 .put(job_create)

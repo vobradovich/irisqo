@@ -15,7 +15,7 @@ use std::sync::Arc;
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
         .route(
-            "/schedules/:id",
+            "/schedules/{id}",
             get(get_by_id).put(inactive).delete(delete),
         )
         .route("/schedules", get(get_all))
