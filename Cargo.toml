@@ -11,18 +11,22 @@ tokio-util = { version = "0.7" }
 futures = "0.3"
 async-channel = "2.3"
 # JSON libs
-serde = "1.0"
-serde_json = { version = "1.0", features = ["raw_value"] }
-serde_derive = "1.0"
+serde = "1"
+serde_json = { version = "1", features = ["raw_value"] }
+serde_derive = "1"
 http-serde = "2.1"
 serde_urlencoded = "0.7"
 # Web libs
+askama = "0.14"
+askama_web = { version = "0.14", features = ["axum-0.8"] }
 axum = "0.8"
+axum-core = "0.5"
 tower = "0.5"
 tower-http = { version = "0.6", features = ["trace"] }
 hyper = { version = "1.6", features = ["full"] }
 hyper-util = { version = "0.1", features = ["client-legacy"] }
 hyper-tls = { version = "0.6" }
+http = "1"
 http-body-util = { version = "0.1" }
 url = { version = "2.5" }
 # Configuration & Observability
@@ -52,7 +56,7 @@ sqlx = { version = "0.8", features = [
 ] }
 # sqlb = "0.0.8"
 # Types
-thiserror = "2.0"
+thiserror = "2"
 uuid = { version = "1.17", features = ["serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 problemdetails = { version = "0.6", features = ["axum"] }

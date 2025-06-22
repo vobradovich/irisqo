@@ -56,6 +56,7 @@ async fn start_http_server(state: &Arc<AppState>) {
         .merge(handlers::http::routes(Arc::clone(state)))
         .merge(features::live::routes(Arc::clone(state)))
         .merge(features::echo::routes(Arc::clone(state)))
+        .merge(features::ui::routes(Arc::clone(state)))
         .nest("/api/v1", handlers::jobs::routes(Arc::clone(state)))
         .nest("/api/v1", features::history::routes(Arc::clone(state)))
         .nest("/api/v1", features::results::routes(Arc::clone(state)))

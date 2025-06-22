@@ -6,6 +6,7 @@ pub mod instances;
 pub mod live;
 pub mod results;
 pub mod schedules;
+pub mod ui;
 
 #[derive(Deserialize)]
 pub struct Paging {

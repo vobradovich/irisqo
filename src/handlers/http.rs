@@ -118,6 +118,9 @@ async fn job_create(
             if key == header::HOST {
                 continue;
             }
+            if key.as_str() == "hx-request" {
+                continue;
+            }
             if let Ok(val) = v.to_str() {
                 header_hashmap.insert(key.to_string(), val.to_owned());
             }

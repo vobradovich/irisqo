@@ -9,14 +9,19 @@ pub enum JobRetry {
     #[default]
     None,
     Immediate {
+        /// The number of retries before fail job.
         retry_count: u16,
     },
     Fixed {
+        /// The number of retries before fail job.
         retry_count: u16,
+        /// The delay in seconds between retries.
         retry_delay: u32,
     },
     Fibonacci {
+        /// The number of retries before fail job.
         retry_count: u16,
+        /// The base delay in seconds between retries.
         retry_delay: u32,
     },
 }

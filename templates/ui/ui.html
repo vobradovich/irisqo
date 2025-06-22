@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="utf-8">
+    <title>irisqo - Request Builder</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/htmx.org@1.9.9"></script>
+    <script defer src="https://unpkg.com/alpinejs@3.x.x/dist/cdn.min.js"></script>
+</head>
+
+<body class="p-4 bg-gray-50">
+    <div x-data="requestBuilder()" x-init="init()" @input.debounce="updateQuery()" @change="updateQuery()"
+        class="max-w-3xl mx-auto">
+        <h1 class="text-xl font-bold mb-4">Queue Request</h1>
+        <form id="job-form" class="space-y-4">
+            <div class="flex items-end gap-2">
+                <div>
+                    <label class="block font-medium">Method</label>
+                    <select id="method" x-model="method" class="border rounded p-2">
+                        <option value="GET">GET</option>
+                        <option value="POST">POST</option>
+                        <option value="PUT">PUT</option>
+                        <option value="DELETE">DELETE</option>
+                    </select>
+                </div>
+                <div class="flex-1">
+                    <label class="block font-medium">URL</label>
+                    <input id="target_url" x-model="url" type="text" class="w-full border rounded p-2"
+                        placeholder="https://example.com" required>
+                </div>
+                <button id="send-btn" @click="sendRequest" type="button"
+                    class="h-10 mt-auto px-4 bg-blue-600 text-white rounded">Send</button>
+            </div>
+            <div x-show="method === 'POST' || method === 'PUT'">
+                <label class="block font-medium">Body</label>
+                <textarea id="body" x-model="body" class="w-full border rounded p-2" rows="4"></textarea>
+            </div>
+            <div id="params">
+                {% include "ui/params.html" %}
+            </div>
+        </form>
+        <pre id="generated_query" x-text="queryText" class="mt-4 bg-gray-100 p-2 border rounded"></pre>
+        <div x-show="toastMessage" x-text="toastMessage" x-transition
+            :class="toastType === 'success' ? 'bg-green-200 text-green-800' : 'bg-red-200 text-red-800'"
+            class="fixed top-4 right-4 px-4 py-2 rounded shadow" x-cloak></div>
+        <script>
+            function requestBuilder() {
+                return {
+                    url: '',
+                    method: 'GET',
+                    body: '',
+                    queryText: '',
+                    toastMessage: '',
+                    toastType: 'success',
+                    delayType: '',
+                    scheduleType: '',
+                    retryType: '',
+                    showToast(msg, type) {
+                        this.toastMessage = msg;
+                        this.toastType = type;
+                        setTimeout(() => { this.toastMessage = ''; }, 5000);
+                    },
+                    updateQuery() {
+                        const qs = new URLSearchParams();
+                        console.log("==>", this);
+                        if (this.delayType === 'delay') {
+                            const delay = document.getElementById('delay');
+                            if (delay && delay.value) qs.append('_delay', delay.value);
+                        } else if (this.delayType === 'delay_until') {
+                            const delayUntil = document.getElementById('delay_until');
+                            if (delayUntil && delayUntil.value) {
+                                const ts = Math.floor(new Date(delayUntil.value + 'Z').getTime() / 1000);
+                                qs.append('_delay_until', ts);
+                            }
+                        }
+
+                        const timeout = document.getElementById('timeout');
+                        if (timeout && timeout.value) qs.append('_timeout', timeout.value);
+
+                        if (this.scheduleType === 'interval') {
+                            const interval = document.getElementById('interval');
+                            if (interval && interval.value) qs.append('_interval', interval.value);
+                        } else if (this.scheduleType === 'cron') {
+                            const cron = document.getElementById('cron');
+                            if (cron && cron.value) qs.append('_cron', cron.value);
+                        }
+
+                        if (this.retryType !== '') {
+                            const count = document.getElementById('retry_count');
+                            const delay = document.getElementById('retry_delay');
+                            if (this.retryType === 'immediate' && count && count.value) {
+                                qs.append('_retry', count.value);
+                            } else if ((this.retryType === 'fixed' || this.retryType === 'fibonacci') && count && count.value && delay && delay.value) {
+                                qs.append('_retry', `${count.value},${this.retryType},${delay.value}`);
+                            }
+                        }
+                        const until = document.getElementById('until');
+                        if (until && until.value) qs.append('_until', until.value);
+                        const extId = document.getElementById('external_id');
+                        if (extId && extId.value) qs.append('_id', extId.value);
+
+                        const urlVal = encodeURIComponent(this.url);
+                        const requestUrl = '/to/' + urlVal + (qs.toString() ? '?' + qs.toString() : '');
+                        this.queryText = this.method + ' ' + requestUrl;
+                        return requestUrl;
+                    },
+                    sendRequest() {
+                        const requestUrl = this.updateQuery();
+                        const options = { method: this.method };
+                        if (this.method === 'POST' || this.method === 'PUT') {
+                            options.headers = { 'Content-Type': 'text/plain' };
+                            options.body = this.body;
+                        }
+                        options.headers = { 'HX-Request': 'true' };
+                        fetch(requestUrl, options)
+                            .then(async r => {
+                                if (r.ok && r.status === 201) {
+                                    const loc = r.headers.get('location');
+                                    if (loc) {
+                                        this.showToast(`Created: ${loc}`, 'success');
+                                        return;
+                                    }
+                                } else {
+                                    const err = await r.text();
+                                    this.showToast(err || `Error: ${r.status}`, 'error');
+                                }
+                            })
+                            .catch(err => {
+                                this.showToast(err.toString(), 'error');
+                            });
+                    },
+                    init() {
+                        this.updateQuery();
+                    }
+                };
+            }
+        </script>
+    </div>
+</body>
+
+</html>
