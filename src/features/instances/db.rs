@@ -5,7 +5,7 @@ use sqlx::{Pool, Postgres};
 /// Upsert an instance heartbeat, updating `last_at` when it already exists.
 pub async fn live(pool: &Pool<Postgres>, instance_id: &str) -> Result<(), Error> {
     const SQL: &str = "
-    INSERT INTO instances(id) VALUES ($1) ON CONFLICT (id) DO UPDATE SET last_at = now()
+    INSERT INTO instances(instance_id) VALUES ($1) ON CONFLICT (instance_id) DO UPDATE SET last_at = now()
     ";
     sqlx::query(SQL).bind(instance_id).execute(pool).await?;
     Ok(())
@@ -18,7 +18,7 @@ pub(crate) async fn get_all(
     offset: i32,
 ) -> Result<Vec<InstanceRow>, Error> {
     const SQL: &str = "
-    SELECT id, status::text, last_at FROM instances ORDER BY id DESC LIMIT $1 OFFSET $2
+    SELECT instance_id, status::text, last_at FROM instances ORDER BY instance_id DESC LIMIT $1 OFFSET $2
     ";
     let res = sqlx::query_as::<_, InstanceRow>(SQL)
         .bind(limit)
@@ -31,7 +31,7 @@ pub(crate) async fn get_all(
 /// Row entity for `instances` queries.
 #[derive(Debug, Clone, sqlx::FromRow, Serialize)]
 pub struct InstanceRow {
-    pub id: String,
+    pub instance_id: String,
     pub status: String,
     pub last_at: chrono::DateTime<chrono::Utc>,
 }

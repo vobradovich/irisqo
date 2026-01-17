@@ -1,7 +1,7 @@
 CREATE TYPE instance_status AS ENUM ('live', 'dead');
 
 CREATE TABLE IF NOT EXISTS instances (
-	id varchar(64) PRIMARY KEY,
+	instance_id varchar(64) PRIMARY KEY,
 	last_at timestamptz NOT NULL DEFAULT NOW(),
 	status instance_status NOT NULL DEFAULT 'live'
 );
@@ -44,7 +44,7 @@ CREATE TABLE IF NOT EXISTS enqueued (
 	lock_at timestamptz NULL
 );
 
-CREATE TYPE  processed_status AS ENUM ('completed', 'failed', 'cancelled');
+CREATE TYPE processed_status AS ENUM ('completed', 'failed', 'cancelled');
 
 CREATE TABLE IF NOT EXISTS processed (
 	id bigint NOT NULL PRIMARY KEY REFERENCES jobs (id) MATCH SIMPLE ON UPDATE NO ACTION ON DELETE CASCADE,
