@@ -54,7 +54,7 @@ impl AppState {
         };
 
         dotenv().ok();
-        let hostname = whoami::fallible::hostname().expect("Unable to get hostname");
+        let hostname = whoami::hostname().expect("Unable to get hostname");
         let instance_id = format!("{}:{}", hostname, ulid::Ulid::new());
         let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
         let conn = PgConnectOptions::from_str(&db_url)

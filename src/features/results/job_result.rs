@@ -118,10 +118,10 @@ impl IntoResponse for JobResult {
                 let map = HeaderMap::try_from(&headers).unwrap();
                 let headers_mut = response.headers_mut();
                 for (key, value) in map {
-                    if let Some(key) = key {
-                        if key.to_string().starts_with("content") {
-                            headers_mut.insert(key, value);
-                        }
+                    if let Some(key) = key
+                        && key.to_string().starts_with("content")
+                    {
+                        headers_mut.insert(key, value);
                     }
                 }
             };

@@ -30,10 +30,10 @@ async fn echo(method: Method, headers: HeaderMap, body: Body) -> impl IntoRespon
     let response_headers = response.headers_mut();
     response_headers.insert("http-method", method.as_str().parse().unwrap());
     for (k, v) in headers {
-        if let Some(key) = k {
-            if key.as_str().starts_with("content") {
-                response_headers.insert(key, v);
-            }
+        if let Some(key) = k
+            && key.as_str().starts_with("content")
+        {
+            response_headers.insert(key, v);
         }
     }
     response

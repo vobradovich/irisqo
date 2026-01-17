@@ -2,6 +2,7 @@ use crate::models::Error;
 use serde::Serialize;
 use sqlx::{Pool, Postgres};
 
+/// Upsert an instance heartbeat, updating `last_at` when it already exists.
 pub async fn live(pool: &Pool<Postgres>, instance_id: &str) -> Result<(), Error> {
     const SQL: &str = "
     INSERT INTO instances(id) VALUES ($1) ON CONFLICT (id) DO UPDATE SET last_at = now()
@@ -10,6 +11,7 @@ pub async fn live(pool: &Pool<Postgres>, instance_id: &str) -> Result<(), Error>
     Ok(())
 }
 
+/// Fetch a page of instances ordered by newest id first.
 pub(crate) async fn get_all(
     pool: &Pool<Postgres>,
     limit: i32,
@@ -26,6 +28,7 @@ pub(crate) async fn get_all(
     Ok(res)
 }
 
+/// Row entity for `instances` queries.
 #[derive(Debug, Clone, sqlx::FromRow, Serialize)]
 pub struct InstanceRow {
     pub id: String,

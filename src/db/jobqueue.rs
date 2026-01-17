@@ -18,15 +18,12 @@ pub async fn create(
         create_enqueue(pool, job, instance_id).await
     };
     // Check existing Job for idempotency
-    if let Err(Error::DbError(sqlx::Error::Database(ref err))) = res {
-        if err.code().unwrap_or_default() == "23505" {
-            if let Some(external_id) = external_id {
-                let existed_job = get_id_by_external_id(pool, external_id).await?;
-                if let Some(job) = existed_job {
-                    return Ok(job);
-                }
-            }
-        }
+    if let Err(Error::DbError(sqlx::Error::Database(ref err))) = res
+        && err.code().unwrap_or_default() == "23505"
+        && let Some(external_id) = external_id
+        && let Some(job) = get_id_by_external_id(pool, external_id).await?
+    {
+        return Ok(job);
     }
     res
 }
