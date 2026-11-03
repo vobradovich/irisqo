@@ -7,7 +7,7 @@
       {%- if let Some(schedule_id) = created.schedule_id %}, schedule <span class="mono">{{ schedule_id }}</span>{% endif %}.
     </div>
     {% endif %}
-    {% if form.has_errors() %}
+    {% if !form.errors.is_empty() %}
     <div class="alert error" role="alert">
       The job was not queued: {% if let Some(e) = form.error("form") %}{{ e }}{% else %}check the fields below.{% endif %}
     </div>
@@ -18,8 +18,8 @@
       <div class="row">
         <label for="method" class="narrow">Method
           <select id="method" name="method">
-            {% for (m, selected) in form.method_options() %}
-            <option{% if selected %} selected{% endif %}>{{ m }}</option>
+            {% for m in form::METHODS %}
+            <option{% if *m == form.method %} selected{% endif %}>{{ m }}</option>
             {% endfor %}
           </select>
         </label>

@@ -16,7 +16,7 @@ use crate::{
     models::{JobCreate, ParamError, WorkerOptions},
 };
 
-pub const METHODS: [&str; 5] = ["GET", "POST", "PUT", "PATCH", "DELETE"];
+pub(super) const METHODS: [&str; 5] = ["GET", "POST", "PUT", "PATCH", "DELETE"];
 
 /// `datetime-local` values, read as UTC (the browser does not send its time zone).
 const DATETIME_FORMATS: [&str; 2] = ["%Y-%m-%dT%H:%M", "%Y-%m-%dT%H:%M:%S"];
@@ -107,8 +107,6 @@ impl JobForm {
     /// `op=add_header` / `op=remove_header&index=N` edit the header rows.
     pub fn from_pairs(pairs: &[u8]) -> Self {
         let mut form = JobForm::default();
-        let mut names = Vec::new();
-        let mut values = Vec::new();
         let mut op = String::new();
         let mut index = String::new();
         for (key, value) in form_urlencoded::parse(pairs) {
@@ -118,8 +116,15 @@ impl JobForm {
                 "url" => form.url = value,
                 "content_type" => form.content_type = value,
                 "body" => form.body = value,
-                "header_name" => names.push(value),
-                "header_value" => values.push(value),
+                "header_name" => form.headers.push(HeaderRow {
+                    name: value,
+                    value: String::new(),
+                }),
+                "header_value" => {
+                    if let Some(row) = form.headers.last_mut() {
+                        row.value = value;
+                    }
+                }
                 "when" => form.when = value,
                 "delay" => form.delay = value,
                 "at" => form.at = value,
@@ -141,21 +146,14 @@ impl JobForm {
         form.when = one_of(form.when, &["now", "delay", "at"]);
         form.repeat = one_of(form.repeat, &["once", "interval", "cron"]);
         form.retry = one_of(form.retry, &["none", "immediate", "fixed", "fibonacci"]);
-        values.resize(names.len(), String::new());
-        form.headers = names
-            .into_iter()
-            .zip(values)
-            .map(|(name, value)| HeaderRow { name, value })
-            .collect();
-        match op.as_str() {
-            "add_header" => form.headers.push(HeaderRow::default()),
-            "remove_header" => {
-                if let Ok(i) = index.parse::<usize>()
-                    && i < form.headers.len()
-                {
-                    form.headers.remove(i);
-                }
-            }
+        // after the loop: `index` may come after `op`
+        let index = index
+            .parse::<usize>()
+            .ok()
+            .filter(|&i| i < form.headers.len());
+        match (op.as_str(), index) {
+            ("add_header", _) => form.headers.push(HeaderRow::default()),
+            ("remove_header", Some(i)) => _ = form.headers.remove(i),
             _ => {}
         }
         form
@@ -194,8 +192,7 @@ impl JobForm {
             _ => {}
         }
         if self.repeat != "once"
-            && filled(&self.until).is_some()
-            && let Some(t) = unix("until", &self.until)
+            && let Some(t) = filled(&self.until).and_then(|until| unix("until", &until))
         {
             params.push(("_until", t));
         }
@@ -224,7 +221,8 @@ impl JobForm {
     fn target_headers(&self) -> (HashMap<String, String>, Option<String>) {
         let mut headers = HashMap::new();
         let mut error = None;
-        if let Some(ct) = Some(self.content_type.trim()).filter(|ct| !ct.is_empty()) {
+        let ct = self.content_type.trim();
+        if !ct.is_empty() {
             headers.insert("content-type".to_owned(), ct.to_owned());
         }
         for row in &self.headers {
@@ -322,15 +320,6 @@ impl JobForm {
     pub fn error(&self, field: &str) -> Option<&str> {
         self.errors.get(field).map(String::as_str)
     }
-
-    pub fn has_errors(&self) -> bool {
-        !self.errors.is_empty()
-    }
-
-    /// The methods with the selected one flagged.
-    pub fn method_options(&self) -> Vec<(&'static str, bool)> {
-        METHODS.iter().map(|&m| (m, m == self.method)).collect()
-    }
 }
 
 /// The form field of a `/to/` parameter.
@@ -363,15 +352,13 @@ fn mask(name: &str, value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::Options;
 
     fn options() -> WorkerOptions {
-        let state_options = Options::from_vec(Vec::new()).expect("options");
         WorkerOptions {
             concurrency: 1,
             poll_interval: std::time::Duration::from_secs(1),
             prefetch: 1,
-            timeout: state_options.timeout.unwrap_or(3000),
+            timeout: 3000,
             max_timeout: 300_000,
             shutdown_timeout: std::time::Duration::from_secs(1),
         }

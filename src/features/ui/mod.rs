@@ -18,9 +18,8 @@ use axum::{
     routing::{get, post},
 };
 use form::{Created, JobForm};
-use std::sync::Arc;
-#[allow(unused_imports)]
-use tracing::{debug, error, info, warn};
+use std::{collections::BTreeMap, sync::Arc};
+use tracing::error;
 
 /// No inline scripts or styles anywhere in the UI: everything comes from `/ui/assets`.
 const CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; \
@@ -111,44 +110,32 @@ async fn create_job_from_form(
     body: Bytes,
 ) -> Response {
     let htmx = headers.contains_key("hx-request");
-    let mut form = JobForm::from_pairs(&body).with_limits(&state.worker_options);
-    let created = match form.prepare(&state.worker_options, JobSchedule::now_secs()) {
-        Err(errors) => {
-            form.errors = errors;
-            None
+    let form = JobForm::from_pairs(&body).with_limits(&state.worker_options);
+    let outcome = match form.prepare(&state.worker_options, JobSchedule::now_secs()) {
+        Err(errors) => Err(errors),
+        Ok(job) => create_job(&state, job).await.map_err(|err| {
+            error!("ui create_job error {:?}", err);
+            BTreeMap::from([("form", "it could not be stored, try again.".to_owned())])
+        }),
+    };
+    let (status, form, trigger) = match outcome {
+        Ok(row) => {
+            let mut fresh = JobForm::default().with_limits(&state.worker_options);
+            fresh.created = Some(Created {
+                id: row.id,
+                schedule_id: row.schedule_id,
+            });
+            (StatusCode::OK, fresh, Some([("hx-trigger", "job-created")]))
         }
-        Ok(job) => match create_job(&state, job).await {
-            Ok(row) => Some(row),
-            Err(err) => {
-                error!("ui create_job error {:?}", err);
-                form.errors
-                    .insert("form", "it could not be stored, try again.".into());
-                None
-            }
-        },
+        Err(errors) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            JobForm { errors, ..form },
+            None,
+        ),
     };
-    let ok = created.is_some();
-    if let Some(row) = created {
-        form = JobForm::default().with_limits(&state.worker_options);
-        form.created = Some(Created {
-            id: row.id,
-            schedule_id: row.schedule_id,
-        });
-    }
-    let status = if ok {
-        StatusCode::OK
+    if htmx {
+        (status, trigger, JobFormPartial { form }).into_response()
     } else {
-        StatusCode::UNPROCESSABLE_ENTITY
-    };
-    let mut response = if htmx {
-        (status, JobFormPartial { form }).into_response()
-    } else {
-        (status, page(form)).into_response()
-    };
-    if ok {
-        response
-            .headers_mut()
-            .insert("hx-trigger", HeaderValue::from_static("job-created"));
+        (status, trigger, page(form)).into_response()
     }
-    response
 }

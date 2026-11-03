@@ -2,7 +2,7 @@
 
 use axum::{
     extract::Path,
-    http::{HeaderValue, StatusCode, header},
+    http::{StatusCode, header},
     response::{IntoResponse, Response},
 };
 
@@ -46,11 +46,8 @@ pub async fn asset(Path(name): Path<String>) -> Response {
     };
     (
         [
-            (
-                header::CONTENT_TYPE,
-                HeaderValue::from_static(asset.content_type),
-            ),
-            (header::CACHE_CONTROL, HeaderValue::from_static(cache)),
+            (header::CONTENT_TYPE, asset.content_type),
+            (header::CACHE_CONTROL, cache),
         ],
         asset.bytes,
     )
