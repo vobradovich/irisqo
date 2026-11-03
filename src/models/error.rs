@@ -1,8 +1,8 @@
 use axum::http::StatusCode;
-use problemdetails::Problem;
 use tokio::time::error::Elapsed;
 
-use crate::{features::results::JobResult, otel};
+use super::Problem;
+use crate::features::results::JobResult;
 
 /// The problem type of [`Error::InvalidParams`] (RFC 9457 `type`), documented there.
 pub const INVALID_PARAMS_TYPE: &str =
@@ -90,30 +90,22 @@ impl Error {
 /// error is logged and answered with its status alone: no internals in the response.
 impl From<Error> for Problem {
     fn from(item: Error) -> Problem {
-        let trace_id = otel::current_trace_id();
-        // `status` in the body too (advisory in RFC 9457, handy for clients and logs)
-        let problem = |status: StatusCode| {
-            problemdetails::new(status)
-                .with_value("status", status.as_u16())
-                .with_value("trace_id", trace_id.clone())
-        };
-        let generic = |status: StatusCode| {
-            problem(status).with_title(status.canonical_reason().unwrap_or_default())
-        };
         match item {
             Error::InvalidParams(errors) => {
                 let detail = match errors.len() {
                     1 => "1 parameter is invalid.".to_owned(),
                     n => format!("{n} parameters are invalid."),
                 };
-                problem(StatusCode::BAD_REQUEST)
-                    .with_type(INVALID_PARAMS_TYPE)
-                    .with_title("Invalid parameters")
-                    .with_detail(detail)
-                    .with_value("errors", serde_json::to_value(errors).unwrap_or_default())
+                Problem {
+                    kind: Some(INVALID_PARAMS_TYPE),
+                    title: "Invalid parameters",
+                    detail: Some(detail),
+                    errors: Some(errors),
+                    ..Problem::new(StatusCode::BAD_REQUEST)
+                }
             }
             Error::JobNotFound(_) | Error::DbError(sqlx::Error::RowNotFound) => {
-                generic(StatusCode::NOT_FOUND)
+                Problem::new(StatusCode::NOT_FOUND)
             }
             Error::Timeout(_)
             | Error::DbError(_)
@@ -125,9 +117,14 @@ impl From<Error> for Problem {
             | Error::ClientError(_)
             | Error::ResponseTooLarge
             | Error::RetriesExceeded => {
-                tracing::error!({ trace_id }, "request failed: {:?}", item);
-                generic(StatusCode::INTERNAL_SERVER_ERROR)
-                    .with_detail("The request could not be processed, see the server logs.")
+                let problem = Problem {
+                    detail: Some(
+                        "The request could not be processed, see the server logs.".to_owned(),
+                    ),
+                    ..Problem::new(StatusCode::INTERNAL_SERVER_ERROR)
+                };
+                tracing::error!(trace_id = problem.trace_id, "request failed: {:?}", item);
+                problem
             }
         }
     }

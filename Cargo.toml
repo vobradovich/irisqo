@@ -45,7 +45,6 @@ sqlx = { version = "0.9", features = ["runtime-tokio", "tls-native-tls", "postgr
 # Types
 thiserror = "2"
 chrono = { version = "0.4", features = ["serde"] }
-problemdetails = { version = "0.7", features = ["axum"] }
 whoami = { version = "2.0" }
 bytes = { version = "1", features = ["serde"] }
 ulid = { version = "3" }

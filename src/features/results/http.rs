@@ -1,4 +1,5 @@
 use crate::models::AppState;
+use crate::models::Problem;
 use axum::{
     Json, Router,
     extract::{Path, State},
@@ -6,7 +7,6 @@ use axum::{
     response::{IntoResponse, Response},
     routing::get,
 };
-use problemdetails::Problem;
 use std::sync::Arc;
 
 use super::JobResult;

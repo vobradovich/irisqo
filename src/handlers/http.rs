@@ -1,3 +1,4 @@
+use crate::models::Problem;
 use crate::{
     db,
     features::schedules::JobSchedule,
@@ -17,7 +18,6 @@ use axum::{
 };
 use hyper::{Method, Uri};
 use opentelemetry::KeyValue;
-use problemdetails::Problem;
 
 use std::{collections::HashMap, sync::Arc};
 #[allow(unused_imports)]

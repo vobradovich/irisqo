@@ -9,9 +9,11 @@ pub use job::JobProtocol;
 pub use job::JobRow;
 pub use job::JobWithRetry;
 pub use jobretry::{JobRetry, MAX_RETRY_DELAY, with_jitter};
+pub use problem::Problem;
 pub use state::{AppState, Options, SchedulerOptions, WorkerOptions, new_instance_id};
 
 mod error;
 mod job;
 mod jobretry;
+mod problem;
 mod state;

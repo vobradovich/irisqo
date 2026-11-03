@@ -1096,7 +1096,6 @@ dependencies = [
  "opentelemetry-otlp",
  "opentelemetry-stdout",
  "opentelemetry_sdk",
- "problemdetails",
  "serde",
  "serde_json",
  "sqlx",
@@ -1556,19 +1555,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "problemdetails"
-version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "04daf393f0478d528d04a414883374b607f1877f64939d3ea0ae315cb9f129f2"
-dependencies = [
- "axum",
- "http",
- "serde",
- "serde_json",
- "tower-http 0.6.11",
-]
-
-[[package]]
 name = "proc-macro2"
 version = "1.0.107"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1844,8 +1830,6 @@ version = "1.0.154"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e7e9cc8b1b85264074fbcc02a88680c4096b1e47df8f739dceb03bf482f04bd6"
 dependencies = [
- "foldhash",
- "indexmap",
  "itoa",
  "memchr",
  "serde",
@@ -2357,12 +2341,10 @@ dependencies = [
  "futures-util",
  "http",
  "http-body",
- "http-body-util",
  "pin-project-lite",
  "tower",
  "tower-layer",
  "tower-service",
- "tracing",
  "url",
 ]
 

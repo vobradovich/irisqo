@@ -1,3 +1,4 @@
+use crate::models::Problem;
 use crate::models::{AppState, Error};
 use axum::{
     Json, Router,
@@ -5,7 +6,6 @@ use axum::{
     response::IntoResponse,
     routing::get,
 };
-use problemdetails::Problem;
 use sqlx::{Pool, Postgres};
 use std::sync::Arc;
 
