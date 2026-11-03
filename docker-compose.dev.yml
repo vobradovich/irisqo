@@ -1,0 +1,20 @@
+# Local dependencies: Postgres and Jaeger (OTLP in, UI at http://localhost:16686)
+#
+#   docker compose -f docker-compose.dev.yml up -d
+#   DATABASE_URL=postgres://postgres:postgres@localhost/postgres \
+#   OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 cargo run
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.62.0
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686" # UI
+      - "4318:4318" # OTLP over HTTP

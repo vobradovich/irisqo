@@ -39,6 +39,11 @@ impl From<JobResultRow> for JobResult {
 pub struct JobResultMeta {
     #[serde(flatten, default)]
     pub result: JobResultType,
+    /// Trace and span of the attempt that produced the result.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub trace_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub span_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -79,6 +84,7 @@ impl JobResult {
                     status_code,
                     version,
                 }),
+                ..JobResultMeta::default()
             },
             headers,
             body,
@@ -87,7 +93,10 @@ impl JobResult {
 
     fn with_type(result: JobResultType) -> JobResult {
         JobResult {
-            meta: JobResultMeta { result },
+            meta: JobResultMeta {
+                result,
+                ..JobResultMeta::default()
+            },
             headers: None,
             body: Bytes::new(),
         }

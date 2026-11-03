@@ -9,15 +9,17 @@ use crate::{
         AppState, Error, JobEntry, JobProtocol, JobRetry, JobRow, JobWithRetry, MAX_RETRY_DELAY,
         with_jitter,
     },
+    otel::{self, HeaderInjector},
 };
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full, Limited};
-#[allow(unused_imports)]
-use opentelemetry::{global, trace::TraceContextExt};
+use opentelemetry::{global, trace::SpanKind};
 use std::{collections::HashMap, time::Duration};
 use tokio::time;
+use tracing::{Instrument, field::Empty};
 #[allow(unused_imports)]
 use tracing::{debug, error, info, warn};
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 const MAX_RESPONSE_BODY: usize = 10 * 1024 * 1024;
 
@@ -38,7 +40,59 @@ pub async fn job_run(app_state: &AppState, job_with_retry: JobWithRetry) {
 
 /// Runs a job attempt. A retry is scheduled right here; a final result is returned
 /// as a [`Completion`] for [`complete`] (so that the results can be written in batches).
+///
+/// The attempt is a `job.run` span, a child of the request that created the job
+/// (retries are siblings), or the root of a new trace linked to it for schedule runs.
 pub async fn job_execute(app_state: &AppState, job_with_retry: JobWithRetry) -> Option<Completion> {
+    let meta = &job_with_retry.job.meta;
+    let span = tracing::info_span!(
+        target: otel::TRACING_TARGET,
+        "job.run",
+        otel.name = "job.run",
+        otel.kind = ?SpanKind::Consumer,
+        otel.status_code = Empty,
+        job.id = job_with_retry.job.id,
+        job.retry = job_with_retry.retry,
+        job.schedule_id = job_with_retry.job.schedule_id.as_deref(),
+        job.outcome = Empty,
+    );
+    _ = span
+        .set_parent(otel::context_from_trace_headers(
+            meta.traceparent.as_deref(),
+            meta.tracestate.as_deref(),
+        ))
+        .inspect_err(|err| debug!("job.run set_parent error {:?}", err));
+    if let Some(link) = meta
+        .trace_link
+        .as_deref()
+        .and_then(otel::span_context_from_traceparent)
+    {
+        span.add_link(link);
+    }
+    let ids = otel::span_ids(&span);
+    let mut completion = job_attempt(app_state, job_with_retry)
+        .instrument(span.clone())
+        .await;
+    let outcome = completion
+        .as_ref()
+        .map_or("retry", |c| c.result.processed_status());
+    span.record("job.outcome", outcome);
+    span.record(
+        "otel.status_code",
+        if outcome == "completed" {
+            "OK"
+        } else {
+            "ERROR"
+        },
+    );
+    if let (Some(completion), Some((trace_id, span_id))) = (completion.as_mut(), ids) {
+        completion.result.meta.trace_id = Some(trace_id);
+        completion.result.meta.span_id = Some(span_id);
+    }
+    completion
+}
+
+async fn job_attempt(app_state: &AppState, job_with_retry: JobWithRetry) -> Option<Completion> {
     let instance_id = &app_state.instance_id;
     let JobWithRetry { job, retry } = job_with_retry;
     let entry = JobEntry { id: job.id, retry };
@@ -99,17 +153,24 @@ async fn job_run_http(app_state: &AppState, job: JobRow) -> Result<JobResult, Er
     let job_id = job.id;
     // jobs stored before the limit existed may carry a bigger timeout
     let timeout_ms = job.meta.timeout.min(app_state.worker_options.max_timeout);
-    let req = hyper::Request::<Full<Bytes>>::try_from(job)?;
-    // OpenTelemetry
-    // let tracer = global::tracer("irisqo");
-    // let span = opentelemetry::trace::Tracer::span_builder(&tracer, String::from("job_run_http"))
-    //     .with_kind(opentelemetry::trace::SpanKind::Client)
-    //     .start(&tracer);
-    // let cx = opentelemetry::Context::current_with_span(span);
-
-    // global::get_text_map_propagator(|propagator| {
-    //     propagator.inject_context(&cx, &mut crate::otel::HeaderInjector(req.headers_mut()))
-    // });
+    let mut req = hyper::Request::<Full<Bytes>>::try_from(job)?;
+    let method = req.method().clone();
+    let span = tracing::info_span!(
+        target: otel::TRACING_TARGET,
+        "HTTP request",
+        otel.name = %method,
+        otel.kind = ?SpanKind::Client,
+        otel.status_code = Empty,
+        http.request.method = %method,
+        url.full = %req.uri(),
+        http.response.status_code = Empty,
+        http.response.body.size = Empty,
+        exception.message = Empty,
+    );
+    // The receiver continues the trace: traceparent/tracestate of this client span
+    global::get_text_map_propagator(|propagator| {
+        propagator.inject_context(&span.context(), &mut HeaderInjector(req.headers_mut()));
+    });
     // Call: the timeout covers the whole exchange, including reading the body
     let call = async {
         let response = app_state.client.request(req).await?;
@@ -134,13 +195,24 @@ async fn job_run_http(app_state: &AppState, job: JobRow) -> Result<JobResult, Er
             })?;
         Ok::<_, Error>((status_code, version, header_hashmap, collected.to_bytes()))
     };
-    // first '?' - timeout
-    // second '?' - request/body error
-    let (status_code, version, header_hashmap, bytes) =
-        time::timeout(Duration::from_millis(timeout_ms.into()), call).await??;
+    // '?': timeout; the block yields the request/body result
+    let exchange = async { time::timeout(Duration::from_millis(timeout_ms.into()), call).await? }
+        .instrument(span.clone())
+        .await;
+    let (status_code, version, header_hashmap, bytes) = exchange.inspect_err(|err| {
+        span.record("otel.status_code", "ERROR");
+        span.record("exception.message", tracing::field::display(err));
+    })?;
+    // i64: unsigned values are exported as strings
+    span.record("http.response.status_code", i64::from(status_code.as_u16()));
+    span.record(
+        "http.response.body.size",
+        i64::try_from(bytes.len()).unwrap_or(i64::MAX),
+    );
     // Result
     let job_result = JobResult::http(status_code, version, Some(header_hashmap), bytes);
     if status_code.is_server_error() {
+        span.record("otel.status_code", "ERROR");
         return Err(Error::ServerError(job_result));
     }
     if status_code.is_client_error() {

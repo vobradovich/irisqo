@@ -128,7 +128,8 @@ async fn job_create(
             if key == header::HOST {
                 continue;
             }
-            if key.as_str() == "hx-request" {
+            // the trace context is stored in the job meta and injected per attempt
+            if matches!(key.as_str(), "hx-request" | "traceparent" | "tracestate") {
                 continue;
             }
             if let Ok(val) = v.to_str() {
@@ -136,8 +137,8 @@ async fn job_create(
             }
         }
     }
-    // OpenTelemetry TraceId
-    let trace_id = otel::current_trace_id();
+    // Trace context of this request: the parent of every attempt
+    let (traceparent, tracestate) = otel::current_trace_headers();
     // Build
     let job_create = JobCreate {
         meta: JobMeta {
@@ -145,7 +146,9 @@ async fn job_create(
             retry,
             delay,
             timeout,
-            trace_id,
+            traceparent,
+            tracestate,
+            trace_link: None,
         },
         headers: Some(header_hashmap),
         body,

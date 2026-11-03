@@ -3,33 +3,30 @@ use std::sync::Arc;
 
 use irisqo::{AppState, db, services};
 use opentelemetry::trace::TracerProvider as _;
-use opentelemetry_sdk::trace::SdkTracerProvider;
-use opentelemetry_stdout as stdout;
 use tokio::net::TcpListener;
 use tokio::signal;
 use tokio_util::sync::CancellationToken;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
+use tracing::Level;
+use tracing_subscriber::{
+    EnvFilter, Layer, filter::Targets, layer::SubscriberExt, util::SubscriberInitExt,
+};
 
 #[tokio::main]
 async fn main() {
-    opentelemetry::global::set_text_map_propagator(
-        opentelemetry_sdk::propagation::TraceContextPropagator::new(),
-    );
-    // Create a new OpenTelemetry trace pipeline that prints to stdout
-    let provider = SdkTracerProvider::builder()
-        .with_simple_exporter(stdout::SpanExporter::default())
-        .build();
-
+    let provider = irisqo::otel::init_tracer_provider();
     let tracer = provider.tracer("irisqo");
-    opentelemetry::global::set_tracer_provider(provider);
 
+    // RUST_LOG filters the logs only: the exported spans are the `otel::tracing` ones
+    let log_filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| "irisqo=debug,tower_http=debug,sqlx=info".into());
+    let span_filter = Targets::new().with_target(irisqo::otel::TRACING_TARGET, Level::INFO);
     tracing_subscriber::registry()
+        .with(tracing_subscriber::fmt::layer().with_filter(log_filter))
         .with(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "irisqo=debug,tower_http=debug,otel=info,sqlx=info".into()),
+            tracing_opentelemetry::layer()
+                .with_tracer(tracer)
+                .with_filter(span_filter),
         )
-        .with(tracing_subscriber::fmt::layer())
-        .with(tracing_opentelemetry::layer().with_tracer(tracer))
         .init();
 
     let state = AppState::new().await;
@@ -54,6 +51,10 @@ async fn main() {
     // All workers have finished their jobs: release whatever is still locked by this instance.
     if let Err(err) = db::instances::kill(&state.pool, &state.instance_id).await {
         tracing::error!("db::instances::kill error {:?}", err);
+    }
+    // Flush the spans still in the batch
+    if let Err(err) = provider.shutdown() {
+        eprintln!("tracer provider shutdown error {err:?}");
     }
     eprintln!("->> SHUTDOWN")
 }

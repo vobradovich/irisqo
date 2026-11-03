@@ -10,7 +10,7 @@
 - [x] Persistent queue backed by `Postgres` with lock-free queries.
 - [x] Scalability
 - [x] Retries and Delays
-- [ ] OpenTelemetry Tracing
+- [x] OpenTelemetry Tracing
 - [x] Schedules, Intervals, and Cron
 - [ ] UI
 
@@ -71,6 +71,21 @@ DATABASE_URL=postgres://user:pass@localhost/irisqo cargo run --release -- --help
 | `--prefetch` | 8 | jobs assigned per fetch: `max(prefetch, concurrency / 4)` |
 | `--timeout` / `--max-timeout` | 3000 / 300000 | default and max request timeout, ms |
 | `--retention-hours` | 168 | processed jobs older than this are deleted, `0` keeps them |
+
+### Tracing
+Jobs continue the trace of the request that created them (W3C `traceparent`/`tracestate`):
+
+- every attempt is a `job.run` span, a child of that request (so retries are siblings),
+  with `job.id`, `job.retry`, `job.schedule_id` and `job.outcome` (`completed`, `failed`, `retry`);
+- the outgoing request is a client span, and the receiver gets its `traceparent`/`tracestate`;
+- every run of a schedule after the first one starts its own trace, with a link to the request
+  that created the schedule;
+- the result (`/api/v1/jobs/{id}/result`) has the `trace_id` and `span_id` of its attempt.
+
+Export is configured by the standard env vars: `OTEL_EXPORTER_OTLP_ENDPOINT` enables OTLP over
+HTTP/protobuf (plain HTTP, e.g. a local collector or Jaeger, see `docker-compose.dev.yml`),
+`OTEL_TRACES_EXPORTER=console` prints the spans, `OTEL_SERVICE_NAME` overrides `irisqo`.
+`RUST_LOG` filters the logs only.
 
 ### Delivery guarantees
 At least once. Every instance sends a heartbeat; jobs of an instance silent for 30 s are released,
