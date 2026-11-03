@@ -10,7 +10,7 @@
 - [x] Persistent queue backed by `Postgres` with lock-free queries.
 - [x] Scalability
 - [x] Retries and Delays
-- [ ] OpenTelemetry Tracing
+- [x] OpenTelemetry Tracing
 - [x] Schedules, Intervals, and Cron
 - [ ] UI
 
@@ -71,6 +71,55 @@ DATABASE_URL=postgres://user:pass@localhost/irisqo cargo run --release -- --help
 | `--prefetch` | 8 | jobs assigned per fetch: `max(prefetch, concurrency / 4)` |
 | `--timeout` / `--max-timeout` | 3000 / 300000 | default and max request timeout, ms |
 | `--retention-hours` | 168 | processed jobs older than this are deleted, `0` keeps them |
+
+### Telemetry
+Traces, metrics and logs go out over OTLP (HTTP/protobuf), configured by the standard env vars:
+
+| Env var | |
+|---|---|
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | enables the export of all three signals, e.g. `http://localhost:5080/api/default` |
+| `OTEL_EXPORTER_OTLP_HEADERS` | e.g. `Authorization=Basic%20...` |
+| `OTEL_{TRACES,METRICS,LOGS}_EXPORTER` | `otlp`, `console` or `none`, per signal |
+| `OTEL_METRIC_EXPORT_INTERVAL` | ms, default 60000 |
+| `OTEL_SERVICE_NAME` | default `irisqo` |
+
+`docker-compose.dev.yml` runs Postgres and [OpenObserve](https://github.com/openobserve/openobserve)
+(OSS, one container for traces, metrics and logs); the exports for it are in the file.
+OTLP is plain HTTP: a local collector/agent or OpenObserve.
+
+#### Traces
+Jobs continue the trace of the request that created them (W3C `traceparent`/`tracestate`):
+
+- every attempt is a `job.run` span, a child of that request (so retries are siblings),
+  with `job.id`, `job.retry`, `job.schedule_id` and `job.outcome` (`completed`, `failed`, `retry`);
+- the outgoing request is a client span, and the receiver gets its `traceparent`/`tracestate`;
+- every run of a schedule starts its own trace, with a link to the request that created the
+  schedule (one trace per schedule would grow forever);
+- the result (`/api/v1/jobs/{id}/result`) has the `trace_id` and `span_id` of its attempt.
+
+#### Metrics
+| Metric | Type | Attributes |
+|---|---|---|
+| `http.server.request.duration` | histogram, s | `http.request.method`, `http.route`, `http.response.status_code` |
+| `http.server.active_requests` | up-down counter | `http.request.method` |
+| `http.client.request.duration` | histogram, s | `http.request.method`, `server.address`, `server.port`, `http.response.status_code`, `error.type` |
+| `db.client.connection.count` | gauge | `db.client.connection.state` (`idle`, `used`) |
+| `db.client.connection.max` | gauge | |
+| `irisqo.jobs.created` | counter | `job.type` (`immediate`, `delayed`, `scheduled`) |
+| `irisqo.job.attempt.duration` | histogram, s | `job.outcome` (`completed`, `failed`, `retry`) |
+| `irisqo.jobs.in_flight` | up-down counter | attempts running on the instance |
+| `irisqo.queue.depth` | gauge | `state` (`scheduled`, `enqueued`, `processing`), the whole queue, every 15 s |
+| `irisqo.queue.lag` | gauge, s | how long the oldest due job has been waiting to start |
+| `irisqo.locks.expired` | counter | jobs released by the lock reaper |
+| `irisqo.instances.expired` | counter | instances declared dead |
+| `irisqo.retention.deleted` | counter | `kind` (`jobs`, `schedules`, `instances`) |
+
+`irisqo.queue.*` describe the whole queue: every instance reports the same values, aggregate them
+with `max`, not `sum`.
+
+#### Logs
+Logs go to stdout and to OTel, both filtered by `RUST_LOG`; a log written inside a span carries
+its `trace_id`/`span_id`. Exported spans do not depend on `RUST_LOG`.
 
 ### Delivery guarantees
 At least once. Every instance sends a heartbeat; jobs of an instance silent for 30 s are released,

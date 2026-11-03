@@ -38,10 +38,10 @@ pub enum Error {
     InvalidParams(&'static str),
 
     #[error("Server Error")]
-    ServerError(JobResult),
+    ServerError(Box<JobResult>),
 
     #[error("Client Error")]
-    ClientError(JobResult),
+    ClientError(Box<JobResult>),
 
     #[error("Response Too Large")]
     ResponseTooLarge,

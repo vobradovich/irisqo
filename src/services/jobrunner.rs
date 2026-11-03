@@ -9,15 +9,23 @@ use crate::{
         AppState, Error, JobEntry, JobProtocol, JobRetry, JobRow, JobWithRetry, MAX_RETRY_DELAY,
         with_jitter,
     },
+    otel::{self, HeaderInjector, metrics::metrics},
 };
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full, Limited};
-#[allow(unused_imports)]
-use opentelemetry::{global, trace::TraceContextExt};
-use std::{collections::HashMap, time::Duration};
+use opentelemetry::{
+    Context, KeyValue, global,
+    trace::{SpanKind, TraceContextExt},
+};
+use std::{
+    collections::HashMap,
+    time::{Duration, Instant},
+};
 use tokio::time;
+use tracing::{Instrument, field::Empty};
 #[allow(unused_imports)]
 use tracing::{debug, error, info, warn};
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 const MAX_RESPONSE_BODY: usize = 10 * 1024 * 1024;
 
@@ -38,7 +46,69 @@ pub async fn job_run(app_state: &AppState, job_with_retry: JobWithRetry) {
 
 /// Runs a job attempt. A retry is scheduled right here; a final result is returned
 /// as a [`Completion`] for [`complete`] (so that the results can be written in batches).
+///
+/// The attempt is a `job.run` span, a child of the request that created the job
+/// (`meta.traceparent`), so retries are siblings. A schedule run instead starts its
+/// own trace with a link to that request: a schedule would grow one trace forever.
 pub async fn job_execute(app_state: &AppState, job_with_retry: JobWithRetry) -> Option<Completion> {
+    let meta = &job_with_retry.job.meta;
+    let span = tracing::info_span!(
+        target: otel::TRACING_TARGET,
+        "job.run",
+        otel.name = "job.run",
+        otel.kind = ?SpanKind::Consumer,
+        otel.status_code = Empty,
+        job.id = job_with_retry.job.id,
+        job.retry = job_with_retry.retry,
+        job.schedule_id = job_with_retry.job.schedule_id.as_deref(),
+        job.outcome = Empty,
+    );
+    let request =
+        otel::context_from_trace_headers(meta.traceparent.as_deref(), meta.tracestate.as_deref());
+    let parent = if job_with_retry.job.schedule_id.is_some() {
+        let link = request.span().span_context().clone();
+        if link.is_valid() {
+            span.add_link(link);
+        }
+        Context::new()
+    } else {
+        request
+    };
+    _ = span
+        .set_parent(parent)
+        .inspect_err(|err| debug!("job.run set_parent error {:?}", err));
+    let ids = otel::span_ids(&span);
+    let metrics = metrics();
+    metrics.jobs_in_flight.add(1, &[]);
+    let start = Instant::now();
+    let mut completion = job_attempt(app_state, job_with_retry)
+        .instrument(span.clone())
+        .await;
+    metrics.jobs_in_flight.add(-1, &[]);
+    let outcome = completion
+        .as_ref()
+        .map_or("retry", |c| c.result.processed_status());
+    metrics.job_attempt_duration.record(
+        start.elapsed().as_secs_f64(),
+        &[KeyValue::new("job.outcome", outcome)],
+    );
+    span.record("job.outcome", outcome);
+    span.record(
+        "otel.status_code",
+        if outcome == "completed" {
+            "OK"
+        } else {
+            "ERROR"
+        },
+    );
+    if let (Some(completion), Some((trace_id, span_id))) = (completion.as_mut(), ids) {
+        completion.result.meta.trace_id = Some(trace_id);
+        completion.result.meta.span_id = Some(span_id);
+    }
+    completion
+}
+
+async fn job_attempt(app_state: &AppState, job_with_retry: JobWithRetry) -> Option<Completion> {
     let instance_id = &app_state.instance_id;
     let JobWithRetry { job, retry } = job_with_retry;
     let entry = JobEntry { id: job.id, retry };
@@ -99,17 +169,24 @@ async fn job_run_http(app_state: &AppState, job: JobRow) -> Result<JobResult, Er
     let job_id = job.id;
     // jobs stored before the limit existed may carry a bigger timeout
     let timeout_ms = job.meta.timeout.min(app_state.worker_options.max_timeout);
-    let req = hyper::Request::<Full<Bytes>>::try_from(job)?;
-    // OpenTelemetry
-    // let tracer = global::tracer("irisqo");
-    // let span = opentelemetry::trace::Tracer::span_builder(&tracer, String::from("job_run_http"))
-    //     .with_kind(opentelemetry::trace::SpanKind::Client)
-    //     .start(&tracer);
-    // let cx = opentelemetry::Context::current_with_span(span);
-
-    // global::get_text_map_propagator(|propagator| {
-    //     propagator.inject_context(&cx, &mut crate::otel::HeaderInjector(req.headers_mut()))
-    // });
+    let mut req = hyper::Request::<Full<Bytes>>::try_from(job)?;
+    let mut attrs = client_attrs(req.method(), req.uri());
+    let span = tracing::info_span!(
+        target: otel::TRACING_TARGET,
+        "HTTP request",
+        otel.name = %req.method(),
+        otel.kind = ?SpanKind::Client,
+        otel.status_code = Empty,
+        http.request.method = %req.method(),
+        url.full = %req.uri(),
+        http.response.status_code = Empty,
+        http.response.body.size = Empty,
+        exception.message = Empty,
+    );
+    // The receiver continues the trace: traceparent/tracestate of this client span
+    global::get_text_map_propagator(|propagator| {
+        propagator.inject_context(&span.context(), &mut HeaderInjector(req.headers_mut()));
+    });
     // Call: the timeout covers the whole exchange, including reading the body
     let call = async {
         let response = app_state.client.request(req).await?;
@@ -134,19 +211,79 @@ async fn job_run_http(app_state: &AppState, job: JobRow) -> Result<JobResult, Er
             })?;
         Ok::<_, Error>((status_code, version, header_hashmap, collected.to_bytes()))
     };
-    // first '?' - timeout
-    // second '?' - request/body error
-    let (status_code, version, header_hashmap, bytes) =
-        time::timeout(Duration::from_millis(timeout_ms.into()), call).await??;
+    let start = Instant::now();
+    // '?': timeout; the block yields the request/body result
+    let exchange = async { time::timeout(Duration::from_millis(timeout_ms.into()), call).await? }
+        .instrument(span.clone())
+        .await;
+    match &exchange {
+        Ok((status_code, ..)) => {
+            attrs.push(KeyValue::new(
+                "http.response.status_code",
+                i64::from(status_code.as_u16()),
+            ));
+            if status_code.is_client_error() || status_code.is_server_error() {
+                attrs.push(KeyValue::new("error.type", status_code.as_str().to_owned()));
+            }
+        }
+        Err(err) => attrs.push(KeyValue::new("error.type", error_type(err))),
+    }
+    metrics()
+        .http_client_duration
+        .record(start.elapsed().as_secs_f64(), &attrs);
+    let (status_code, version, header_hashmap, bytes) = exchange.inspect_err(|err| {
+        span.record("otel.status_code", "ERROR");
+        span.record("exception.message", tracing::field::display(err));
+    })?;
+    // i64: unsigned values are exported as strings
+    span.record("http.response.status_code", i64::from(status_code.as_u16()));
+    span.record(
+        "http.response.body.size",
+        i64::try_from(bytes.len()).unwrap_or(i64::MAX),
+    );
     // Result
     let job_result = JobResult::http(status_code, version, Some(header_hashmap), bytes);
     if status_code.is_server_error() {
-        return Err(Error::ServerError(job_result));
+        span.record("otel.status_code", "ERROR");
+        return Err(Error::ServerError(Box::new(job_result)));
     }
     if status_code.is_client_error() {
-        return Err(Error::ClientError(job_result));
+        return Err(Error::ClientError(Box::new(job_result)));
     }
     Ok(job_result)
+}
+
+/// `http.client.request.duration` attributes known before the request is sent.
+fn client_attrs(method: &hyper::Method, uri: &hyper::Uri) -> Vec<KeyValue> {
+    let port = uri
+        .port_u16()
+        .unwrap_or(if uri.scheme_str() == Some("https") {
+            443
+        } else {
+            80
+        });
+    vec![
+        KeyValue::new("http.request.method", method.as_str().to_owned()),
+        KeyValue::new("server.address", uri.host().unwrap_or_default().to_owned()),
+        KeyValue::new("server.port", i64::from(port)),
+    ]
+}
+
+/// `error.type` of a failed exchange (no response).
+fn error_type(err: &Error) -> &'static str {
+    match err {
+        Error::Timeout(_) => "timeout",
+        Error::ResponseTooLarge => "response_too_large",
+        Error::HyperClientError(_) | Error::HyperError(_) | Error::IoError(_) => "connection",
+        Error::JobNotFound(_)
+        | Error::DbError(_)
+        | Error::HttpError(_)
+        | Error::InvalidUrl
+        | Error::InvalidParams(_)
+        | Error::ServerError(_)
+        | Error::ClientError(_)
+        | Error::RetriesExceeded => "_OTHER",
+    }
 }
 
 async fn processed_scheduled(app_state: &AppState, completion: Completion) -> Result<(), Error> {

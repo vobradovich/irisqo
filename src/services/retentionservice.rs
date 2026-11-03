@@ -3,7 +3,9 @@ use std::{sync::Arc, time::Duration};
 use tokio::{select, time};
 use tracing::{debug, error, info};
 
-use crate::{db, models::AppState, services::drain_batches};
+use opentelemetry::KeyValue;
+
+use crate::{db, models::AppState, otel::metrics::metrics, services::drain_batches};
 
 const RETENTION_INTERVAL: Duration = Duration::from_secs(60);
 const PURGE_BATCH: i32 = 1000;
@@ -71,6 +73,16 @@ impl RetentionService {
             .await
             .inspect_err(|err| error!({ instance_id }, "purge_instances error {:?}", err))
             .unwrap_or_default();
+        let deleted = &metrics().retention_deleted;
+        for (kind, count) in [
+            ("jobs", jobs),
+            ("schedules", schedules),
+            ("instances", instances),
+        ] {
+            if count > 0 {
+                deleted.add(count, &[KeyValue::new("kind", kind)]);
+            }
+        }
         if jobs + schedules + instances > 0 {
             debug!({ instance_id, jobs, schedules, instances }, "purged");
         }

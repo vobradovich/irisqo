@@ -64,8 +64,12 @@ pub struct JobMeta {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub delay: Option<u32>,
     pub timeout: u32,
+    /// W3C trace context of the request that created the job: the parent of every
+    /// attempt (the link of every schedule run), copied to every run of a schedule.
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub trace_id: Option<String>,
+    pub traceparent: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub tracestate: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -149,7 +153,7 @@ async fn job_row_into_request_ok() -> anyhow::Result<()> {
             },
             delay: Some(300),
             timeout: 2000,
-            trace_id: None,
+            ..JobMeta::default()
         },
         headers: Some(HashMap::from([(
             header::CONTENT_LENGTH.to_string(),

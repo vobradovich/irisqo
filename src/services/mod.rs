@@ -1,5 +1,6 @@
 pub mod heartbeat;
 pub mod jobrunner;
+pub mod queuestats;
 pub mod retentionservice;
 pub mod schedulerservice;
 pub mod workerservice;

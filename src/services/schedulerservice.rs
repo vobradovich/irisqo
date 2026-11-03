@@ -5,6 +5,7 @@ use tracing::{debug, error, info, trace, warn};
 use crate::{
     db,
     models::{AppState, SchedulerOptions},
+    otel::metrics::metrics,
     services::{drain_batches, heartbeat::INSTANCE_EXPIRE},
 };
 use std::sync::Arc;
@@ -51,6 +52,7 @@ impl SchedulerService {
             .await
             .inspect(|&expired| {
                 if expired > 0 {
+                    metrics().instances_expired.add(expired, &[]);
                     warn!({ instance_id, expired }, "expired instances killed");
                 }
             })
@@ -59,6 +61,7 @@ impl SchedulerService {
             .await
             .inspect(|&reaped| {
                 if reaped > 0 {
+                    metrics().locks_expired.add(reaped, &[]);
                     warn!({ instance_id, reaped }, "expired locks released");
                 }
             })
