@@ -1,17 +1,19 @@
 use async_channel::Receiver;
-use futures::{StreamExt, future::join_all};
-use tokio::{select, sync::mpsc, task::JoinHandle, time};
-use tracing::{error, info};
+use futures::StreamExt;
+use tokio::{select, sync::mpsc, task::JoinSet, time};
+use tracing::{error, info, warn};
 
 use crate::{
     db,
     models::{AppState, JobWithRetry},
     services::jobrunner::{self, Completion},
 };
-use std::{num::NonZeroUsize, sync::Arc, thread};
+use std::{num::NonZeroUsize, sync::Arc, thread, time::Duration};
 
 /// Max results written by one statement.
 const COMPLETE_BATCH: usize = 256;
+/// Time for the last results after the workers stopped (`--shutdown-timeout` excluded).
+const COMPLETER_GRACE: Duration = Duration::from_secs(5);
 
 /// Loader -> workers -> completer.
 ///
@@ -53,16 +55,15 @@ impl WorkerService {
             let state = Arc::clone(app_state);
             async move { run_completer(&state, done_rx).await }
         });
-        let running_workers: Vec<JoinHandle<()>> = (0..workers_count)
-            .map(|idx| {
-                let state = Arc::clone(app_state);
-                let rx_worker = rx.clone();
-                let done_tx = done_tx.clone();
-                tokio::spawn(async move {
-                    run_worker(&state, idx, per_worker, rx_worker, done_tx).await;
-                })
-            })
-            .collect();
+        let mut running_workers = JoinSet::new();
+        for idx in 0..workers_count {
+            let state = Arc::clone(app_state);
+            let rx_worker = rx.clone();
+            let done_tx = done_tx.clone();
+            running_workers.spawn(async move {
+                run_worker(&state, idx, per_worker, rx_worker, done_tx).await
+            });
+        }
         drop(done_tx);
 
         while !app_state.shutdown_token.is_cancelled() {
@@ -80,10 +81,15 @@ impl WorkerService {
             })
             .unwrap_or_default();
             let empty = jobs.is_empty();
-            // The jobs are already assigned to this instance in the db,
-            // so hand them all over (even on shutdown) instead of leaving them locked.
             for job in jobs {
-                _ = tx.send(job).await;
+                // On shutdown the jobs not handed over yet stay assigned to this
+                // instance: `kill` releases them on exit.
+                select!(
+                    biased;
+                    () = app_state.shutdown_token.cancelled() => break,
+                    // the channel is closed only below, after this loop
+                    _ = tx.send(job) => {},
+                );
             }
             if empty {
                 select!(
@@ -94,11 +100,24 @@ impl WorkerService {
             }
         }
         // Drain: workers finish their jobs, then the completer writes the last results.
+        // Past `shutdown_timeout` the jobs still running are abandoned: they stay
+        // assigned to this instance and `kill` releases them on exit.
         tx.close();
-        join_all(running_workers).await;
-        _ = completer
-            .await
-            .inspect_err(|err| error!({ instance_id }, "completer error {:?}", err));
+        let deadline = time::Instant::now() + app_state.worker_options.shutdown_timeout;
+        let drained = time::timeout_at(deadline, async {
+            while running_workers.join_next().await.is_some() {}
+        });
+        if drained.await.is_err() {
+            warn!({ instance_id }, "shutdown timeout, running jobs abandoned");
+            running_workers.abort_all();
+        }
+        // The aborted workers drop their senders: the completer writes what it got and ends.
+        match time::timeout(COMPLETER_GRACE, completer).await {
+            Ok(res) => {
+                _ = res.inspect_err(|err| error!({ instance_id }, "completer error {:?}", err));
+            }
+            Err(_) => warn!({ instance_id }, "completer timeout, results not written"),
+        }
         info!({ instance_id }, "stop");
     }
 }

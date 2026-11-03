@@ -45,6 +45,8 @@ pub struct WorkerOptions {
     pub timeout: u32,
     /// Upper bound for the per-job `_timeout`, in milliseconds.
     pub max_timeout: u32,
+    /// On shutdown, how long the running jobs may finish; the rest are released.
+    pub shutdown_timeout: Duration,
 }
 
 /// Extra time on top of `max_timeout` before a lock counts as stuck.
@@ -69,6 +71,9 @@ xflags::xflags! {
         optional --timeout n: u32
         /// Max job timeout (`_timeout`) in milliseconds. Default: 300000
         optional --max-timeout n: u32
+        /// Seconds the running jobs get to finish on shutdown, then they are released
+        /// (keep it under the orchestrator grace period, 30 s in Kubernetes). Default: 20
+        optional --shutdown-timeout n: u64
         /// Keep processed jobs for this many hours, 0 keeps them forever. Default: 168 (7 days)
         optional --retention-hours n: u32
     }
@@ -129,6 +134,7 @@ impl AppState {
                 prefetch: options.prefetch.unwrap_or(8),
                 timeout: options.timeout.unwrap_or(3000).min(max_timeout),
                 max_timeout,
+                shutdown_timeout: Duration::from_secs(options.shutdown_timeout.unwrap_or(20)),
             },
             shutdown_token: CancellationToken::new(),
         };

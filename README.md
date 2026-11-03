@@ -17,7 +17,7 @@
 ## API
 
 ### Queue
-To queue a request, simply prefix a request with {{host}}/to/ and we’ll queue and forward the request with the exact same method/body/headers/query.
+To queue a request, simply prefix a request with {{host}}/to/ and we’ll queue and forward the request with the exact same method/body/query.
 ```
 @host=http://localhost:8102
 
@@ -29,6 +29,23 @@ Response Headers
 - `job-id` - this is the ID of the request job
 - `schedule-id` - ID of the new schedule
 - `external-id` - optional external ID of the request from `_id` query parameter.
+
+### Headers
+The target gets only the body headers (`Content-Type`, `Content-Encoding`, `Content-Language`) and the
+ones prefixed with `Irisqo-Forward-`, without the prefix; the caller's own `Authorization`, `Cookie`
+and other headers are not forwarded.
+```
+POST {{host}}/to/https://example.com/hook
+Authorization: Bearer token-for-irisqo
+Irisqo-Forward-Authorization: Bearer token-for-the-target
+Content-Type: application/json
+```
+
+Every delivery also carries:
+- `Irisqo-Job-Id` - the job, the same on every retry: delivery is at least once, use it to drop duplicates;
+- `Irisqo-Retry` - the attempt, from 0;
+- `Irisqo-Schedule-Id` - the schedule of a schedule run (every run is a new job);
+- `traceparent`/`tracestate` - the trace context (see Telemetry).
 
 ### Retry
 Automatically retry requests that fail by adding the `_retry` query parameter.
@@ -71,6 +88,7 @@ DATABASE_URL=postgres://user:pass@localhost/irisqo cargo run --release -- --help
 | `--prefetch` | 8 | jobs assigned per fetch: `max(prefetch, concurrency / 4)` |
 | `--timeout` / `--max-timeout` | 3000 / 300000 | default and max request timeout, ms |
 | `--retention-hours` | 168 | processed jobs older than this are deleted, `0` keeps them |
+| `--shutdown-timeout` | 20 | s the running jobs get to finish on shutdown; keep it under the orchestrator grace period (30 s in Kubernetes) |
 
 ### Telemetry
 Traces, metrics and logs go out over OTLP (HTTP/protobuf), configured by the standard env vars:
@@ -126,7 +144,8 @@ At least once. Every instance sends a heartbeat; jobs of an instance silent for 
 and so is any job locked for longer than `--max-timeout` + 60 s (a failed result write, a hung worker).
 A late result of such an attempt is rejected: a job is completed only by its current attempt
 (instance + retry number). On `SIGINT`/`SIGTERM` the instance stops taking jobs, finishes the ones in
-flight, writes their results and releases the rest.
+flight (up to `--shutdown-timeout`), writes their results and releases the rest: an abandoned
+attempt runs again elsewhere.
 
 ## Development
 
