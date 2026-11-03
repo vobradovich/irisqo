@@ -37,6 +37,8 @@ pub struct WorkerOptions {
     pub poll_interval: Duration,
     pub prefetch: u16,
     pub timeout: u32,
+    /// Upper bound for the per-job `_timeout`, in milliseconds.
+    pub max_timeout: u32,
 }
 
 // Generates `pub struct Options`; `Options::from_vec(vec![])` gives the defaults (tests).
@@ -57,6 +59,8 @@ xflags::xflags! {
         optional --prefetch n: u16
         /// Default job timeout in milliseconds. Default: 3000
         optional --timeout n: u32
+        /// Max job timeout (`_timeout`) in milliseconds. Default: 300000
+        optional --max-timeout n: u32
     }
 }
 
@@ -94,6 +98,7 @@ impl AppState {
         instance_id: String,
         options: &Options,
     ) -> Arc<AppState> {
+        let max_timeout = options.max_timeout.unwrap_or(300_000);
         let https = hyper_tls::HttpsConnector::new();
         let state = AppState {
             port: options.port.unwrap_or(8102),
@@ -109,7 +114,8 @@ impl AppState {
                 concurrency: options.concurrency.filter(|n| *n > 0),
                 poll_interval: Duration::from_millis(options.interval.unwrap_or(1000)),
                 prefetch: options.prefetch.unwrap_or(8),
-                timeout: options.timeout.unwrap_or(3000),
+                timeout: options.timeout.unwrap_or(3000).min(max_timeout),
+                max_timeout,
             },
             shutdown_token: CancellationToken::new(),
         };

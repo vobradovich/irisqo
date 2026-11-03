@@ -8,7 +8,7 @@ use axum::{
     Router,
     body::Bytes,
     extract::{Path, RawQuery, State},
-    http::{HeaderMap, StatusCode, header},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
     response::IntoResponse,
     routing::get,
 };
@@ -61,12 +61,19 @@ async fn job_create(
                 continue;
             }
             if key == "_delay_until" {
-                at = value.parse::<i64>().ok().filter(|&t| t > now_secs);
+                let parsed = value.parse::<i64>().ok();
+                if parsed.is_some_and(|t| !JobSchedule::is_valid_unix_secs(t)) {
+                    return Err(Error::InvalidParams("delay_until").into());
+                }
+                at = parsed.filter(|&t| t > now_secs);
                 delay = at.and_then(|t| (t - now_secs).try_into().ok());
                 continue;
             }
             if key == "_timeout" {
-                timeout = value.parse::<u32>().unwrap_or(state.worker_options.timeout);
+                timeout = value
+                    .parse::<u32>()
+                    .unwrap_or(state.worker_options.timeout)
+                    .min(state.worker_options.max_timeout);
                 continue;
             }
             if key == "_retry" {
@@ -87,6 +94,9 @@ async fn job_create(
             }
             if key == "_until" {
                 until = value.parse::<i64>().ok();
+                if until.is_some_and(|t| !JobSchedule::is_valid_unix_secs(t)) {
+                    return Err(Error::InvalidParams("until").into());
+                }
                 continue;
             }
             if key == "_id" && !value.is_empty() && value.len() < 65 {
@@ -148,19 +158,20 @@ async fn job_create(
     debug!("{:?}", serde_json::to_string(&job_create.meta));
     let job = db::jobqueue::create(&state.pool, job_create, &state.instance_id).await?;
     let mut headers = HeaderMap::new();
-    headers.insert(
-        header::LOCATION,
-        format!("/api/v1/jobs/{}", job.id).parse().unwrap(),
-    );
-    headers.insert("job-id", job.id.into());
-    if let Some(schedule_id) = job.schedule_id {
-        headers.insert("schedule-id", schedule_id.parse().unwrap());
+    if let Ok(location) = HeaderValue::from_str(&format!("/api/v1/jobs/{}", job.id)) {
+        headers.insert(header::LOCATION, location);
     }
-    if let Some(external_id) = job.external_id {
-        // user-provided: may not be a valid header value
-        if let Ok(value) = external_id.parse() {
-            headers.insert("external-id", value);
-        }
+    headers.insert("job-id", job.id.into());
+    if let Some(schedule_id) = job.schedule_id
+        && let Ok(value) = HeaderValue::from_str(&schedule_id)
+    {
+        headers.insert("schedule-id", value);
+    }
+    // user-provided: may not be a valid header value
+    if let Some(external_id) = job.external_id
+        && let Ok(value) = HeaderValue::from_str(&external_id)
+    {
+        headers.insert("external-id", value);
     }
     Ok((StatusCode::CREATED, headers))
 }

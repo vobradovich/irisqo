@@ -15,36 +15,44 @@ pub enum JobSchedule {
     Cron { cron: String },
 }
 
+/// Latest accepted unix timestamp in seconds: 9999-12-31T23:59:59Z.
+pub const MAX_UNIX_SECS: i64 = 253_402_300_799;
+
 impl JobSchedule {
     pub fn now_secs() -> i64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs() as i64
+        Utc::now().timestamp()
     }
 
+    /// `true` when `secs` is a usable unix timestamp (`1..=MAX_UNIX_SECS`).
+    pub const fn is_valid_unix_secs(secs: i64) -> bool {
+        secs > 0 && secs <= MAX_UNIX_SECS
+    }
+
+    /// The next run strictly after `after_unix_sec`, `None` when there is none
+    /// before `until_unix_sec` or the timestamps are out of range.
     pub fn next(&self, after_unix_sec: i64, until_unix_sec: Option<i64>) -> Option<i64> {
-        let dt = Utc.timestamp_opt(after_unix_sec, 0).unwrap();
+        if !Self::is_valid_unix_secs(after_unix_sec) {
+            return None;
+        }
         let next = match &self {
             JobSchedule::Interval { interval } => {
-                Some(after_unix_sec - (after_unix_sec % *interval as i64) + *interval as i64)
-            }
-            JobSchedule::Cron { cron } => Schedule::from_str(cron)
-                .unwrap()
-                .after(&dt)
-                .map(|dt| dt.timestamp())
-                .next(),
-        };
-        match (next, until_unix_sec) {
-            (Some(n), Some(until)) => {
-                if n > until {
-                    None
-                } else {
-                    next
+                let interval = i64::from(*interval);
+                if interval == 0 {
+                    return None;
                 }
+                (after_unix_sec - after_unix_sec % interval).checked_add(interval)?
             }
-            _ => next,
-        }
+            JobSchedule::Cron { cron } => {
+                let dt = Utc.timestamp_opt(after_unix_sec, 0).single()?;
+                Schedule::from_str(cron)
+                    .ok()?
+                    .after(&dt)
+                    .next()?
+                    .timestamp()
+            }
+        };
+        let in_range = Self::is_valid_unix_secs(next) && until_unix_sec.is_none_or(|u| next <= u);
+        in_range.then_some(next)
     }
 }
 
@@ -65,6 +73,9 @@ impl FromStr for JobSchedule {
         }
         let interval = s.parse::<u32>();
         if let Ok(val) = interval {
+            if val == 0 {
+                return Err(Error::InvalidParams("interval"));
+            }
             return Ok(JobSchedule::Interval { interval: val });
         }
         let mut parts: Vec<&str> = s.split(['|', ' ']).collect();
@@ -191,4 +202,32 @@ async fn schedule_from_str_cron_after() -> anyhow::Result<()> {
     assert!(next.is_some());
     assert_eq!(now_sec_to_5_min + 300, next.unwrap());
     Ok(())
+}
+
+#[test]
+fn schedule_from_str_interval_zero_err() {
+    assert!("0".parse::<JobSchedule>().is_err());
+}
+
+#[test]
+fn schedule_next_out_of_range_none() {
+    let interval = JobSchedule::Interval { interval: 60 };
+    let cron: JobSchedule = "*/5 * * * *".parse().unwrap();
+    for schedule in [&interval, &cron] {
+        assert_eq!(schedule.next(i64::MAX, None), None);
+        assert_eq!(schedule.next(MAX_UNIX_SECS, None), None);
+        assert_eq!(schedule.next(-1, None), None);
+    }
+    // a zero interval stored before the validation existed
+    assert_eq!(
+        JobSchedule::Interval { interval: 0 }.next(1_000, None),
+        None
+    );
+}
+
+#[test]
+fn schedule_next_until() {
+    let schedule = JobSchedule::Interval { interval: 60 };
+    assert_eq!(schedule.next(1_000, Some(1_020)), Some(1_020));
+    assert_eq!(schedule.next(1_000, Some(1_019)), None);
 }

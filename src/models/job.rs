@@ -99,10 +99,11 @@ impl TryFrom<JobRow> for hyper::Request<Full<Bytes>> {
 
         let body: Bytes = value.body.map_or(Bytes::new(), Bytes::from);
         let mut req = hyper::Request::builder().method(meta.method).uri(meta.url);
-        if let Some(headers) = value.headers {
-            let map = HeaderMap::try_from(&headers)?;
-            let headers_mut = req.headers_mut().unwrap();
-            for (key, value) in map {
+        // `headers_mut()` is `None` only when the builder already failed: `body()` reports it
+        if let Some(headers) = value.headers
+            && let Some(headers_mut) = req.headers_mut()
+        {
+            for (key, value) in HeaderMap::try_from(&headers)? {
                 if let Some(key) = key {
                     headers_mut.insert(key, value);
                 }

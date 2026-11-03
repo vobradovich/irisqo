@@ -1,7 +1,6 @@
 use std::{net::SocketAddr, sync::Arc};
 
 use bytes::Bytes;
-use futures::TryStreamExt;
 use http_body_util::Full;
 use irisqo::{
     AppState, db,
@@ -47,7 +46,6 @@ pub async fn request(
 /// Assigns up to `limit` enqueued jobs to this instance.
 pub async fn fetch(state: &AppState, limit: i32) -> Vec<JobWithRetry> {
     db::jobqueue::fetch_job_with_retry(&state.pool, &state.instance_id, limit)
-        .try_collect()
         .await
         .expect("fetch_job_with_retry")
 }
@@ -69,4 +67,45 @@ pub async fn processed_status(pool: &PgPool, job_id: i64) -> Option<String> {
         .fetch_optional(pool)
         .await
         .expect("processed status")
+}
+
+/// Creates a job through the API (`/to/...`) and returns the response.
+pub async fn create(
+    state: &AppState,
+    addr: SocketAddr,
+    target: &str,
+) -> hyper::Response<hyper::body::Incoming> {
+    request(
+        state,
+        hyper::Method::POST,
+        &format!("http://{addr}/to/{target}"),
+    )
+    .await
+}
+
+/// A response header value as a string.
+pub fn header(response: &hyper::Response<hyper::body::Incoming>, name: &str) -> Option<String> {
+    response
+        .headers()
+        .get(name)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned)
+}
+
+/// Makes every scheduled job due and moves it to `enqueued`.
+pub async fn enqueue_all_scheduled(state: &AppState) -> u64 {
+    sqlx::query("UPDATE scheduled SET at = 1")
+        .execute(&state.pool)
+        .await
+        .expect("make scheduled due");
+    db::jobqueue::enqueue_scheduled(&state.pool, &state.instance_id)
+        .await
+        .expect("enqueue_scheduled")
+}
+
+pub async fn count(pool: &PgPool, sql: &'static str) -> i64 {
+    sqlx::query_scalar(sql)
+        .fetch_one(pool)
+        .await
+        .expect("count")
 }

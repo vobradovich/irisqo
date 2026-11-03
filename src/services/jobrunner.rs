@@ -60,7 +60,8 @@ async fn job_run_with_error(
 
 async fn job_run_http(app_state: &AppState, job: JobRow) -> Result<JobResult, Error> {
     let job_id = job.id;
-    let timeout_ms = job.meta.timeout;
+    // jobs stored before the limit existed may carry a bigger timeout
+    let timeout_ms = job.meta.timeout.min(app_state.worker_options.max_timeout);
     let req = hyper::Request::<Full<Bytes>>::try_from(job)?;
     // OpenTelemetry
     // let tracer = global::tracer("irisqo");
@@ -128,9 +129,14 @@ async fn processed(
         return Ok(());
     }
     if let Some(next_at) = next_at {
-        let next_id =
-            db::jobqueue::clone_schedule_at(&mut *tx, job_id, next_at, instance_id).await?;
-        debug!({ instance_id, job_id, next_id, next_at }, "==> clone and schedule");
+        match db::jobqueue::clone_schedule_at(&mut *tx, job_id, next_at, instance_id).await? {
+            Some(next_id) => {
+                debug!({ instance_id, job_id, next_id, next_at }, "==> clone and schedule");
+            }
+            None => {
+                debug!({ instance_id, job_id }, "==> schedule deleted or inactive, stop");
+            }
+        }
     }
     tx.commit().await?;
     Ok(())
@@ -163,14 +169,16 @@ async fn on_error(
         | Error::HyperClientError(_)
         | Error::Timeout(_)
         | Error::ServerError(_)
-        | Error::ClientError(_) => {
-            let res = retry_or_fail(app_state, entry, meta).await;
-            if res.is_ok() {
-                return None;
+        | Error::ClientError(_) => match retry_or_fail(app_state, entry, meta).await {
+            Ok(()) => None,
+            Err(Error::RetriesExceeded) => Some(err.into()),
+            Err(retry_err) => {
+                // Not the job's fault: keep it locked, it is released when this instance
+                // is killed (or by the lease reaper) and runs again.
+                error!({ instance_id = app_state.instance_id, job_id }, "====> retry error {:?}, job error {:?}", retry_err, err);
+                None
             }
-            let job_result: JobResult = err.into();
-            Some(job_result)
-        }
+        },
         Error::JobNotFound(_)
         | Error::DbError(_)
         | Error::IoError(_)

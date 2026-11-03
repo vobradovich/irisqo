@@ -26,6 +26,9 @@ pub enum JobRetry {
     },
 }
 
+/// Upper bound for a single retry delay in seconds (24 hours).
+pub const MAX_RETRY_DELAY: u32 = 24 * 60 * 60;
+
 impl JobRetry {
     pub const fn is_none(&self) -> bool {
         matches!(self, JobRetry::None)
@@ -51,8 +54,10 @@ impl JobRetry {
         x
     }
 
+    /// Delay in seconds before the retry number `retry` (0-based), capped by
+    /// [`MAX_RETRY_DELAY`]; `None` when the retries are exhausted.
     pub fn next_retry_in(self, retry: u16) -> Option<u32> {
-        match self {
+        let delay = match self {
             JobRetry::None => None,
             JobRetry::Immediate { retry_count } => (retry < retry_count).then_some(0),
             JobRetry::Fixed {
@@ -62,8 +67,10 @@ impl JobRetry {
             JobRetry::Fibonacci {
                 retry_count,
                 retry_delay,
-            } => (retry < retry_count).then_some(retry_delay * JobRetry::fibonacci(retry as usize)),
-        }
+            } => (retry < retry_count)
+                .then(|| retry_delay.saturating_mul(JobRetry::fibonacci(usize::from(retry)))),
+        };
+        delay.map(|d| d.min(MAX_RETRY_DELAY))
     }
 }
 
@@ -205,4 +212,23 @@ async fn job_retry_fibonacci_until_exhausted() -> anyhow::Result<()> {
     assert_eq!(Some(2 * JobRetry::fibonacci(3)), retry.next_retry_in(3));
     assert_eq!(None, retry.next_retry_in(4));
     Ok(())
+}
+
+#[test]
+fn next_retry_in_is_capped() {
+    let fib = JobRetry::Fibonacci {
+        retry_count: u16::MAX,
+        retry_delay: u32::MAX,
+    };
+    assert_eq!(fib.next_retry_in(40), Some(MAX_RETRY_DELAY));
+    let fib = JobRetry::Fibonacci {
+        retry_count: 100,
+        retry_delay: 2_000,
+    };
+    assert_eq!(fib.next_retry_in(31), Some(MAX_RETRY_DELAY));
+    let fixed = JobRetry::Fixed {
+        retry_count: 1,
+        retry_delay: u32::MAX,
+    };
+    assert_eq!(fixed.next_retry_in(0), Some(MAX_RETRY_DELAY));
 }

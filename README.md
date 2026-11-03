@@ -43,6 +43,11 @@ GET {{host}}/to/https://postman-echo.com/get?_retry=3|fixed|5
 GET {{host}}/to/https://postman-echo.com/get?_retry=3|fibonacci|5
 ```
 
+A single retry delay is capped at 24 hours.
+
+### Timeout
+`_timeout` sets the request timeout in milliseconds (default `--timeout`, 3000), capped by `--max-timeout` (default 300000).
+
 ### Delay
 Delay a request by adding the `_delay` or `_delay_until` [Unix Time] query parameter.
 ```
