@@ -149,10 +149,7 @@ where
     const SQL: &str = "
     WITH a AS (
         INSERT INTO jobs(meta, headers, body, schedule_id)
-        -- every run gets its own trace, linked to the request that created the schedule
-        SELECT (j.meta - 'traceparent' - 'tracestate')
-                || jsonb_strip_nulls(jsonb_build_object('trace_link', coalesce(j.meta->>'trace_link', j.meta->>'traceparent'))),
-            j.headers, j.body, j.schedule_id
+        SELECT j.meta, j.headers, j.body, j.schedule_id
         FROM jobs AS j
         INNER JOIN schedules AS s ON s.schedule_id = j.schedule_id AND NOT s.inactive
         WHERE j.id = $1

@@ -148,7 +148,6 @@ async fn job_create(
             timeout,
             traceparent,
             tracestate,
-            trace_link: None,
         },
         headers: Some(header_hashmap),
         body,

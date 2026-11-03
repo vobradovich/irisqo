@@ -64,16 +64,12 @@ pub struct JobMeta {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub delay: Option<u32>,
     pub timeout: u32,
-    /// W3C trace context of the request that created the job: every attempt
-    /// (retries too) is a child span of it.
+    /// W3C trace context of the request that created the job: the parent of every
+    /// attempt (the link of every schedule run), copied to every run of a schedule.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub traceparent: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub tracestate: Option<String>,
-    /// A schedule run after the first one starts its own trace, linked to this
-    /// `traceparent` of the request that created the schedule.
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub trace_link: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]

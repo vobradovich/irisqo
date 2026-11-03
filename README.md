@@ -78,8 +78,8 @@ Jobs continue the trace of the request that created them (W3C `traceparent`/`tra
 - every attempt is a `job.run` span, a child of that request (so retries are siblings),
   with `job.id`, `job.retry`, `job.schedule_id` and `job.outcome` (`completed`, `failed`, `retry`);
 - the outgoing request is a client span, and the receiver gets its `traceparent`/`tracestate`;
-- every run of a schedule after the first one starts its own trace, with a link to the request
-  that created the schedule;
+- every run of a schedule starts its own trace, with a link to the request that created the
+  schedule (one trace per schedule would grow forever);
 - the result (`/api/v1/jobs/{id}/result`) has the `trace_id` and `span_id` of its attempt.
 
 Export is configured by the standard env vars: `OTEL_EXPORTER_OTLP_ENDPOINT` enables OTLP over

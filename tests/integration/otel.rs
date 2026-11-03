@@ -3,7 +3,10 @@ use std::{sync::OnceLock, time::Duration};
 use bytes::Bytes;
 use http_body_util::Full;
 use hyper::StatusCode;
-use opentelemetry::{Value, trace::TracerProvider as _};
+use opentelemetry::{
+    Value,
+    trace::{SpanId, TracerProvider as _},
+};
 use opentelemetry_sdk::{
     propagation::TraceContextPropagator,
     trace::{InMemorySpanExporter, SdkTracerProvider, SpanData},
@@ -183,21 +186,19 @@ async fn schedule_runs_start_linked_traces(pool: PgPool) -> anyhow::Result<()> {
     )
     .await;
 
-    // first run: in the request trace; it schedules the second one
-    common::enqueue_all_scheduled(&state).await;
-    common::run_enqueued(&state).await;
-    wait_spans(&trace_id, "job.run", 1).await;
-    let (traceparent, trace_link): (Option<String>, Option<String>) = sqlx::query_as(
-        "SELECT meta->>'traceparent', meta->>'trace_link' FROM jobs WHERE id IN (SELECT id FROM scheduled)",
+    // two runs: each one in its own new trace, linked to the request
+    for _ in 0..2 {
+        common::enqueue_all_scheduled(&state).await;
+        assert_eq!(common::run_enqueued(&state).await, 1);
+    }
+    // the next run keeps the request context as is
+    let traceparent: Option<String> = sqlx::query_scalar(
+        "SELECT meta->>'traceparent' FROM jobs WHERE id IN (SELECT id FROM scheduled)",
     )
     .fetch_one(&pool)
     .await?;
-    assert_eq!(traceparent, None);
-    assert!(trace_link.expect("trace_link").contains(&trace_id));
+    assert!(traceparent.expect("traceparent").contains(&trace_id));
 
-    // second run: a new trace linked to the request
-    common::enqueue_all_scheduled(&state).await;
-    common::run_enqueued(&state).await;
     let mut linked = Vec::new();
     for _ in 0..100 {
         linked = exporter()
@@ -210,12 +211,17 @@ async fn schedule_runs_start_linked_traces(pool: PgPool) -> anyhow::Result<()> {
                         .any(|l| l.span_context.trace_id().to_string() == trace_id)
             })
             .collect();
-        if !linked.is_empty() {
+        if linked.len() >= 2 {
             break;
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    assert_eq!(linked.len(), 1);
-    assert_ne!(linked[0].span_context.trace_id().to_string(), trace_id);
+    assert_eq!(linked.len(), 2);
+    assert!(linked.iter().all(|s| s.parent_span_id == SpanId::INVALID));
+    assert_ne!(
+        linked[0].span_context.trace_id(),
+        linked[1].span_context.trace_id()
+    );
+    assert!(spans_of(&trace_id).iter().all(|s| s.name != "job.run"));
     Ok(())
 }

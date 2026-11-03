@@ -13,7 +13,10 @@ use crate::{
 };
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full, Limited};
-use opentelemetry::{global, trace::SpanKind};
+use opentelemetry::{
+    Context, global,
+    trace::{SpanKind, TraceContextExt},
+};
 use std::{collections::HashMap, time::Duration};
 use tokio::time;
 use tracing::{Instrument, field::Empty};
@@ -42,7 +45,8 @@ pub async fn job_run(app_state: &AppState, job_with_retry: JobWithRetry) {
 /// as a [`Completion`] for [`complete`] (so that the results can be written in batches).
 ///
 /// The attempt is a `job.run` span, a child of the request that created the job
-/// (retries are siblings), or the root of a new trace linked to it for schedule runs.
+/// (`meta.traceparent`), so retries are siblings. A schedule run instead starts its
+/// own trace with a link to that request: a schedule would grow one trace forever.
 pub async fn job_execute(app_state: &AppState, job_with_retry: JobWithRetry) -> Option<Completion> {
     let meta = &job_with_retry.job.meta;
     let span = tracing::info_span!(
@@ -56,19 +60,20 @@ pub async fn job_execute(app_state: &AppState, job_with_retry: JobWithRetry) -> 
         job.schedule_id = job_with_retry.job.schedule_id.as_deref(),
         job.outcome = Empty,
     );
+    let request =
+        otel::context_from_trace_headers(meta.traceparent.as_deref(), meta.tracestate.as_deref());
+    let parent = if job_with_retry.job.schedule_id.is_some() {
+        let link = request.span().span_context().clone();
+        if link.is_valid() {
+            span.add_link(link);
+        }
+        Context::new()
+    } else {
+        request
+    };
     _ = span
-        .set_parent(otel::context_from_trace_headers(
-            meta.traceparent.as_deref(),
-            meta.tracestate.as_deref(),
-        ))
+        .set_parent(parent)
         .inspect_err(|err| debug!("job.run set_parent error {:?}", err));
-    if let Some(link) = meta
-        .trace_link
-        .as_deref()
-        .and_then(otel::span_context_from_traceparent)
-    {
-        span.add_link(link);
-    }
     let ids = otel::span_ids(&span);
     let mut completion = job_attempt(app_state, job_with_retry)
         .instrument(span.clone())

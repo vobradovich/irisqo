@@ -8,7 +8,7 @@ pub use headerinjector::HeaderInjector;
 use hyper::Uri;
 use hyper::Version;
 use opentelemetry::Context;
-use opentelemetry::trace::{SpanContext, TraceContextExt};
+use opentelemetry::trace::TraceContextExt;
 use opentelemetry_sdk::{Resource, propagation::TraceContextPropagator, trace::SdkTracerProvider};
 use std::collections::HashMap;
 use tower_http::classify::ServerErrorsFailureClass;
@@ -80,14 +80,6 @@ pub fn context_from_trace_headers(traceparent: Option<&str>, tracestate: Option<
         carrier.insert("tracestate".to_owned(), tracestate.to_owned());
     }
     opentelemetry::global::get_text_map_propagator(|propagator| propagator.extract(&carrier))
-}
-
-/// The span context of a stored `traceparent`, if valid (for span links).
-#[must_use]
-pub fn span_context_from_traceparent(traceparent: &str) -> Option<SpanContext> {
-    let cx = context_from_trace_headers(Some(traceparent), None);
-    let span_context = cx.span().span_context().clone();
-    span_context.is_valid().then_some(span_context)
 }
 
 /// Trace and span ids of a span (for `processed.meta`); `None` when it is not traced.
