@@ -53,7 +53,7 @@ async fn job_create(
         body,
     };
     let job = prepare_job(&state.worker_options, request, JobSchedule::now_secs())
-        .map_err(Error::Validation)?;
+        .map_err(Error::InvalidParams)?;
     let job = create_job(&state, job).await?;
     let mut headers = HeaderMap::new();
     // schedule-id and external-id (user-provided) may not be valid header values
@@ -72,7 +72,6 @@ async fn job_create(
 }
 
 /// A job as requested through `/to/{url}?{query}`; the UI form builds the same.
-#[derive(Debug)]
 pub struct JobRequest<'a> {
     pub method: Method,
     /// The target URL, without the query string.
@@ -92,73 +91,49 @@ pub fn prepare_job(
     now_secs: i64,
 ) -> Result<JobCreate, Vec<ParamError>> {
     let mut errors = Vec::new();
-    let mut delay: Option<u32> = None;
     let mut at: Option<i64> = None;
     let mut timeout: u32 = options.timeout;
     let mut retry = JobRetry::None;
-    let mut schedule: Option<JobSchedule> = None;
+    let mut schedule: Option<(JobSchedule, &'static str)> = None;
     let mut until: Option<i64> = None;
     let mut external_id: Option<String> = None;
+    let mut url = Url::parse(request.url).ok();
 
-    let mut url = Url::parse(request.url)
-        .inspect_err(|_| errors.push(ParamError::new("url", "is not a valid URL")))
-        .ok();
-    let pairs = request
-        .query
-        .map(|qs| form_urlencoded::parse(qs.as_bytes()).collect::<Vec<_>>())
-        .unwrap_or_default();
-    for (key, value) in pairs {
+    let mut bad = |parameter, detail: &str| errors.push(ParamError::new(parameter, detail));
+    for (key, value) in form_urlencoded::parse(request.query.unwrap_or_default().as_bytes()) {
         match key.as_ref() {
             "_delay" => match value.parse::<u32>() {
-                Ok(secs) => {
-                    delay = Some(secs);
-                    at = Some(now_secs + i64::from(secs));
-                }
-                Err(_) => errors.push(ParamError::new("_delay", "must be a number of seconds")),
+                Ok(secs) => at = Some(now_secs + i64::from(secs)),
+                Err(_) => bad("_delay", "must be a number of seconds"),
             },
+            // a time in the past runs the job now
             "_delay_until" => match value.parse::<i64>() {
-                Ok(t) if JobSchedule::is_valid_unix_secs(t) => {
-                    // a time in the past runs the job now
-                    at = (t > now_secs).then_some(t);
-                    delay = at.and_then(|t| u32::try_from(t - now_secs).ok());
-                }
-                _ => errors.push(ParamError::new(
-                    "_delay_until",
-                    "must be a unix time in seconds",
-                )),
+                Ok(t) if JobSchedule::is_valid_unix_secs(t) => at = (t > now_secs).then_some(t),
+                _ => bad("_delay_until", "must be a unix time in seconds"),
             },
             "_timeout" => match value.parse::<u32>() {
                 Ok(ms) if ms > 0 => timeout = ms.min(options.max_timeout),
-                _ => errors.push(ParamError::new(
-                    "_timeout",
-                    "must be a positive number of milliseconds",
-                )),
+                _ => bad("_timeout", "must be a positive number of milliseconds"),
             },
             "_retry" => match value.parse::<JobRetry>() {
                 Ok(parsed) => retry = parsed,
-                Err(_) => errors.push(ParamError::new(
-                    "_retry",
-                    "must be N, N|fixed|S or N|fibonacci|S",
-                )),
+                Err(_) => bad("_retry", "must be N, N|fixed|S or N|fibonacci|S"),
             },
             "_interval" => match value.parse::<u32>() {
-                Ok(secs) if secs > 0 => schedule = Some(JobSchedule::Interval { interval: secs }),
-                _ => errors.push(ParamError::new(
-                    "_interval",
-                    "must be a positive number of seconds",
-                )),
+                Ok(secs) if secs > 0 => {
+                    schedule = Some((JobSchedule::Interval { interval: secs }, "_interval"));
+                }
+                _ => bad("_interval", "must be a positive number of seconds"),
             },
             "_cron" => match parse_cron(&value) {
-                Ok(parsed) => schedule = Some(parsed),
-                Err(message) => errors.push(ParamError::new("_cron", message)),
+                Ok(parsed) => schedule = Some((parsed, "_cron")),
+                Err(detail) => bad("_cron", &detail),
             },
             "_until" => match value.parse::<i64>() {
                 Ok(t) if JobSchedule::is_valid_unix_secs(t) => until = Some(t),
-                _ => errors.push(ParamError::new("_until", "must be a unix time in seconds")),
+                _ => bad("_until", "must be a unix time in seconds"),
             },
-            "_id" if value.chars().count() > 64 => {
-                errors.push(ParamError::new("_id", "must be at most 64 characters"));
-            }
+            "_id" if value.chars().count() > 64 => bad("_id", "must be at most 64 characters"),
             "_id" => external_id = (!value.is_empty()).then(|| value.into_owned()),
             _ => {
                 if let Some(url) = url.as_mut() {
@@ -171,17 +146,23 @@ pub fn prepare_job(
             }
         }
     }
-    let uri = url.and_then(|url| {
-        Uri::try_from(url.as_str())
-            .inspect_err(|_| errors.push(ParamError::new("url", "is not a valid URL")))
-            .ok()
-    });
-    let Some(uri) = uri else {
+    // a schedule runs at least once
+    if let Some((schedule, parameter)) = &schedule
+        && schedule.next(at.unwrap_or(now_secs), until).is_none()
+    {
+        let parameter = if until.is_some() { "_until" } else { parameter };
+        errors.push(ParamError::new(
+            parameter,
+            "the schedule has no run before it ends",
+        ));
+    }
+    let uri = url.and_then(|url| Uri::try_from(url.as_str()).ok());
+    if uri.is_none() {
+        errors.push(ParamError::new("url", "is not a valid URL"));
+    }
+    let Some(uri) = uri.filter(|_| errors.is_empty()) else {
         return Err(errors);
     };
-    if !errors.is_empty() {
-        return Err(errors);
-    }
     let protocol = match uri.scheme_str() {
         Some("http" | "https") => JobProtocol::Http(HttpMeta {
             method: request.method,
@@ -195,7 +176,7 @@ pub fn prepare_job(
         meta: JobMeta {
             protocol,
             retry,
-            delay,
+            delay: at.and_then(|t| u32::try_from(t - now_secs).ok()),
             timeout,
             traceparent,
             tracestate,
@@ -203,7 +184,7 @@ pub fn prepare_job(
         headers: Some(request.headers),
         body: request.body,
         at,
-        schedule,
+        schedule: schedule.map(|(schedule, _)| schedule),
         until,
         external_id,
     })
@@ -211,26 +192,24 @@ pub fn prepare_job(
 
 /// A cron schedule (5 or 6 fields, seconds first) with a message for a human.
 fn parse_cron(value: &str) -> Result<JobSchedule, String> {
-    let fields = value.split_whitespace().count();
-    if !(5..=7).contains(&fields) {
+    let fields: Vec<_> = value.split_whitespace().collect();
+    if !(5..=7).contains(&fields.len()) {
         return Err(format!(
-            "needs 5 or 6 fields, got {fields}: e.g. */15 * * * *"
+            "needs 5 or 6 fields, got {}: e.g. */15 * * * *",
+            fields.len()
         ));
     }
-    match value
-        .split_whitespace()
-        .collect::<Vec<_>>()
+    fields
         .join(" ")
         .parse()
-    {
-        Ok(schedule @ JobSchedule::Cron { .. }) => Ok(schedule),
-        Ok(JobSchedule::Interval { .. }) | Err(_) => Err("is not a valid cron expression".into()),
-    }
+        .ok()
+        .filter(|s| matches!(s, JobSchedule::Cron { .. }))
+        .ok_or_else(|| "is not a valid cron expression".into())
 }
 
 /// Stores a prepared job (or returns the existing one with the same external id).
 pub async fn create_job(state: &AppState, job: JobCreate) -> Result<JobCreateRow, Error> {
-    debug!("{:?}", serde_json::to_string(&job.meta));
+    debug!(meta = ?job.meta, "create job");
     let job_type = if job.schedule.is_some() {
         "scheduled"
     } else if job.at.is_some() {
@@ -238,11 +217,13 @@ pub async fn create_job(state: &AppState, job: JobCreate) -> Result<JobCreateRow
     } else {
         "immediate"
     };
-    let created = db::jobqueue::create(&state.pool, job, &state.instance_id).await?;
-    metrics()
-        .jobs_created
-        .add(1, &[KeyValue::new("job.type", job_type)]);
-    Ok(created)
+    db::jobqueue::create(&state.pool, job, &state.instance_id)
+        .await
+        .inspect(|_| {
+            metrics()
+                .jobs_created
+                .add(1, &[KeyValue::new("job.type", job_type)]);
+        })
 }
 
 /// Prefix of the request headers forwarded to the target, without the prefix.

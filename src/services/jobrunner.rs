@@ -296,9 +296,7 @@ fn error_type(err: &Error) -> &'static str {
         Error::JobNotFound(_)
         | Error::DbError(_)
         | Error::HttpError(_)
-        | Error::InvalidUrl
         | Error::InvalidParams(_)
-        | Error::Validation(_)
         | Error::ServerError(_)
         | Error::ClientError(_)
         | Error::RetriesExceeded => "_OTHER",
@@ -368,9 +366,7 @@ async fn on_error(
         | Error::DbError(_)
         | Error::IoError(_)
         | Error::HttpError(_)
-        | Error::InvalidUrl
         | Error::InvalidParams(_)
-        | Error::Validation(_)
         | Error::ResponseTooLarge
         | Error::RetriesExceeded => {
             error!({ instance_id, job_id }, "====> error {:?}", err);

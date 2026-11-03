@@ -74,17 +74,22 @@ GET {{host}}/to/https://postman-echo.com/get?_delay=5
 ```
 
 ### Errors
+Errors are `application/problem+json` ([RFC 9457](https://www.rfc-editor.org/rfc/rfc9457)).
 Invalid job parameters are rejected with `400` and every problem at once:
 ```json
 {
+  "type": "https://github.com/vobradovich/irisqo/blob/main/docs/problems.md#invalid-parameters",
+  "title": "Invalid parameters",
   "status": 400,
-  "detail": "Invalid parameters: _delay: must be a number of seconds; _cron: needs 5 or 6 fields, got 4: e.g. */15 * * * *",
+  "detail": "2 parameters are invalid.",
   "errors": [
-    { "param": "_delay", "message": "must be a number of seconds" },
-    { "param": "_cron", "message": "needs 5 or 6 fields, got 4: e.g. */15 * * * *" }
-  ]
+    { "parameter": "_delay", "detail": "must be a number of seconds" },
+    { "parameter": "_cron", "detail": "needs 5 or 6 fields, got 4: e.g. */15 * * * *" }
+  ],
+  "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736"
 }
 ```
+Other errors carry only their status, with `trace_id`: see [docs/problems.md](docs/problems.md).
 
 ## UI
 `/ui` serves a server-rendered UI: Askama templates, [htmx](https://htmx.org) for the partial updates and

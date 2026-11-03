@@ -91,7 +91,7 @@ impl FromStr for JobRetry {
             return Ok(JobRetry::None);
         }
         let parts: Vec<&str> = s.split(['|', ',']).collect();
-        let invalid = |_| Error::InvalidParams("retry");
+        let invalid = |_| Error::invalid("retry", "must be N, N|fixed|S or N|fibonacci|S");
 
         match parts.as_slice() {
             [] => Ok(JobRetry::None),

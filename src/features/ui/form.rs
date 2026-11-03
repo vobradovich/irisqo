@@ -270,8 +270,8 @@ impl JobForm {
             Ok(job) if errors.is_empty() => Ok(job),
             Ok(_) => Err(errors),
             Err(param_errors) => {
-                for ParamError { param, message } in param_errors {
-                    errors.entry(field_of(param)).or_insert(message);
+                for ParamError { parameter, detail } in param_errors {
+                    errors.entry(field_of(parameter)).or_insert(detail);
                 }
                 Err(errors)
             }

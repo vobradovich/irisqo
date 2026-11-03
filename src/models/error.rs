@@ -4,19 +4,25 @@ use tokio::time::error::Elapsed;
 
 use crate::{features::results::JobResult, otel};
 
+/// The problem type of [`Error::InvalidParams`] (RFC 9457 `type`), documented there.
+pub const INVALID_PARAMS_TYPE: &str =
+    "https://github.com/vobradovich/irisqo/blob/main/docs/problems.md#invalid-parameters";
+
 /// A rejected request parameter (`url`, `_delay`, `_cron`...): the API returns them all
-/// at once, the UI form shows each one next to its field.
+/// at once (RFC 9457 `errors` extension), the UI form shows each one next to its field.
 #[derive(Debug, serde::Serialize)]
 pub struct ParamError {
-    pub param: &'static str,
-    pub message: String,
+    /// The query parameter (`_delay`) or `url`.
+    pub parameter: &'static str,
+    /// What is wrong, for a human: "must be a number of seconds".
+    pub detail: String,
 }
 
 impl ParamError {
-    pub fn new(param: &'static str, message: impl Into<String>) -> Self {
+    pub fn new(parameter: &'static str, detail: impl Into<String>) -> Self {
         Self {
-            param,
-            message: message.into(),
+            parameter,
+            detail: detail.into(),
         }
     }
 }
@@ -24,7 +30,7 @@ impl ParamError {
 fn describe(errors: &[ParamError]) -> String {
     errors
         .iter()
-        .map(|e| format!("{}: {}", e.param, e.message))
+        .map(|e| format!("{}: {}", e.parameter, e.detail))
         .collect::<Vec<_>>()
         .join("; ")
 }
@@ -56,14 +62,9 @@ pub enum Error {
     #[error(transparent)]
     HyperClientError(#[from] hyper_util::client::legacy::Error),
 
-    #[error("Invalid Url")]
-    InvalidUrl,
-
-    #[error("Invalid Params - {0}")]
-    InvalidParams(&'static str),
-
+    /// The request parameters are wrong: every one of them, for a 400.
     #[error("Invalid parameters: {}", describe(.0))]
-    Validation(Vec<ParamError>),
+    InvalidParams(Vec<ParamError>),
 
     #[error("Server Error")]
     ServerError(Box<JobResult>),
@@ -78,37 +79,56 @@ pub enum Error {
     RetriesExceeded,
 }
 
+impl Error {
+    /// One invalid parameter.
+    pub fn invalid(parameter: &'static str, detail: impl Into<String>) -> Self {
+        Error::InvalidParams(vec![ParamError::new(parameter, detail)])
+    }
+}
+
+/// RFC 9457 problem details. Only the invalid parameters are explained; any other
+/// error is logged and answered with its status alone: no internals in the response.
 impl From<Error> for Problem {
     fn from(item: Error) -> Problem {
         let trace_id = otel::current_trace_id();
+        // `status` in the body too (advisory in RFC 9457, handy for clients and logs)
+        let problem = |status: StatusCode| {
+            problemdetails::new(status)
+                .with_value("status", status.as_u16())
+                .with_value("trace_id", trace_id.clone())
+        };
+        let generic = |status: StatusCode| {
+            problem(status).with_title(status.canonical_reason().unwrap_or_default())
+        };
         match item {
-            Error::InvalidUrl => problemdetails::new(StatusCode::BAD_REQUEST)
-                // .with_type("https://example.com/probs/out-of-credit")
-                .with_title(StatusCode::BAD_REQUEST.to_string())
-                .with_detail(item.to_string())
-                .with_value("trace_id", trace_id),
-            Error::InvalidParams(_) | Error::Validation(_) => {
-                let problem = problemdetails::new(StatusCode::BAD_REQUEST)
-                    .with_title(StatusCode::BAD_REQUEST.to_string())
-                    .with_detail(item.to_string())
-                    .with_value("trace_id", trace_id);
-                match item {
-                    Error::Validation(errors) => problem
-                        .with_value("errors", serde_json::to_value(errors).unwrap_or_default()),
-                    _ => problem,
-                }
+            Error::InvalidParams(errors) => {
+                let detail = match errors.len() {
+                    1 => "1 parameter is invalid.".to_owned(),
+                    n => format!("{n} parameters are invalid."),
+                };
+                problem(StatusCode::BAD_REQUEST)
+                    .with_type(INVALID_PARAMS_TYPE)
+                    .with_title("Invalid parameters")
+                    .with_detail(detail)
+                    .with_value("errors", serde_json::to_value(errors).unwrap_or_default())
             }
-            Error::DbError(sqlx::Error::RowNotFound) => problemdetails::new(StatusCode::NOT_FOUND)
-                // .with_type("https://example.com/probs/out-of-credit")
-                .with_title(StatusCode::NOT_FOUND.to_string())
-                .with_detail(item.to_string())
-                .with_value("trace_id", trace_id),
-            _ => problemdetails::new(StatusCode::INTERNAL_SERVER_ERROR)
-                // .with_type("https://example.com/probs/out-of-credit")
-                .with_title(StatusCode::INTERNAL_SERVER_ERROR.to_string())
-                .with_detail(item.to_string())
-                .with_instance(format!("{:?}", item))
-                .with_value("trace_id", trace_id),
+            Error::JobNotFound(_) | Error::DbError(sqlx::Error::RowNotFound) => {
+                generic(StatusCode::NOT_FOUND)
+            }
+            Error::Timeout(_)
+            | Error::DbError(_)
+            | Error::IoError(_)
+            | Error::HttpError(_)
+            | Error::HyperError(_)
+            | Error::HyperClientError(_)
+            | Error::ServerError(_)
+            | Error::ClientError(_)
+            | Error::ResponseTooLarge
+            | Error::RetriesExceeded => {
+                tracing::error!({ trace_id }, "request failed: {:?}", item);
+                generic(StatusCode::INTERNAL_SERVER_ERROR)
+                    .with_detail("The request could not be processed, see the server logs.")
+            }
         }
     }
 }

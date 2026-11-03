@@ -172,9 +172,7 @@ impl From<Error> for JobResult {
             | Error::HttpError(_)
             | Error::HyperError(_)
             | Error::HyperClientError(_)
-            | Error::InvalidUrl
             | Error::InvalidParams(_)
-            | Error::Validation(_)
             | Error::ResponseTooLarge
             | Error::RetriesExceeded => JobResult::with_type(JobResultType::Error {
                 error: value.to_string(),

@@ -112,8 +112,12 @@ async fn create_with_schedule(
 
     let after = job.at.unwrap_or_else(JobSchedule::now_secs);
     let at = schedule.next(after, job.until);
+    // prepare_job checks it first: a schedule must run at least once
     if at.is_none() {
-        return Err(Error::InvalidParams("schedule"));
+        return Err(Error::invalid(
+            "_until",
+            "the schedule has no run before it",
+        ));
     }
     let schedule_id = ulid::Ulid::generate().to_string();
 

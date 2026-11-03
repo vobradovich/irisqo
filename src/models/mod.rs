@@ -1,4 +1,4 @@
-pub use error::{Error, ParamError};
+pub use error::{Error, INVALID_PARAMS_TYPE, ParamError};
 
 pub use job::HttpMeta;
 pub use job::JobCreate;

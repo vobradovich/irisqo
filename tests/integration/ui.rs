@@ -243,23 +243,73 @@ async fn dependent_fields_keep_their_values(pool: PgPool) -> anyhow::Result<()> 
 async fn api_reports_every_invalid_parameter(pool: PgPool) -> anyhow::Result<()> {
     let state = common::state(pool.clone());
     let addr = common::spawn_app(&state).await;
+    let problem = |target: String| {
+        let state = state.clone();
+        async move {
+            let response = common::create(&state, addr, &target).await;
+            assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{target}");
+            assert_eq!(
+                common::header(&response, "content-type").as_deref(),
+                Some("application/problem+json")
+            );
+            let bytes = response
+                .into_body()
+                .collect()
+                .await
+                .expect("body")
+                .to_bytes();
+            serde_json::from_slice::<serde_json::Value>(&bytes).expect("json")
+        }
+    };
     let long_id = "x".repeat(65);
-    let response = common::create(
-        &state,
-        addr,
-        &format!("http://{addr}/echo?_delay=soon&_timeout=0&_interval=0&_id={long_id}"),
-    )
+    let body = problem(format!(
+        "http://{addr}/echo?_delay=soon&_timeout=0&_interval=0&_id={long_id}"
+    ))
     .await;
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    let bytes = response.into_body().collect().await?.to_bytes();
-    let problem: serde_json::Value = serde_json::from_slice(&bytes)?;
-    let params: Vec<&str> = problem["errors"]
-        .as_array()
-        .expect("errors")
+    // RFC 9457: a problem type of its own, a stable title, the errors as an extension
+    assert_eq!(body["type"], irisqo::models::INVALID_PARAMS_TYPE);
+    assert_eq!(body["title"], "Invalid parameters");
+    assert_eq!(body["status"], 400);
+    assert_eq!(body["detail"], "4 parameters are invalid.");
+    let errors = body["errors"].as_array().expect("errors");
+    let params: Vec<&str> = errors
         .iter()
-        .filter_map(|e| e["param"].as_str())
+        .filter_map(|e| e["parameter"].as_str())
         .collect();
     assert_eq!(params, ["_delay", "_timeout", "_interval", "_id"]);
+    assert_eq!(errors[0]["detail"], "must be a number of seconds");
+
+    // a schedule that would never run
+    let until = chrono::Utc::now().timestamp() + 60;
+    let body = problem(format!(
+        "http://{addr}/echo?_cron=0+0+0+1+1+*&_until={until}"
+    ))
+    .await;
+    assert_eq!(body["errors"][0]["parameter"], "_until");
+    let body = problem("not a url".replace(' ', "%20")).await;
+    assert_eq!(body["errors"][0]["parameter"], "url");
     assert_eq!(common::count(&pool, "SELECT count(*) FROM jobs").await, 0);
+    Ok(())
+}
+
+#[sqlx::test(migrations = "./sql/migrations")]
+async fn server_errors_do_not_leak_internals(pool: PgPool) -> anyhow::Result<()> {
+    let state = common::state(pool.clone());
+    let addr = common::spawn_app(&state).await;
+    // break the database under the API
+    sqlx::query("DROP TABLE history CASCADE")
+        .execute(&pool)
+        .await?;
+    let response = common::create(&state, addr, &format!("http://{addr}/echo")).await;
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let bytes = response.into_body().collect().await?.to_bytes();
+    let body: serde_json::Value = serde_json::from_slice(&bytes)?;
+    assert_eq!(body["title"], "Internal Server Error");
+    assert!(body.get("instance").is_none());
+    let text = String::from_utf8_lossy(&bytes);
+    assert!(
+        !text.contains("history") && !text.contains("relation"),
+        "{text}"
+    );
     Ok(())
 }

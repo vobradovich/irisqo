@@ -69,12 +69,15 @@ impl FromStr for JobSchedule {
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         if s.is_empty() {
-            return Err(Error::InvalidParams("schedule"));
+            return Err(Error::invalid("schedule", "is empty"));
         }
         let interval = s.parse::<u32>();
         if let Ok(val) = interval {
             if val == 0 {
-                return Err(Error::InvalidParams("interval"));
+                return Err(Error::invalid(
+                    "interval",
+                    "must be a positive number of seconds",
+                ));
             }
             return Ok(JobSchedule::Interval { interval: val });
         }
@@ -86,7 +89,10 @@ impl FromStr for JobSchedule {
             }
             6 => Ok(parts.join(" ")),
             7 => Ok(parts.join(" ")),
-            _ => Err(Error::InvalidParams("schedule")),
+            n => Err(Error::invalid(
+                "cron",
+                format!("needs 5 or 6 fields, got {n}"),
+            )),
         }?;
         let schedule = Schedule::from_str(&fixed);
         if let Ok(s) = schedule {
@@ -94,7 +100,7 @@ impl FromStr for JobSchedule {
                 cron: s.to_string(),
             });
         }
-        Err(Error::InvalidParams("schedule"))
+        Err(Error::invalid("cron", "is not a valid cron expression"))
     }
 }
 
