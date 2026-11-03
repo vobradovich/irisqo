@@ -119,15 +119,14 @@ pub fn prepare_job(
                 Ok(parsed) => retry = parsed,
                 Err(_) => bad("_retry", "must be N, N|fixed|S or N|fibonacci|S"),
             },
-            "_interval" => match value.parse::<u32>() {
-                Ok(secs) if secs > 0 => {
-                    schedule = Some((JobSchedule::Interval { interval: secs }, "_interval"));
-                }
+            "_interval" => match value.parse() {
+                Ok(parsed @ JobSchedule::Interval { .. }) => schedule = Some((parsed, "_interval")),
                 _ => bad("_interval", "must be a positive number of seconds"),
             },
-            "_cron" => match parse_cron(&value) {
-                Ok(parsed) => schedule = Some((parsed, "_cron")),
-                Err(detail) => bad("_cron", &detail),
+            "_cron" => match value.parse() {
+                Ok(parsed @ JobSchedule::Cron { .. }) => schedule = Some((parsed, "_cron")),
+                Ok(JobSchedule::Interval { .. }) => bad("_cron", "is not a cron expression"),
+                Err(err) => bad("_cron", &err.detail),
             },
             "_until" => match value.parse::<i64>() {
                 Ok(t) if JobSchedule::is_valid_unix_secs(t) => until = Some(t),
@@ -188,23 +187,6 @@ pub fn prepare_job(
         until,
         external_id,
     })
-}
-
-/// A cron schedule (5 or 6 fields, seconds first) with a message for a human.
-fn parse_cron(value: &str) -> Result<JobSchedule, String> {
-    let fields: Vec<_> = value.split_whitespace().collect();
-    if !(5..=7).contains(&fields.len()) {
-        return Err(format!(
-            "needs 5 or 6 fields, got {}: e.g. */15 * * * *",
-            fields.len()
-        ));
-    }
-    fields
-        .join(" ")
-        .parse()
-        .ok()
-        .filter(|s| matches!(s, JobSchedule::Cron { .. }))
-        .ok_or_else(|| "is not a valid cron expression".into())
 }
 
 /// Stores a prepared job (or returns the existing one with the same external id).

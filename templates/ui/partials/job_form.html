@@ -24,9 +24,8 @@
           </select>
         </label>
         <label for="url" class="wide">URL
-          <input id="url" name="url" type="url" class="mono" required placeholder="https://example.com/hook" value="{{ form.url }}"
-            {%- if form.error("url").is_some() %} aria-invalid="true" aria-describedby="url-error"{% endif %}>
-          {% if let Some(e) = form.error("url") %}<small id="url-error" class="error">URL {{ e }}</small>{% endif %}
+          <input id="url" name="url" type="url" class="mono" required placeholder="https://example.com/hook" value="{{ form.url }}"{{ invalid(form, "url", "url-error") }}>
+          {{ note(form, "url", "url-error", "URL", "") }}
         </label>
       </div>
       <label for="content_type">Content-Type
@@ -59,44 +58,39 @@
     <fieldset class="card">
       <legend>When</legend>
       <div class="choices" role="radiogroup" aria-label="Start">
-        <label for="when-now"><input type="radio" id="when-now" name="when" value="now"{% if form.when == "now" %} checked{% endif %}>Now</label>
-        <label for="when-delay"><input type="radio" id="when-delay" name="when" value="delay"{% if form.when == "delay" %} checked{% endif %}>After a delay</label>
-        <label for="when-at"><input type="radio" id="when-at" name="when" value="at"{% if form.when == "at" %} checked{% endif %}>At a time</label>
+        {{ radio("when", "now", "Now", form.when.as_str()) }}
+        {{ radio("when", "delay", "After a delay", form.when.as_str()) }}
+        {{ radio("when", "at", "At a time", form.when.as_str()) }}
       </div>
       <label for="delay" class="dep when-delay">Delay, seconds
-        <input id="delay" name="delay" type="number" min="0" value="{{ form.delay }}"
-          {%- if form.error("delay").is_some() %} aria-invalid="true" aria-describedby="delay-error"{% endif %}>
-        {% if let Some(e) = form.error("delay") %}<small id="delay-error" class="error">Delay {{ e }}</small>{% endif %}
+        <input id="delay" name="delay" type="number" min="0" value="{{ form.delay }}"{{ invalid(form, "delay", "delay-error") }}>
+        {{ note(form, "delay", "delay-error", "Delay", "") }}
       </label>
       <label for="at" class="dep when-at">At, UTC
-        <input id="at" name="at" type="datetime-local" value="{{ form.at }}"
-          {%- if form.error("at").is_some() %} aria-invalid="true" aria-describedby="at-error"{% endif %}>
-        {% if let Some(e) = form.error("at") %}<small id="at-error" class="error">Time {{ e }}</small>{% else %}<small class="hint">A time in the past runs the job now.</small>{% endif %}
+        <input id="at" name="at" type="datetime-local" value="{{ form.at }}"{{ invalid(form, "at", "at-error") }}>
+        {{ note(form, "at", "at-error", "Time", "A time in the past runs the job now.") }}
       </label>
     </fieldset>
 
     <fieldset class="card">
       <legend>Repeat</legend>
       <div class="choices" role="radiogroup" aria-label="Repeat">
-        <label for="repeat-once"><input type="radio" id="repeat-once" name="repeat" value="once"{% if form.repeat == "once" %} checked{% endif %}>Once</label>
-        <label for="repeat-interval"><input type="radio" id="repeat-interval" name="repeat" value="interval"{% if form.repeat == "interval" %} checked{% endif %}>Every N seconds</label>
-        <label for="repeat-cron"><input type="radio" id="repeat-cron" name="repeat" value="cron"{% if form.repeat == "cron" %} checked{% endif %}>Cron</label>
+        {{ radio("repeat", "once", "Once", form.repeat.as_str()) }}
+        {{ radio("repeat", "interval", "Every N seconds", form.repeat.as_str()) }}
+        {{ radio("repeat", "cron", "Cron", form.repeat.as_str()) }}
       </div>
       <div class="row dep repeat-any">
         <label for="interval" class="dep repeat-interval">Interval, seconds
-          <input id="interval" name="interval" type="number" min="1" value="{{ form.interval }}"
-            {%- if form.error("interval").is_some() %} aria-invalid="true" aria-describedby="interval-error"{% endif %}>
-          {% if let Some(e) = form.error("interval") %}<small id="interval-error" class="error">Interval {{ e }}</small>{% endif %}
+          <input id="interval" name="interval" type="number" min="1" value="{{ form.interval }}"{{ invalid(form, "interval", "interval-error") }}>
+          {{ note(form, "interval", "interval-error", "Interval", "") }}
         </label>
         <label for="cron" class="dep repeat-cron">Cron expression
-          <input id="cron" name="cron" class="mono" placeholder="*/15 * * * *" value="{{ form.cron }}"
-            {%- if form.error("cron").is_some() %} aria-invalid="true" aria-describedby="cron-error"{% endif %}>
-          {% if let Some(e) = form.error("cron") %}<small id="cron-error" class="error">Cron {{ e }}</small>{% else %}<small class="hint">5 fields, or 6 with seconds first.</small>{% endif %}
+          <input id="cron" name="cron" class="mono" placeholder="*/15 * * * *" value="{{ form.cron }}"{{ invalid(form, "cron", "cron-error") }}>
+          {{ note(form, "cron", "cron-error", "Cron", "5 fields, or 6 with seconds first.") }}
         </label>
         <label for="until">Until, UTC (optional)
-          <input id="until" name="until" type="datetime-local" value="{{ form.until }}"
-            {%- if form.error("until").is_some() %} aria-invalid="true" aria-describedby="until-error"{% endif %}>
-          {% if let Some(e) = form.error("until") %}<small id="until-error" class="error">Until {{ e }}</small>{% endif %}
+          <input id="until" name="until" type="datetime-local" value="{{ form.until }}"{{ invalid(form, "until", "until-error") }}>
+          {{ note(form, "until", "until-error", "Until", "") }}
         </label>
       </div>
     </fieldset>
@@ -113,25 +107,21 @@
           </select>
         </label>
         <label for="retry_count" class="narrow dep retry-any">Retries
-          <input id="retry_count" name="retry_count" type="number" min="0" value="{{ form.retry_count }}"
-            {%- if form.error("retry_count").is_some() %} aria-invalid="true" aria-describedby="retry-error"{% endif %}>
+          <input id="retry_count" name="retry_count" type="number" min="0" value="{{ form.retry_count }}"{{ invalid(form, "retry_count", "retry-error") }}>
         </label>
         <label for="retry_delay" class="narrow dep retry-delayed">Delay, s
-          <input id="retry_delay" name="retry_delay" type="number" min="1" value="{{ form.retry_delay }}"
-            {%- if form.error("retry_count").is_some() %} aria-invalid="true" aria-describedby="retry-error"{% endif %}>
+          <input id="retry_delay" name="retry_delay" type="number" min="1" value="{{ form.retry_delay }}"{{ invalid(form, "retry_count", "retry-error") }}>
         </label>
         <label for="timeout" class="narrow">Timeout, ms
-          <input id="timeout" name="timeout" type="number" min="1" max="{{ form.max_timeout }}" placeholder="{{ form.default_timeout }}" value="{{ form.timeout }}"
-            {%- if form.error("timeout").is_some() %} aria-invalid="true" aria-describedby="timeout-error"{% endif %}>
+          <input id="timeout" name="timeout" type="number" min="1" max="{{ form.max_timeout }}" placeholder="{{ form.default_timeout }}" value="{{ form.timeout }}"{{ invalid(form, "timeout", "timeout-error") }}>
         </label>
       </div>
       {% if let Some(e) = form.error("retry_count") %}<p><small id="retry-error" class="error">Retry policy {{ e }}</small></p>{% endif %}
       {% if let Some(e) = form.error("timeout") %}<p><small id="timeout-error" class="error">Timeout {{ e }}</small></p>{% endif %}
       <p><small class="hint">Network errors, timeouts, 408, 425, 429 and 5xx are retried, with ±20 % jitter and never sooner than Retry-After. Timeout: up to {{ form.max_timeout }} ms.</small></p>
       <label for="external_id">External id (optional)
-        <input id="external_id" name="external_id" class="mono" maxlength="64" value="{{ form.external_id }}"
-          {%- if form.error("external_id").is_some() %} aria-invalid="true" aria-describedby="external-id-error"{% endif %}>
-        {% if let Some(e) = form.error("external_id") %}<small id="external-id-error" class="error">External id {{ e }}</small>{% else %}<small class="hint">The same id returns the existing job instead of a new one.</small>{% endif %}
+        <input id="external_id" name="external_id" class="mono" maxlength="64" value="{{ form.external_id }}"{{ invalid(form, "external_id", "external-id-error") }}>
+        {{ note(form, "external_id", "external-id-error", "External id", "The same id returns the existing job instead of a new one.") }}
       </label>
     </fieldset>
 
@@ -142,3 +132,6 @@
   </form>
   {% include "ui/partials/job_preview.html" %}
 </div>
+{% macro invalid(form, field, id) %}{% if form.error(field).is_some() %} aria-invalid="true" aria-describedby="{{ id }}"{% endif %}{% endmacro %}
+{% macro note(form, field, id, label, hint) %}{% if let Some(e) = form.error(field) %}<small id="{{ id }}" class="error">{{ label }} {{ e }}</small>{% else if !hint.is_empty() %}<small class="hint">{{ hint }}</small>{% endif %}{% endmacro %}
+{% macro radio(name, value, label, current) %}<label for="{{ name }}-{{ value }}"><input type="radio" id="{{ name }}-{{ value }}" name="{{ name }}" value="{{ value }}"{% if current == value %} checked{% endif %}>{{ label }}</label>{% endmacro %}
