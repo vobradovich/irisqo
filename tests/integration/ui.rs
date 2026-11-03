@@ -52,7 +52,7 @@ async fn pages_use_only_embedded_assets(pool: PgPool) -> anyhow::Result<()> {
     assert_eq!(status, StatusCode::SEE_OTHER);
     assert_eq!(
         headers.get("location").map(|v| v.as_bytes()),
-        Some(&b"/ui/jobs/new"[..])
+        Some(&b"/ui/jobs"[..])
     );
 
     let (status, headers, html) = send(

@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
-  <meta name="htmx-config" content='{"includeIndicatorCSS": false}'>
+  <meta name="htmx-config" content='{"includeIndicatorCSS": false, "morphIgnore": ["data-htmx-powered", "open"]}'>
   <title>{% block title %}{% endblock %} · irisqo</title>
   <link rel="stylesheet" href="/ui/assets/pico-2.1.1.classless.min.css">
   <link rel="stylesheet" href="/ui/assets/app.css">
@@ -20,6 +20,8 @@
             irisqo
           </a>
         </li>
+        <li><a href="/ui/jobs"{% if nav == "jobs" %} aria-current="page"{% endif %}>Jobs</a></li>
+        <li><a href="/ui/schedules"{% if nav == "schedules" %} aria-current="page"{% endif %}>Schedules</a></li>
       </ul>
       <ul>
         <li><a href="/ui/jobs/new" class="cta"{% if nav == "new" %} aria-current="page"{% endif %}>New job</a></li>

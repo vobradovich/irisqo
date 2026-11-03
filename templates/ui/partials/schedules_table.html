@@ -1,0 +1,36 @@
+<div id="schedules" class="table-wrap" hx-target:inherited="this" hx-swap:inherited="outerHTML">
+  {% if rows.is_empty() %}
+  <p class="empty">No schedules. Create one from <a href="/ui/jobs/new">New job</a> with Repeat.</p>
+  {% else %}
+  <table>
+    <thead>
+      <tr><th scope="col">Schedule</th><th scope="col">Request</th><th scope="col">Rule</th><th scope="col">Next run</th><th scope="col">Last run</th><th scope="col">State</th><th scope="col"><span class="sr-only">Actions</span></th></tr>
+    </thead>
+    <tbody>
+      {% for r in rows %}
+      <tr>
+        <td class="mono" title="{{ r.id }}">{{ r.id_short }}</td>
+        <td class="request-cell"><span class="request"><span class="method mono">{{ r.method }}</span> <span class="url mono" title="{{ r.url }}">{{ r.url }}</span></span></td>
+        <td><span class="mono">{{ r.rule }}</span><br><small class="muted">{{ r.rule_hint }}</small></td>
+        <td title="{{ r.next_title }}">{{ r.next }}</td>
+        <td>
+          <span class="status {{ r.last_status }}">{{ r.last_label }}</span>
+          {% if let Some(id) = r.last_id %}<a href="/ui/jobs/{{ id }}"><small>{{ r.last_at }}</small></a>{% endif %}
+        </td>
+        <td>{% if r.active %}<span class="state-active">Active</span>{% else %}<span class="muted">Paused</span>{% endif %}</td>
+        <td><div class="actions">
+          {% if r.active %}
+          <form method="post" action="/ui/schedules/{{ r.id }}/pause" hx-post="/ui/schedules/{{ r.id }}/pause"><button type="submit" class="secondary">Pause</button></form>
+          {% else %}
+          <form method="post" action="/ui/schedules/{{ r.id }}/resume" hx-post="/ui/schedules/{{ r.id }}/resume"><button type="submit" class="secondary">Resume</button></form>
+          {% endif %}
+          <form method="post" action="/ui/schedules/{{ r.id }}/delete" hx-post="/ui/schedules/{{ r.id }}/delete" hx-confirm="Delete schedule {{ r.id_short }} and its pending run?">
+            <button type="submit" class="secondary danger" aria-label="Delete schedule {{ r.id_short }}">Delete</button>
+          </form>
+        </div></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</div>

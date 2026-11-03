@@ -1,0 +1,90 @@
+<div id="job" class="job-page" hx-target:inherited="this" hx-swap:inherited="outerHTML">
+  <nav aria-label="Breadcrumb" class="crumbs"><a href="/ui/jobs">Jobs</a> / <span class="mono">{{ job.row.id }}</span></nav>
+
+  <div class="page-head">
+    <h1>Job <span class="mono">{{ job.row.id }}</span></h1>
+    <span class="status {{ job.row.status }}">{{ job.row.status_label }}</span>
+    <span class="muted" title="{{ job.row.due_title }}">attempt {{ job.row.attempt }}{% if !job.row.due.is_empty() %} · {{ job.row.due }}{% endif %}</span>
+    <div class="actions push">
+      {% if job.row.is_processed() %}
+      <form method="post" action="/ui/jobs/{{ job.row.id }}/retry" hx-post="/ui/jobs/{{ job.row.id }}/retry">
+        <button type="submit">Retry now</button>
+      </form>
+      {% endif %}
+      {% if job.row.is_pending() %}
+      <form method="post" action="/ui/jobs/{{ job.row.id }}/cancel" hx-post="/ui/jobs/{{ job.row.id }}/cancel" hx-confirm="Cancel job {{ job.row.id }}? It will not run.">
+        <button type="submit" class="secondary">Cancel</button>
+      </form>
+      {% endif %}
+      <form method="post" action="/ui/jobs/{{ job.row.id }}/delete" hx-delete="/ui/jobs/{{ job.row.id }}" hx-confirm="Delete job {{ job.row.id }} with its history and result?">
+        <button type="submit" class="secondary danger">Delete</button>
+      </form>
+    </div>
+  </div>
+
+  {% if let Some((kind, text)) = job.notice %}
+  <div class="alert {{ kind }}" role="status">{{ text }}</div>
+  {% endif %}
+  {% if job.row.status == "processing" %}
+  <p class="hint">Running on <span class="mono" title="{{ job.row.instance_full }}">{{ job.row.instance }}</span>: it cannot be cancelled now.</p>
+  {% endif %}
+
+  <dl class="facts">
+    <div><dt>Created</dt><dd>{{ job.created }}</dd></div>
+    <div><dt>Retry policy</dt><dd>{{ job.retry_policy }}</dd></div>
+    <div><dt>Timeout</dt><dd>{{ job.timeout }}</dd></div>
+    <div><dt>External id</dt><dd class="mono">{{ job.external_id }}</dd></div>
+    <div><dt>Schedule</dt><dd class="mono" title="{{ job.row.schedule_full }}">{% if job.row.schedule_full.is_empty() %}—{% else %}<a href="/ui/schedules">{{ job.row.schedule }}</a>{% endif %}</dd></div>
+    <div><dt>Trace</dt><dd class="mono">
+      {%- if let Some(href) = job.trace_href %}<a href="{{ href }}" rel="noreferrer" target="_blank">open ↗</a>
+      {%- else if let Some(r) = job.result %}{% if let Some(t) = r.trace_id %}{{ t }}{% else %}—{% endif %}
+      {%- else %}—{% endif %}</dd></div>
+  </dl>
+
+  <div class="cards">
+    <article class="card">
+      <h2>Request</h2>
+      <p class="request"><span class="method mono">{{ job.row.method }}</span> <span class="mono url-full">{{ job.row.url }}</span></p>
+      <h3>Headers for the target</h3>
+      {% if job.headers.is_empty() %}<p class="muted">none</p>{% else %}
+      <dl class="headers mono">
+        {% for (name, value) in job.headers %}<dt>{{ name }}</dt><dd>{{ value }}</dd>{% endfor %}
+      </dl>
+      {% endif %}
+      <h3>Body · {{ job.body_size }} B</h3>
+      {% if job.body_size > 0 %}<pre class="body">{{ job.body }}</pre>{% else %}<p class="muted">empty</p>{% endif %}
+    </article>
+
+    <article class="card">
+      <h2>Result</h2>
+      {% if let Some(r) = job.result %}
+      <p><span class="status {{ r.status }}">{{ r.title }}</span> <span class="mono muted">{{ r.detail }}</span></p>
+      {% if !r.headers.is_empty() %}
+      <h3>Headers</h3>
+      <dl class="headers mono">
+        {% for (name, value) in r.headers %}<dt>{{ name }}</dt><dd>{{ value }}</dd>{% endfor %}
+      </dl>
+      {% endif %}
+      <h3>Body · {{ r.body_size }} B</h3>
+      {% if r.body_size > 0 %}<pre class="body">{{ r.body }}</pre>{% else %}<p class="muted">empty</p>{% endif %}
+      {% else %}
+      <p class="muted">No result yet: the job is {{ job.row.status }}. The response of a retried attempt is not kept, only the final one.</p>
+      {% endif %}
+    </article>
+  </div>
+
+  <article class="card">
+    <h2>History</h2>
+    <ol class="timeline">
+      {% for h in job.history %}
+      <li>
+        <span class="mono muted" title="{{ h.at_title }}">{{ h.at }}</span>
+        <span class="status {{ h.status }}">{{ h.label }}</span>
+        <span class="mono muted">retry {{ h.retry }}</span>
+        <span class="mono muted" title="{{ h.instance_full }}">{{ h.instance }}</span>
+        <span>{{ h.message }}</span>
+      </li>
+      {% endfor %}
+    </ol>
+  </article>
+</div>

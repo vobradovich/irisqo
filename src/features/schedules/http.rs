@@ -8,16 +8,15 @@ use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
 };
 use std::sync::Arc;
 
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
-        .route(
-            "/schedules/{id}",
-            get(get_by_id).put(inactive).delete(delete),
-        )
+        .route("/schedules/{id}", get(get_by_id).put(pause).delete(delete))
+        .route("/schedules/{id}/pause", post(pause))
+        .route("/schedules/{id}/resume", post(resume))
         .route("/schedules", get(get_all))
         .with_state(state)
 }
@@ -50,11 +49,30 @@ async fn get_by_id(
     }
 }
 
-async fn inactive(
+/// Pauses the schedule and cancels its pending run (`PUT` is kept for compatibility).
+async fn pause(
     State(state): State<Arc<AppState>>,
     Path(schedule_id): Path<String>,
 ) -> Result<Response, Problem> {
-    let rows = super::db::inactive(&state.pool, &schedule_id, true).await?;
+    let rows = super::db::pause(&state.pool, &schedule_id, &state.instance_id).await?;
+    match rows {
+        0 => Ok(StatusCode::NOT_FOUND.into_response()),
+        _ => Ok(StatusCode::NO_CONTENT.into_response()),
+    }
+}
+
+/// Resumes the schedule: its next run is scheduled when none is pending.
+async fn resume(
+    State(state): State<Arc<AppState>>,
+    Path(schedule_id): Path<String>,
+) -> Result<Response, Problem> {
+    let rows = super::db::resume(
+        &state.pool,
+        &schedule_id,
+        super::JobSchedule::now_secs(),
+        &state.instance_id,
+    )
+    .await?;
     match rows {
         0 => Ok(StatusCode::NOT_FOUND.into_response()),
         _ => Ok(StatusCode::NO_CONTENT.into_response()),

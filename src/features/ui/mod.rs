@@ -4,6 +4,9 @@
 
 mod assets;
 pub mod form;
+mod jobs;
+mod schedules;
+pub mod views;
 
 use crate::{features::schedules::JobSchedule, handlers::http::create_job, models::AppState};
 use askama::Template;
@@ -46,11 +49,30 @@ struct JobPreviewPartial {
 
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
-        .route("/ui", get(|| async { Redirect::to("/ui/jobs/new") }))
+        .route("/ui", get(|| async { Redirect::to("/ui/jobs") }))
+        .route("/ui/jobs", get(jobs::jobs_page).post(create_job_from_form))
+        .route("/ui/jobs/live", get(jobs::jobs_live))
         .route("/ui/jobs/new", get(new_job_page))
         .route("/ui/jobs/new/form", get(new_job_form))
         .route("/ui/jobs/new/preview", get(new_job_preview))
-        .route("/ui/jobs", post(create_job_from_form))
+        .route(
+            "/ui/jobs/{id}",
+            get(jobs::job_page).delete(jobs::job_delete),
+        )
+        .route("/ui/jobs/{id}/history", get(jobs::job_history))
+        .route("/ui/jobs/{id}/retry", post(jobs::job_retry))
+        .route("/ui/jobs/{id}/cancel", post(jobs::job_cancel))
+        .route("/ui/jobs/{id}/delete", post(jobs::job_delete))
+        .route("/ui/schedules", get(schedules::schedules_page))
+        .route("/ui/schedules/{id}/pause", post(schedules::schedule_pause))
+        .route(
+            "/ui/schedules/{id}/resume",
+            post(schedules::schedule_resume),
+        )
+        .route(
+            "/ui/schedules/{id}/delete",
+            post(schedules::schedule_delete),
+        )
         .route("/ui/assets/{name}", get(assets::asset))
         .layer(middleware::map_response(security_headers))
         .with_state(state)

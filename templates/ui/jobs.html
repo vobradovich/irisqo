@@ -1,0 +1,40 @@
+{% extends "ui/layout.html" %}
+{% block title %}Jobs{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>Jobs</h1>
+  {% if list.live %}
+  <span class="live"><span class="dot" aria-hidden="true"></span>Live · refreshes every 2 s</span>
+  <a href="{{ list.pause_href }}" role="button" class="secondary">Pause updates</a>
+  {% else %}
+  <span class="live paused">Updates paused</span>
+  <a href="{{ list.resume_href }}" role="button" class="secondary">Resume updates</a>
+  {% endif %}
+</div>
+
+<nav class="segmented" aria-label="Status">
+  <ul>
+    {% for f in list.filters %}
+    <li><a href="{{ f.href }}"{% if f.current %} aria-current="page"{% endif %}>{{ f.label }}</a></li>
+    {% endfor %}
+  </ul>
+</nav>
+
+<form class="search row" method="get" action="/ui/jobs" role="search">
+  <input type="hidden" name="status" value="{{ list.status }}">
+  {% if !list.live %}<input type="hidden" name="live" value="0">{% endif %}
+  <label for="schedule-filter" class="narrow">Schedule
+    <select id="schedule-filter" name="schedule">
+      <option value="any"{% if list.schedule == "any" %} selected{% endif %}>Any</option>
+      <option value="scheduled"{% if list.schedule == "scheduled" %} selected{% endif %}>Schedule runs</option>
+      <option value="none"{% if list.schedule == "none" %} selected{% endif %}>No schedule</option>
+    </select>
+  </label>
+  <label for="q" class="wide">Search
+    <input id="q" type="search" name="q" value="{{ list.q }}" placeholder="Job id, external id or URL">
+  </label>
+  <button type="submit" class="secondary">Filter</button>
+</form>
+
+{% include "ui/partials/jobs_live.html" %}
+{% endblock %}

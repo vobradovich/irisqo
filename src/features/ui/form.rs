@@ -11,6 +11,7 @@ use chrono::NaiveDateTime;
 use hyper::Method;
 use url::form_urlencoded;
 
+use super::views::mask;
 use crate::{
     handlers::http::{JobRequest, is_reserved_header, prepare_job},
     models::{JobCreate, ParamError, WorkerOptions},
@@ -334,18 +335,6 @@ fn field_of(param: &str) -> &'static str {
         "_timeout" => "timeout",
         "_id" => "external_id",
         _ => "url",
-    }
-}
-
-/// Secrets are not echoed in the preview.
-fn mask(name: &str, value: &str) -> String {
-    let secret = ["auth", "token", "key", "secret", "cookie", "password"]
-        .iter()
-        .any(|s| name.contains(s));
-    if secret && !value.is_empty() {
-        "••••".to_owned()
-    } else {
-        value.to_owned()
     }
 }
 

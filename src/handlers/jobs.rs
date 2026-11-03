@@ -1,17 +1,19 @@
 use crate::models::Problem;
-use crate::{db, models::AppState};
+use crate::{db, db::jobqueue::ActionOutcome, models::AppState};
 use axum::{
     Json, Router,
     extract::{Path, State},
     http::StatusCode,
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
 };
 use std::sync::Arc;
 
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/jobs/{id}", get(get_by_id).delete(delete_by_id))
+        .route("/jobs/{id}/cancel", post(cancel))
+        .route("/jobs/{id}/retry", post(retry))
         .with_state(state)
 }
 
@@ -32,4 +34,30 @@ async fn get_by_id(
         None => Ok(StatusCode::NO_CONTENT.into_response()),
         Some(o) => Ok(Json(o).into_response()),
     }
+}
+
+fn action_status(outcome: ActionOutcome) -> StatusCode {
+    match outcome {
+        ActionOutcome::Done => StatusCode::NO_CONTENT,
+        ActionOutcome::Conflict => StatusCode::CONFLICT,
+        ActionOutcome::NotFound => StatusCode::NOT_FOUND,
+    }
+}
+
+/// Cancels a pending job; 409 when it is running or already processed.
+async fn cancel(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+) -> Result<StatusCode, Problem> {
+    let outcome = db::jobqueue::cancel_job(&state.pool, id, &state.instance_id).await?;
+    Ok(action_status(outcome))
+}
+
+/// Runs a processed job once more; 409 when it is still pending or running.
+async fn retry(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+) -> Result<StatusCode, Problem> {
+    let outcome = db::jobqueue::requeue_job(&state.pool, id, &state.instance_id).await?;
+    Ok(action_status(outcome))
 }

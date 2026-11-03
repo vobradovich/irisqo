@@ -1,0 +1,12 @@
+<ol class="timeline">
+  {% for h in history %}
+  <li>
+    <span class="mono muted" title="{{ h.at_title }}">{{ h.at }}</span>
+    <span class="status {{ h.status }}">{{ h.label }}</span>
+    <span class="mono muted">retry {{ h.retry }}</span>
+    <span class="mono muted" title="{{ h.instance_full }}">{{ h.instance }}</span>
+    <span>{{ h.message }}</span>
+  </li>
+  {% endfor %}
+</ol>
+<p><a href="/ui/jobs/{{ id }}">Open job {{ id }}</a></p>
