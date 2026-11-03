@@ -1,0 +1,33 @@
+# cargo-deny: https://embarkstudios.github.io/cargo-deny/
+# `advisories` uses the RustSec database (the same one `cargo audit` checks).
+
+[graph]
+all-features = true
+
+[advisories]
+yanked = "deny"
+ignore = [
+    # unmaintained `basic-toml`, pulled in by askama_derive at build time only;
+    # drop once askama moves off it
+    { id = "RUSTSEC-2026-0374", reason = "build-time dependency of askama" },
+]
+
+[licenses]
+confidence-threshold = 0.9
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "Unicode-3.0",
+    "Zlib",
+]
+
+[bans]
+multiple-versions = "allow"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

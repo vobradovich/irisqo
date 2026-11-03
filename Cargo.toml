@@ -14,12 +14,10 @@ async-channel = "2.5"
 serde = "1"
 serde_json = { version = "1", features = ["raw_value"] }
 http-serde = "2.1"
-serde_urlencoded = "0.7"
 # Web libs
 askama = "0.16"
 askama_web = { version = "0.16", features = ["axum-0.8"] }
 axum = "0.8"
-tower = "0.5"
 tower-http = { version = "0.7", features = ["trace"] }
 hyper = { version = "1.12", features = ["full"] }
 hyper-util = { version = "0.1.21", features = ["client-legacy"] }
@@ -44,11 +42,10 @@ tracing-opentelemetry = { version = "0.34" }
 xflags = { version = "0.3" }
 
 # DB
-sqlx = { version = "0.9", features = ["runtime-tokio", "tls-native-tls", "postgres", "macros", "uuid", "chrono", "json"] }
+sqlx = { version = "0.9", features = ["runtime-tokio", "tls-native-tls", "postgres", "macros", "migrate", "chrono", "json"] }
 # sqlb = "0.0.8"
 # Types
 thiserror = "2"
-uuid = { version = "1.29", features = ["serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 problemdetails = { version = "0.7", features = ["axum"] }
 whoami = { version = "2.0" }
@@ -56,5 +53,14 @@ bytes = { version = "1", features = ["serde"] }
 ulid = { version = "3" }
 cron = { version = "0.17" }
 
+[features]
+# Integration tests need a Postgres server: DATABASE_URL=postgres://... cargo test --features integration-tests
+integration-tests = []
+
 [dev-dependencies]
 anyhow = "1"
+
+[[test]]
+name = "integration"
+path = "tests/integration/main.rs"
+required-features = ["integration-tests"]

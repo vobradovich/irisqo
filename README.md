@@ -48,3 +48,18 @@ Delay a request by adding the `_delay` or `_delay_until` [Unix Time] query param
 ```
 GET {{host}}/to/https://postman-echo.com/get?_delay=5
 ```
+## Development
+
+```bash
+# unit tests
+cargo test
+
+# integration tests: every test gets its own fresh database on this server
+DATABASE_URL=postgres://postgres@localhost/postgres cargo test --features integration-tests
+
+# the same checks as CI
+cargo fmt --all --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo deny check
+cargo machete
+```
