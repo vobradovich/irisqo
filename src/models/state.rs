@@ -39,46 +39,24 @@ pub struct WorkerOptions {
     pub timeout: u32,
 }
 
-/// Command line options.
-#[derive(Debug, Clone, Default)]
-pub struct Options {
-    pub port: Option<u16>,
-    pub workers: Option<usize>,
-    pub db_connections: Option<u32>,
-    pub concurrency: Option<usize>,
-    pub interval: Option<u64>,
-    pub prefetch: Option<u16>,
-    pub timeout: Option<u32>,
-}
-
-impl Options {
-    #[must_use]
-    pub fn from_args() -> Options {
-        let flags = xflags::parse_or_exit! {
-            /// API Port number. Default: 8102
-            optional -p,--port n:u16
-            /// Workers count. Default: 8
-            optional -w,--workers n:usize
-            /// Max db connections (keep below the Postgres max_connections). Default: 32
-            optional --db-connections n:u32
-            /// Jobs in flight across all cores (enables the concurrent worker). Default: off
-            optional --concurrency n:usize
-            /// Worker Poll Interval in milliseconds. Default: 1000
-            optional --interval n:u64
-            /// Prefetch count. Default: 8
-            optional --prefetch n:u16
-            /// Default job timeout in milliseconds. Default: 3000
-            optional --timeout n:u32
-        };
-        Options {
-            port: flags.port,
-            workers: flags.workers,
-            db_connections: flags.db_connections,
-            concurrency: flags.concurrency,
-            interval: flags.interval,
-            prefetch: flags.prefetch,
-            timeout: flags.timeout,
-        }
+// Generates `pub struct Options`; `Options::from_vec(vec![])` gives the defaults (tests).
+xflags::xflags! {
+    /// Queue of asynchronous HTTP requests with delays, retries and schedules.
+    cmd options {
+        /// API Port number. Default: 8102
+        optional -p,--port n: u16
+        /// Workers count. Default: 8
+        optional -w,--workers n: usize
+        /// Max db connections (keep below the Postgres max_connections). Default: 32
+        optional --db-connections n: u32
+        /// Jobs in flight across all cores (enables the concurrent worker). Default: off
+        optional --concurrency n: usize
+        /// Worker Poll Interval in milliseconds. Default: 1000
+        optional --interval n: u64
+        /// Prefetch count. Default: 8
+        optional --prefetch n: u16
+        /// Default job timeout in milliseconds. Default: 3000
+        optional --timeout n: u32
     }
 }
 
@@ -86,7 +64,7 @@ impl AppState {
     /// Parses the command line, connects to `DATABASE_URL` and runs the migrations.
     #[must_use]
     pub async fn new() -> Arc<AppState> {
-        let options = Options::from_args();
+        let options = Options::from_env_or_exit();
 
         dotenv().ok();
         let instance_id = new_instance_id();

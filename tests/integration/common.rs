@@ -13,7 +13,8 @@ use tokio::net::TcpListener;
 
 /// App state for tests: default options on top of the per-test pool.
 pub fn state(pool: PgPool) -> Arc<AppState> {
-    AppState::with_pool(pool, new_instance_id(), &Options::default())
+    let options = Options::from_vec(Vec::new()).expect("default options");
+    AppState::with_pool(pool, new_instance_id(), &options)
 }
 
 /// Serves the app (API, `/echo`, `/error`) on a random local port.
