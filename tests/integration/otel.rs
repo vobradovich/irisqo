@@ -1,37 +1,19 @@
-use std::{sync::OnceLock, time::Duration};
+use std::time::Duration;
 
 use bytes::Bytes;
 use http_body_util::Full;
 use hyper::StatusCode;
-use opentelemetry::{
-    Value,
-    trace::{SpanId, TracerProvider as _},
-};
+use opentelemetry::{KeyValue, Value, trace::SpanId};
 use opentelemetry_sdk::{
-    propagation::TraceContextPropagator,
-    trace::{InMemorySpanExporter, SdkTracerProvider, SpanData},
+    metrics::data::{AggregatedMetrics, MetricData, ResourceMetrics},
+    trace::{InMemorySpanExporter, SpanData},
 };
 use sqlx::PgPool;
-use tracing_subscriber::layer::SubscriberExt;
 
-use crate::common;
+use crate::{common, telemetry::telemetry};
 
-/// One in-memory exporter for the whole test binary (the tracing subscriber is global);
-/// every test filters the spans by its own trace id.
 fn exporter() -> &'static InMemorySpanExporter {
-    static EXPORTER: OnceLock<InMemorySpanExporter> = OnceLock::new();
-    EXPORTER.get_or_init(|| {
-        let exporter = InMemorySpanExporter::default();
-        let provider = SdkTracerProvider::builder()
-            .with_simple_exporter(exporter.clone())
-            .build();
-        opentelemetry::global::set_text_map_propagator(TraceContextPropagator::new());
-        opentelemetry::global::set_tracer_provider(provider.clone());
-        let subscriber = tracing_subscriber::registry()
-            .with(tracing_opentelemetry::layer().with_tracer(provider.tracer("test")));
-        tracing::subscriber::set_global_default(subscriber).expect("global subscriber");
-        exporter
-    })
+    &telemetry().spans
 }
 
 fn random_trace_id() -> String {
@@ -89,7 +71,6 @@ fn attr(span: &SpanData, key: &str) -> Option<Value> {
 
 #[sqlx::test(migrations = "./sql/migrations")]
 async fn job_continues_the_request_trace(pool: PgPool) -> anyhow::Result<()> {
-    exporter();
     let state = common::state(pool.clone());
     let addr = common::spawn_app(&state).await;
     let trace_id = random_trace_id();
@@ -135,7 +116,6 @@ async fn job_continues_the_request_trace(pool: PgPool) -> anyhow::Result<()> {
 
 #[sqlx::test(migrations = "./sql/migrations")]
 async fn retries_are_sibling_spans(pool: PgPool) -> anyhow::Result<()> {
-    exporter();
     let state = common::state(pool.clone());
     let addr = common::spawn_app(&state).await;
     let trace_id = random_trace_id();
@@ -174,7 +154,6 @@ async fn retries_are_sibling_spans(pool: PgPool) -> anyhow::Result<()> {
 
 #[sqlx::test(migrations = "./sql/migrations")]
 async fn schedule_runs_start_linked_traces(pool: PgPool) -> anyhow::Result<()> {
-    exporter();
     let state = common::state(pool.clone());
     let addr = common::spawn_app(&state).await;
     let trace_id = random_trace_id();
@@ -223,5 +202,122 @@ async fn schedule_runs_start_linked_traces(pool: PgPool) -> anyhow::Result<()> {
         linked[1].span_context.trace_id()
     );
     assert!(spans_of(&trace_id).iter().all(|s| s.name != "job.run"));
+    Ok(())
+}
+
+/// Attribute sets of the data points of a metric, whatever its type.
+fn points(metrics: &[ResourceMetrics], name: &str) -> Vec<Vec<KeyValue>> {
+    fn attrs<'a>(it: impl Iterator<Item = &'a KeyValue>) -> Vec<KeyValue> {
+        it.cloned().collect()
+    }
+    let mut out = Vec::new();
+    for rm in metrics {
+        for sm in rm.scope_metrics() {
+            for m in sm.metrics().filter(|m| m.name() == name) {
+                match m.data() {
+                    AggregatedMetrics::F64(MetricData::Histogram(h)) => {
+                        out.extend(h.data_points().map(|p| attrs(p.attributes())));
+                    }
+                    AggregatedMetrics::F64(MetricData::Gauge(g)) => {
+                        out.extend(g.data_points().map(|p| attrs(p.attributes())));
+                    }
+                    AggregatedMetrics::U64(MetricData::Sum(s)) => {
+                        out.extend(s.data_points().map(|p| attrs(p.attributes())));
+                    }
+                    AggregatedMetrics::U64(MetricData::Gauge(g)) => {
+                        out.extend(g.data_points().map(|p| attrs(p.attributes())));
+                    }
+                    AggregatedMetrics::I64(MetricData::Sum(s)) => {
+                        out.extend(s.data_points().map(|p| attrs(p.attributes())));
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    out
+}
+
+fn has_point(metrics: &[ResourceMetrics], name: &str, wanted: &[KeyValue]) -> bool {
+    points(metrics, name)
+        .iter()
+        .any(|attrs| wanted.iter().all(|kv| attrs.contains(kv)))
+}
+
+#[sqlx::test(migrations = "./sql/migrations")]
+async fn http_and_queue_metrics(pool: PgPool) -> anyhow::Result<()> {
+    let state = common::state(pool.clone());
+    let addr = common::spawn_app(&state).await;
+    let trace_id = random_trace_id();
+    create_traced(&state, addr, &format!("http://{addr}/echo"), &trace_id).await;
+    common::run_enqueued(&state).await;
+    irisqo::services::queuestats::record(&state).await;
+    // the receiver's server span ends after the client got the response
+    wait_spans(&trace_id, "POST /echo", 1).await;
+
+    telemetry().meter_provider.force_flush()?;
+    let metrics = telemetry().metrics.get_finished_metrics()?;
+    let port = i64::from(addr.port());
+    assert!(has_point(
+        &metrics,
+        "http.client.request.duration",
+        &[
+            KeyValue::new("http.request.method", "POST"),
+            KeyValue::new("server.port", port),
+            KeyValue::new("http.response.status_code", 200_i64),
+        ]
+    ));
+    for route in ["/to/{*url}", "/echo"] {
+        assert!(
+            has_point(
+                &metrics,
+                "http.server.request.duration",
+                &[KeyValue::new("http.route", route)]
+            ),
+            "{route}"
+        );
+    }
+    assert!(has_point(
+        &metrics,
+        "irisqo.job.attempt.duration",
+        &[KeyValue::new("job.outcome", "completed")]
+    ));
+    assert!(has_point(
+        &metrics,
+        "irisqo.jobs.created",
+        &[KeyValue::new("job.type", "immediate")]
+    ));
+    for state in ["scheduled", "enqueued", "processing"] {
+        assert!(has_point(
+            &metrics,
+            "irisqo.queue.depth",
+            &[KeyValue::new("state", state)]
+        ));
+    }
+    for name in [
+        "irisqo.queue.lag",
+        "irisqo.jobs.in_flight",
+        "http.server.active_requests",
+    ] {
+        assert!(!points(&metrics, name).is_empty(), "{name}");
+    }
+    Ok(())
+}
+
+#[sqlx::test(migrations = "./sql/migrations")]
+async fn logs_carry_the_trace_context(pool: PgPool) -> anyhow::Result<()> {
+    let state = common::state(pool.clone());
+    let addr = common::spawn_app(&state).await;
+    let trace_id = random_trace_id();
+    create_traced(&state, addr, &format!("http://{addr}/echo"), &trace_id).await;
+    common::run_enqueued(&state).await;
+
+    let logs = telemetry().logs.get_emitted_logs()?;
+    let traced = logs.iter().any(|log| {
+        log.record
+            .trace_context()
+            .is_some_and(|tc| tc.trace_id.to_string() == trace_id)
+    });
+    assert!(traced, "no log record in trace {trace_id}");
     Ok(())
 }

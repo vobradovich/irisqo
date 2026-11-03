@@ -11,3 +11,4 @@ mod common;
 mod otel;
 mod reliability;
 mod smoke;
+mod telemetry;

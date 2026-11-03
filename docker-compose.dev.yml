@@ -1,8 +1,12 @@
-# Local dependencies: Postgres and Jaeger (OTLP in, UI at http://localhost:16686)
+# Local dependencies: Postgres and OpenObserve (OSS, AGPL-3.0): one container that takes
+# OTLP traces, metrics and logs and shows them in its UI at http://localhost:5080
+# (root@example.com / Complexpass#123).
 #
 #   docker compose -f docker-compose.dev.yml up -d
-#   DATABASE_URL=postgres://postgres:postgres@localhost/postgres \
-#   OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 cargo run
+#   export DATABASE_URL=postgres://postgres:postgres@localhost/postgres
+#   export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:5080/api/default
+#   export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Basic%20cm9vdEBleGFtcGxlLmNvbTpDb21wbGV4cGFzcyMxMjM="
+#   cargo run
 services:
   postgres:
     image: postgres:16
@@ -11,10 +15,16 @@ services:
     ports:
       - "5432:5432"
 
-  jaeger:
-    image: jaegertracing/all-in-one:1.62.0
+  openobserve:
+    image: openobserve/openobserve:v1.1.2
     environment:
-      COLLECTOR_OTLP_ENABLED: "true"
+      ZO_ROOT_USER_EMAIL: root@example.com
+      ZO_ROOT_USER_PASSWORD: Complexpass#123
+      ZO_DATA_DIR: /data
+    volumes:
+      - openobserve:/data
     ports:
-      - "16686:16686" # UI
-      - "4318:4318" # OTLP over HTTP
+      - "5080:5080" # UI and OTLP over HTTP (/api/default/v1/{traces,metrics,logs})
+
+volumes:
+  openobserve:

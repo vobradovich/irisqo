@@ -49,6 +49,8 @@ CREATE TABLE IF NOT EXISTS enqueued (
 	retry int NOT NULL DEFAULT 0,
 	instance_id varchar(64) NULL,
 	lock_at timestamptz NULL,
+	-- since when the job waits to start: its scheduled time, or when it was (re)queued
+	due_at timestamptz NOT NULL DEFAULT now(),
 	CONSTRAINT ck_enqueued_retry CHECK (retry >= 0),
 	CONSTRAINT ck_enqueued_lock CHECK ((instance_id IS NULL) = (lock_at IS NULL))
 );

@@ -209,9 +209,9 @@ pub async fn enqueue_scheduled(
 ) -> Result<u64, Error> {
     const SQL: &str = "
     WITH a AS (
-        SELECT id, retry FROM scheduled WHERE at <= extract(epoch from now())::bigint ORDER BY retry, id LIMIT $1 FOR UPDATE SKIP LOCKED
+        SELECT id, retry, at FROM scheduled WHERE at <= extract(epoch from now())::bigint ORDER BY retry, id LIMIT $1 FOR UPDATE SKIP LOCKED
     ), b AS (
-        INSERT INTO enqueued SELECT id, retry FROM a RETURNING id
+        INSERT INTO enqueued(id, retry, due_at) SELECT id, retry, to_timestamp(at) FROM a RETURNING id
     ), hist AS (
         INSERT INTO history SELECT id, retry, $2 as instance_id, now() as at, 'enqueued'::history_status as status FROM a RETURNING id
     )
@@ -233,7 +233,7 @@ pub async fn unlock(
 ) -> Result<u64, Error> {
     const SQL: &str = "
     WITH a AS (
-        UPDATE enqueued SET instance_id = null, lock_at = null, retry = retry + 1 WHERE id = $1 AND instance_id = $2 AND retry = $3 RETURNING id, retry
+        UPDATE enqueued SET instance_id = null, lock_at = null, retry = retry + 1, due_at = now() WHERE id = $1 AND instance_id = $2 AND retry = $3 RETURNING id, retry
     )
     INSERT INTO history SELECT id, retry, $2 as instance_id, now() as at, 'retried'::history_status as status FROM a RETURNING id";
     let res = sqlx::query(SQL)
@@ -282,7 +282,7 @@ pub async fn reap_expired_locks(
     WITH a AS (
         SELECT id, instance_id FROM enqueued WHERE lock_at < now() - $1 ORDER BY lock_at LIMIT $3 FOR UPDATE SKIP LOCKED
     ), b AS (
-        UPDATE enqueued AS e SET instance_id = null, lock_at = null, retry = e.retry + 1
+        UPDATE enqueued AS e SET instance_id = null, lock_at = null, retry = e.retry + 1, due_at = now()
         FROM a WHERE e.id = a.id
         RETURNING e.id, e.retry, a.instance_id AS locked_by
     )

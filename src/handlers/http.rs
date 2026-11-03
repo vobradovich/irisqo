@@ -2,7 +2,7 @@ use crate::{
     db,
     features::schedules::JobSchedule,
     models::{AppState, Error, HttpMeta, JobCreate, JobMeta, JobRetry},
-    otel,
+    otel::{self, metrics::metrics},
 };
 use axum::{
     Router,
@@ -13,6 +13,7 @@ use axum::{
     routing::get,
 };
 use hyper::{Method, Uri};
+use opentelemetry::KeyValue;
 use problemdetails::Problem;
 
 use std::{collections::HashMap, sync::Arc};
@@ -158,7 +159,17 @@ async fn job_create(
     };
 
     debug!("{:?}", serde_json::to_string(&job_create.meta));
+    let job_type = if job_create.schedule.is_some() {
+        "scheduled"
+    } else if job_create.at.is_some() {
+        "delayed"
+    } else {
+        "immediate"
+    };
     let job = db::jobqueue::create(&state.pool, job_create, &state.instance_id).await?;
+    metrics()
+        .jobs_created
+        .add(1, &[KeyValue::new("job.type", job_type)]);
     let mut headers = HeaderMap::new();
     // schedule-id and external-id (user-provided) may not be valid header values
     let mut put = |name: &'static str, value: Option<&str>| {

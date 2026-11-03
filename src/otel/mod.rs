@@ -1,5 +1,8 @@
 mod headerinjector;
+pub mod metrics;
+mod telemetry;
 use std::borrow::Cow;
+pub use telemetry::Telemetry;
 
 use axum::extract::MatchedPath;
 use axum::http;
@@ -9,52 +12,12 @@ use hyper::Uri;
 use hyper::Version;
 use opentelemetry::Context;
 use opentelemetry::trace::TraceContextExt;
-use opentelemetry_sdk::{Resource, propagation::TraceContextPropagator, trace::SdkTracerProvider};
 use std::collections::HashMap;
 use tower_http::classify::ServerErrorsFailureClass;
 use tracing::field::Empty;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 pub const TRACING_TARGET: &str = "otel::tracing";
-
-/// Sets the W3C propagator and the global tracer provider; the caller shuts it down.
-///
-/// The exporter follows the standard env vars: `OTEL_TRACES_EXPORTER` = `otlp` | `console`
-/// | `none`; without it, `otlp` when `OTEL_EXPORTER_OTLP_ENDPOINT` (or
-/// `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`) is set and `none` otherwise.
-/// OTLP is HTTP/protobuf, configured by the other `OTEL_EXPORTER_OTLP_*` vars.
-pub fn init_tracer_provider() -> SdkTracerProvider {
-    opentelemetry::global::set_text_map_propagator(TraceContextPropagator::new());
-    let has_endpoint = [
-        "OTEL_EXPORTER_OTLP_ENDPOINT",
-        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
-    ]
-    .iter()
-    .any(|var| std::env::var_os(var).is_some());
-    let exporter = std::env::var("OTEL_TRACES_EXPORTER")
-        .unwrap_or_else(|_| if has_endpoint { "otlp" } else { "none" }.into());
-    let service_name =
-        std::env::var("OTEL_SERVICE_NAME").unwrap_or_else(|_| env!("CARGO_PKG_NAME").into());
-    let builder = SdkTracerProvider::builder()
-        .with_resource(Resource::builder().with_service_name(service_name).build());
-    let builder = match exporter.as_str() {
-        "otlp" => match opentelemetry_otlp::SpanExporter::builder()
-            .with_http()
-            .build()
-        {
-            Ok(exporter) => builder.with_batch_exporter(exporter),
-            Err(err) => {
-                eprintln!("OTLP exporter error, traces are not exported: {err}");
-                builder
-            }
-        },
-        "console" => builder.with_simple_exporter(opentelemetry_stdout::SpanExporter::default()),
-        _ => builder,
-    };
-    let provider = builder.build();
-    opentelemetry::global::set_tracer_provider(provider.clone());
-    provider
-}
 
 /// `traceparent` and `tracestate` of the current span, to be stored with a job.
 #[must_use]

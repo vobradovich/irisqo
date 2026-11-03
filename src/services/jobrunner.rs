@@ -9,15 +9,18 @@ use crate::{
         AppState, Error, JobEntry, JobProtocol, JobRetry, JobRow, JobWithRetry, MAX_RETRY_DELAY,
         with_jitter,
     },
-    otel::{self, HeaderInjector},
+    otel::{self, HeaderInjector, metrics::metrics},
 };
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full, Limited};
 use opentelemetry::{
-    Context, global,
+    Context, KeyValue, global,
     trace::{SpanKind, TraceContextExt},
 };
-use std::{collections::HashMap, time::Duration};
+use std::{
+    collections::HashMap,
+    time::{Duration, Instant},
+};
 use tokio::time;
 use tracing::{Instrument, field::Empty};
 #[allow(unused_imports)]
@@ -75,12 +78,20 @@ pub async fn job_execute(app_state: &AppState, job_with_retry: JobWithRetry) -> 
         .set_parent(parent)
         .inspect_err(|err| debug!("job.run set_parent error {:?}", err));
     let ids = otel::span_ids(&span);
+    let metrics = metrics();
+    metrics.jobs_in_flight.add(1, &[]);
+    let start = Instant::now();
     let mut completion = job_attempt(app_state, job_with_retry)
         .instrument(span.clone())
         .await;
+    metrics.jobs_in_flight.add(-1, &[]);
     let outcome = completion
         .as_ref()
         .map_or("retry", |c| c.result.processed_status());
+    metrics.job_attempt_duration.record(
+        start.elapsed().as_secs_f64(),
+        &[KeyValue::new("job.outcome", outcome)],
+    );
     span.record("job.outcome", outcome);
     span.record(
         "otel.status_code",
@@ -160,6 +171,7 @@ async fn job_run_http(app_state: &AppState, job: JobRow) -> Result<JobResult, Er
     let timeout_ms = job.meta.timeout.min(app_state.worker_options.max_timeout);
     let mut req = hyper::Request::<Full<Bytes>>::try_from(job)?;
     let method = req.method().clone();
+    let uri = req.uri().clone();
     let span = tracing::info_span!(
         target: otel::TRACING_TARGET,
         "HTTP request",
@@ -200,10 +212,27 @@ async fn job_run_http(app_state: &AppState, job: JobRow) -> Result<JobResult, Er
             })?;
         Ok::<_, Error>((status_code, version, header_hashmap, collected.to_bytes()))
     };
+    let mut attrs = client_attrs(&method, &uri);
+    let start = Instant::now();
     // '?': timeout; the block yields the request/body result
     let exchange = async { time::timeout(Duration::from_millis(timeout_ms.into()), call).await? }
         .instrument(span.clone())
         .await;
+    match &exchange {
+        Ok((status_code, ..)) => {
+            attrs.push(KeyValue::new(
+                "http.response.status_code",
+                i64::from(status_code.as_u16()),
+            ));
+            if status_code.is_client_error() || status_code.is_server_error() {
+                attrs.push(KeyValue::new("error.type", status_code.as_str().to_owned()));
+            }
+        }
+        Err(err) => attrs.push(KeyValue::new("error.type", error_type(err))),
+    }
+    metrics()
+        .http_client_duration
+        .record(start.elapsed().as_secs_f64(), &attrs);
     let (status_code, version, header_hashmap, bytes) = exchange.inspect_err(|err| {
         span.record("otel.status_code", "ERROR");
         span.record("exception.message", tracing::field::display(err));
@@ -224,6 +253,39 @@ async fn job_run_http(app_state: &AppState, job: JobRow) -> Result<JobResult, Er
         return Err(Error::ClientError(job_result));
     }
     Ok(job_result)
+}
+
+/// `http.client.request.duration` attributes known before the request is sent.
+fn client_attrs(method: &hyper::Method, uri: &hyper::Uri) -> Vec<KeyValue> {
+    let port = uri
+        .port_u16()
+        .unwrap_or(if uri.scheme_str() == Some("https") {
+            443
+        } else {
+            80
+        });
+    vec![
+        KeyValue::new("http.request.method", method.as_str().to_owned()),
+        KeyValue::new("server.address", uri.host().unwrap_or_default().to_owned()),
+        KeyValue::new("server.port", i64::from(port)),
+    ]
+}
+
+/// `error.type` of a failed exchange (no response).
+fn error_type(err: &Error) -> &'static str {
+    match err {
+        Error::Timeout(_) => "timeout",
+        Error::ResponseTooLarge => "response_too_large",
+        Error::HyperClientError(_) | Error::HyperError(_) | Error::IoError(_) => "connection",
+        Error::JobNotFound(_)
+        | Error::DbError(_)
+        | Error::HttpError(_)
+        | Error::InvalidUrl
+        | Error::InvalidParams(_)
+        | Error::ServerError(_)
+        | Error::ClientError(_)
+        | Error::RetriesExceeded => "_OTHER",
+    }
 }
 
 async fn processed_scheduled(app_state: &AppState, completion: Completion) -> Result<(), Error> {

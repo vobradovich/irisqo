@@ -1,35 +1,21 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use irisqo::{AppState, db, services};
-use opentelemetry::trace::TracerProvider as _;
+use irisqo::{
+    AppState, db,
+    otel::{self, Telemetry},
+    services,
+};
 use tokio::net::TcpListener;
 use tokio::signal;
 use tokio_util::sync::CancellationToken;
-use tracing::Level;
-use tracing_subscriber::{
-    EnvFilter, Layer, filter::Targets, layer::SubscriberExt, util::SubscriberInitExt,
-};
 
 #[tokio::main]
 async fn main() {
-    let provider = irisqo::otel::init_tracer_provider();
-    let tracer = provider.tracer("irisqo");
-
-    // RUST_LOG filters the logs only: the exported spans are the `otel::tracing` ones
-    let log_filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| "irisqo=debug,tower_http=debug,sqlx=info".into());
-    let span_filter = Targets::new().with_target(irisqo::otel::TRACING_TARGET, Level::INFO);
-    tracing_subscriber::registry()
-        .with(tracing_subscriber::fmt::layer().with_filter(log_filter))
-        .with(
-            tracing_opentelemetry::layer()
-                .with_tracer(tracer)
-                .with_filter(span_filter),
-        )
-        .init();
+    let telemetry = Telemetry::init();
 
     let state = AppState::new().await;
+    otel::metrics::register_pool_metrics(&state.pool);
     // The heartbeat outlives the other services: it stops only once the workers are done.
     let heartbeat_stop = CancellationToken::new();
     let heartbeat = tokio::spawn({
@@ -41,6 +27,7 @@ async fn main() {
         start_http_server(&state),
         services::start_scheduler_service(&state),
         services::start_retention_service(&state),
+        services::queuestats::run(&state),
         services::start_worker_service(&state),
     );
     heartbeat_stop.cancel();
@@ -52,10 +39,8 @@ async fn main() {
     if let Err(err) = db::instances::kill(&state.pool, &state.instance_id).await {
         tracing::error!("db::instances::kill error {:?}", err);
     }
-    // Flush the spans still in the batch
-    if let Err(err) = provider.shutdown() {
-        eprintln!("tracer provider shutdown error {err:?}");
-    }
+    // Flush the spans, metrics and logs still in the batches
+    telemetry.shutdown();
     eprintln!("->> SHUTDOWN")
 }
 

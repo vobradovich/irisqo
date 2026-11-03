@@ -24,6 +24,7 @@ pub fn app(state: &Arc<AppState>) -> Router {
         .nest("/api/v1", features::results::routes(Arc::clone(state)))
         .nest("/api/v1", features::schedules::routes(Arc::clone(state)))
         .nest("/api/v1", features::instances::routes(Arc::clone(state)))
+        .layer(axum::middleware::from_fn(otel::metrics::track_http_server))
         .layer(
             TraceLayer::new_for_http()
                 .make_span_with(otel::make_span_from_request)

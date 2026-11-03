@@ -14,7 +14,7 @@ pub async fn kill_expired(
     WITH a AS (
         SELECT instance_id FROM instances WHERE status = 'live' AND last_at < now() - $1 ORDER BY instance_id FOR UPDATE SKIP LOCKED
     ), b AS (
-        UPDATE enqueued AS e SET instance_id = null, lock_at = null, retry = e.retry + 1
+        UPDATE enqueued AS e SET instance_id = null, lock_at = null, retry = e.retry + 1, due_at = now()
         FROM a WHERE e.instance_id = a.instance_id
         RETURNING e.id, e.retry, a.instance_id AS locked_by
     ), hist AS (
@@ -34,7 +34,7 @@ pub async fn kill_expired(
 pub async fn kill(pool: &Pool<Postgres>, instance_id: &str) -> Result<u64, Error> {
     const SQL: &str = "
     WITH a AS (
-        UPDATE enqueued SET instance_id = null, lock_at = null WHERE instance_id = $1 RETURNING id, retry
+        UPDATE enqueued SET instance_id = null, lock_at = null, due_at = now() WHERE instance_id = $1 RETURNING id, retry
     ), hist AS (
         INSERT INTO history(id, retry, instance_id, status, message)
         SELECT id, retry, $1, 'enqueued'::history_status, 'released on shutdown' FROM a

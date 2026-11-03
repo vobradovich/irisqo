@@ -12,6 +12,7 @@ use tokio::net::TcpListener;
 
 /// App state for tests: default options on top of the per-test pool.
 pub fn state(pool: PgPool) -> Arc<AppState> {
+    crate::telemetry::telemetry();
     let options = Options::from_vec(Vec::new()).expect("default options");
     AppState::with_pool(pool, new_instance_id(), &options)
 }
