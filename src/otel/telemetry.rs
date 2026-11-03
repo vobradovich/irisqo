@@ -119,11 +119,11 @@ impl Telemetry {
         // `otel::tracing` ones whatever RUST_LOG says.
         let rust_log = std::env::var("RUST_LOG")
             .unwrap_or_else(|_| "irisqo=debug,tower_http=debug,sqlx=info".into());
-        let log_filter = || EnvFilter::new(&rust_log);
+        let log_filter = EnvFilter::new(&rust_log);
         let span_filter = Targets::new().with_target(TRACING_TARGET, Level::INFO);
         let log_export_filter = EnvFilter::new(format!("{rust_log},{LOG_EXPORT_DENY}"));
         tracing_subscriber::registry()
-            .with(tracing_subscriber::fmt::layer().with_filter(log_filter()))
+            .with(tracing_subscriber::fmt::layer().with_filter(log_filter))
             .with(
                 tracing_opentelemetry::layer()
                     .with_tracer(telemetry.tracer_provider.tracer("irisqo"))

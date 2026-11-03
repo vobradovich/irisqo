@@ -68,11 +68,7 @@ pub fn current_context() -> Context {
 #[inline]
 #[must_use]
 pub fn current_trace_id() -> Option<String> {
-    let cx = current_context();
-    let span = cx.span();
-    span.span_context()
-        .is_valid()
-        .then(|| span.span_context().trace_id().to_string())
+    span_ids(&tracing::Span::current()).map(|(trace_id, _)| trace_id)
 }
 
 pub fn make_span_from_request<B>(request: &http::Request<B>) -> tracing::Span {
