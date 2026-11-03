@@ -114,8 +114,9 @@ impl IntoResponse for JobResult {
                 true => meta.status_code.into_response(),
                 false => (meta.status_code, self.body).into_response(),
             };
-            if let Some(headers) = self.headers {
-                let map = HeaderMap::try_from(&headers).unwrap();
+            if let Some(headers) = self.headers
+                && let Ok(map) = HeaderMap::try_from(&headers)
+            {
                 let headers_mut = response.headers_mut();
                 for (key, value) in map {
                     if let Some(key) = key

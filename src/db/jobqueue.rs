@@ -1,7 +1,6 @@
 use crate::features::schedules::JobSchedule;
 use crate::models::{Error, JobCreateRow, JobWithRetry};
 use crate::models::{JobCreate, JobRow};
-use futures::stream::BoxStream;
 use sqlx::{Pool, Postgres, types::Json};
 
 pub async fn create(
@@ -134,21 +133,24 @@ async fn create_with_schedule(
     })
 }
 
+/// Clones the job as the next run of its schedule.
+/// Returns `None` when the schedule was deleted or deactivated in the meantime.
 pub async fn clone_schedule_at<'e, E>(
     executor: E,
     job_id: i64,
     at: i64,
     instance_id: &str,
-) -> Result<i64, Error>
+) -> Result<Option<i64>, Error>
 where
     E: sqlx::Executor<'e, Database = Postgres>,
 {
     const SQL: &str = "
     WITH a AS (
         INSERT INTO jobs(meta, headers, body, schedule_id)
-        SELECT meta, headers, body, schedule_id
-        FROM jobs
-        WHERE id = $1
+        SELECT j.meta, j.headers, j.body, j.schedule_id
+        FROM jobs AS j
+        INNER JOIN schedules AS s ON s.schedule_id = j.schedule_id AND NOT s.inactive
+        WHERE j.id = $1
         RETURNING id, schedule_id
     ), b AS (
         UPDATE schedules
@@ -165,7 +167,7 @@ where
         .bind(job_id)
         .bind(at)
         .bind(instance_id)
-        .fetch_one(executor)
+        .fetch_optional(executor)
         .await?;
     Ok(job_id)
 }
@@ -251,11 +253,15 @@ pub async fn retry(
     Ok(res.rows_affected())
 }
 
-pub fn fetch_job_with_retry<'a>(
-    pool: &'a Pool<Postgres>,
-    instance_id: &'a str,
+/// Assigns up to `prefetch` enqueued jobs to `instance_id`.
+///
+/// The rows are fetched in full, so the statement (and its row locks) is committed
+/// before any job runs: a worker completing a job never waits on the fetch itself.
+pub async fn fetch_job_with_retry(
+    pool: &Pool<Postgres>,
+    instance_id: &str,
     prefetch: i32,
-) -> BoxStream<'a, Result<JobWithRetry, sqlx::Error>> {
+) -> Result<Vec<JobWithRetry>, Error> {
     const SQL: &str = "
     WITH a AS (
         SELECT id, retry FROM enqueued WHERE lock_at IS NULL ORDER BY retry, id LIMIT $1 FOR UPDATE SKIP LOCKED
@@ -266,8 +272,10 @@ pub fn fetch_job_with_retry<'a>(
     )
     SELECT j.*, a.retry FROM a INNER JOIN jobs as j ON a.id = j.id
     ";
-    sqlx::query_as::<_, JobWithRetry>(SQL)
+    let jobs = sqlx::query_as::<_, JobWithRetry>(SQL)
         .bind(prefetch)
         .bind(instance_id)
-        .fetch(pool)
+        .fetch_all(pool)
+        .await?;
+    Ok(jobs)
 }

@@ -2,7 +2,7 @@ use crate::models::AppState;
 use axum::{
     Router,
     body::Body,
-    http::{HeaderMap, StatusCode},
+    http::{HeaderMap, HeaderValue, StatusCode},
     response::IntoResponse,
     routing::get,
 };
@@ -28,7 +28,9 @@ pub fn routes(state: Arc<AppState>) -> Router {
 async fn echo(method: Method, headers: HeaderMap, body: Body) -> impl IntoResponse {
     let mut response = body.into_response();
     let response_headers = response.headers_mut();
-    response_headers.insert("http-method", method.as_str().parse().unwrap());
+    if let Ok(value) = HeaderValue::from_str(method.as_str()) {
+        response_headers.insert("http-method", value);
+    }
     for (k, v) in headers {
         if let Some(key) = k
             && key.as_str().starts_with("content")

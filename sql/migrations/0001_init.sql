@@ -6,13 +6,16 @@ CREATE TABLE IF NOT EXISTS instances (
 	status instance_status NOT NULL DEFAULT 'live'
 );
 
+-- Time columns of type bigint (schedules.next_at, schedules.until, scheduled.at)
+-- hold unix timestamps in seconds; all the other ones are timestamptz.
+
 CREATE TABLE IF NOT EXISTS schedules (
 	schedule_id varchar(64) PRIMARY KEY,
 	schedule varchar(1024) NOT NULL,
 	next_id bigint NULL,
-	next_at bigint NULL,
+	next_at bigint NULL, -- unix seconds
 	repeat bigint NULL,
-	until bigint NULL,
+	until bigint NULL, -- unix seconds
 	inactive boolean NOT NULL DEFAULT FALSE
 );
 
@@ -22,7 +25,7 @@ CREATE TABLE IF NOT EXISTS jobs (
 	meta jsonb NOT NULL,
 	headers jsonb NULL,
 	body BYTEA NULL,
-	schedule_id varchar(64) NULL REFERENCES schedules (schedule_id) MATCH SIMPLE,
+	schedule_id varchar(64) NULL REFERENCES schedules (schedule_id) MATCH SIMPLE ON DELETE SET NULL,
 	external_id varchar(64) NULL
 );
 
@@ -32,7 +35,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS ix_jobs_external_id ON jobs
 
 CREATE TABLE IF NOT EXISTS scheduled (
 	id bigint NOT NULL PRIMARY KEY REFERENCES jobs(id) MATCH SIMPLE ON UPDATE NO ACTION ON DELETE CASCADE,
-	at bigint NOT NULL,
+	at bigint NOT NULL, -- unix seconds
 	retry int NOT NULL DEFAULT 0,
 	is_retried bool NOT NULL GENERATED ALWAYS AS (retry > 0) STORED,
 	CONSTRAINT ck_scheduled_retry CHECK (retry >= 0)

@@ -1,5 +1,5 @@
 use async_channel::Receiver;
-use futures::{StreamExt, future::join_all};
+use futures::future::join_all;
 use tokio::{select, task::JoinHandle, time};
 #[allow(unused_imports)]
 use tracing::{debug, error, info, warn};
@@ -51,30 +51,25 @@ impl ChannelWorkerService {
             app_state.shutdown_token.cancelled();
         tokio::pin!(shutdown_token);
 
-        let mut empty: bool;
         while !app_state.shutdown_token.is_cancelled() {
-            let mut rows = db::jobqueue::fetch_job_with_retry(
+            let jobs = db::jobqueue::fetch_job_with_retry(
                 &app_state.pool,
                 instance_id,
                 i32::from(app_state.worker_options.prefetch),
-            );
-            empty = true;
-            // The rows are already assigned to this instance in the db,
-            // so drain them all (even on shutdown) instead of leaving them locked.
-            while let Some(res) = rows.next().await {
-                match res {
-                    Ok(entry) => {
-                        _ = tx.send(entry).await;
-                        empty = false;
-                    }
-                    Err(err) => {
-                        error!(
-                            { instance_id },
-                            "db::jobqueue::fetch_job_with_retry {:?}", err
-                        );
-                        break;
-                    }
-                }
+            )
+            .await
+            .inspect_err(|err| {
+                error!(
+                    { instance_id },
+                    "db::jobqueue::fetch_job_with_retry {:?}", err
+                );
+            })
+            .unwrap_or_default();
+            let empty = jobs.is_empty();
+            // The jobs are already assigned to this instance in the db,
+            // so hand them all over (even on shutdown) instead of leaving them locked.
+            for job in jobs {
+                _ = tx.send(job).await;
             }
             if empty {
                 wait_tick_or_shutdown(&mut interval, &mut shutdown_token).await;

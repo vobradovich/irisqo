@@ -70,7 +70,8 @@
                         } else if (this.delayType === 'delay_until') {
                             const delayUntil = document.getElementById('delay_until');
                             if (delayUntil && delayUntil.value) {
-                                const ts = Math.floor(new Date(delayUntil.value + 'Z').getTime() / 1000);
+                                // datetime-local has no offset: Date parses it as local time
+                                const ts = Math.floor(new Date(delayUntil.value).getTime() / 1000);
                                 qs.append('_delay_until', ts);
                             }
                         }
@@ -107,12 +108,11 @@
                     },
                     sendRequest() {
                         const requestUrl = this.updateQuery();
-                        const options = { method: this.method };
+                        const options = { method: this.method, headers: { 'HX-Request': 'true' } };
                         if (this.method === 'POST' || this.method === 'PUT') {
-                            options.headers = { 'Content-Type': 'text/plain' };
+                            options.headers['Content-Type'] = 'text/plain';
                             options.body = this.body;
                         }
-                        options.headers = { 'HX-Request': 'true' };
                         fetch(requestUrl, options)
                             .then(async r => {
                                 if (r.ok && r.status === 201) {

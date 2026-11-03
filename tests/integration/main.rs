@@ -8,4 +8,5 @@
 //! ```
 
 mod common;
+mod fixes;
 mod smoke;
