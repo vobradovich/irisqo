@@ -170,15 +170,14 @@ async fn job_run_http(app_state: &AppState, job: JobRow) -> Result<JobResult, Er
     // jobs stored before the limit existed may carry a bigger timeout
     let timeout_ms = job.meta.timeout.min(app_state.worker_options.max_timeout);
     let mut req = hyper::Request::<Full<Bytes>>::try_from(job)?;
-    let method = req.method().clone();
-    let uri = req.uri().clone();
+    let mut attrs = client_attrs(req.method(), req.uri());
     let span = tracing::info_span!(
         target: otel::TRACING_TARGET,
         "HTTP request",
-        otel.name = %method,
+        otel.name = %req.method(),
         otel.kind = ?SpanKind::Client,
         otel.status_code = Empty,
-        http.request.method = %method,
+        http.request.method = %req.method(),
         url.full = %req.uri(),
         http.response.status_code = Empty,
         http.response.body.size = Empty,
@@ -212,7 +211,6 @@ async fn job_run_http(app_state: &AppState, job: JobRow) -> Result<JobResult, Er
             })?;
         Ok::<_, Error>((status_code, version, header_hashmap, collected.to_bytes()))
     };
-    let mut attrs = client_attrs(&method, &uri);
     let start = Instant::now();
     // '?': timeout; the block yields the request/body result
     let exchange = async { time::timeout(Duration::from_millis(timeout_ms.into()), call).await? }

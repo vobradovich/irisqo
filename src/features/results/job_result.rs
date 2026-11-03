@@ -84,7 +84,8 @@ impl JobResult {
                     status_code,
                     version,
                 }),
-                ..JobResultMeta::default()
+                trace_id: None,
+                span_id: None,
             },
             headers,
             body,
@@ -95,7 +96,8 @@ impl JobResult {
         JobResult {
             meta: JobResultMeta {
                 result,
-                ..JobResultMeta::default()
+                trace_id: None,
+                span_id: None,
             },
             headers: None,
             body: Bytes::new(),
@@ -163,9 +165,17 @@ impl From<Error> for JobResult {
     fn from(value: Error) -> Self {
         match value {
             Error::Timeout(_) => JobResult::with_type(JobResultType::Timeout),
-            Error::ClientError(res) => res,
-            Error::ServerError(res) => res,
-            _ => JobResult::with_type(JobResultType::Error {
+            Error::ClientError(res) | Error::ServerError(res) => res,
+            Error::JobNotFound(_)
+            | Error::DbError(_)
+            | Error::IoError(_)
+            | Error::HttpError(_)
+            | Error::HyperError(_)
+            | Error::HyperClientError(_)
+            | Error::InvalidUrl
+            | Error::InvalidParams(_)
+            | Error::ResponseTooLarge
+            | Error::RetriesExceeded => JobResult::with_type(JobResultType::Error {
                 error: value.to_string(),
             }),
         }
