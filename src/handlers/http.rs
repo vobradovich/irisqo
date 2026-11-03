@@ -183,17 +183,13 @@ pub fn forwarded_headers(headers: &HeaderMap) -> HashMap<String, String> {
         .iter()
         .filter_map(|(name, value)| {
             let name = name.as_str();
-            let target = match name.strip_prefix(FORWARD_PREFIX) {
-                Some(target) => target,
-                None if matches!(
+            let target = name.strip_prefix(FORWARD_PREFIX).or_else(|| {
+                matches!(
                     name,
                     "content-type" | "content-encoding" | "content-language"
-                ) =>
-                {
-                    name
-                }
-                None => return None,
-            };
+                )
+                .then_some(name)
+            })?;
             // the client sets the body length and the host, irisqo the trace context
             let reserved = matches!(
                 target,

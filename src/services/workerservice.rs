@@ -1,11 +1,6 @@
 use async_channel::Receiver;
-use futures::{StreamExt, future::join_all};
-use tokio::{
-    select,
-    sync::mpsc,
-    task::{AbortHandle, JoinHandle},
-    time,
-};
+use futures::StreamExt;
+use tokio::{select, sync::mpsc, task::JoinSet, time};
 use tracing::{error, info, warn};
 
 use crate::{
@@ -60,16 +55,15 @@ impl WorkerService {
             let state = Arc::clone(app_state);
             async move { run_completer(&state, done_rx).await }
         });
-        let running_workers: Vec<JoinHandle<()>> = (0..workers_count)
-            .map(|idx| {
-                let state = Arc::clone(app_state);
-                let rx_worker = rx.clone();
-                let done_tx = done_tx.clone();
-                tokio::spawn(async move {
-                    run_worker(&state, idx, per_worker, rx_worker, done_tx).await;
-                })
-            })
-            .collect();
+        let mut running_workers = JoinSet::new();
+        for idx in 0..workers_count {
+            let state = Arc::clone(app_state);
+            let rx_worker = rx.clone();
+            let done_tx = done_tx.clone();
+            running_workers.spawn(async move {
+                run_worker(&state, idx, per_worker, rx_worker, done_tx).await
+            });
+        }
         drop(done_tx);
 
         while !app_state.shutdown_token.is_cancelled() {
@@ -110,16 +104,12 @@ impl WorkerService {
         // assigned to this instance and `kill` releases them on exit.
         tx.close();
         let deadline = time::Instant::now() + app_state.worker_options.shutdown_timeout;
-        let aborts: Vec<_> = running_workers
-            .iter()
-            .map(JoinHandle::abort_handle)
-            .collect();
-        if time::timeout_at(deadline, join_all(running_workers))
-            .await
-            .is_err()
-        {
+        let drained = time::timeout_at(deadline, async {
+            while running_workers.join_next().await.is_some() {}
+        });
+        if drained.await.is_err() {
             warn!({ instance_id }, "shutdown timeout, running jobs abandoned");
-            aborts.iter().for_each(AbortHandle::abort);
+            running_workers.abort_all();
         }
         // The aborted workers drop their senders: the completer writes what it got and ends.
         match time::timeout(COMPLETER_GRACE, completer).await {
