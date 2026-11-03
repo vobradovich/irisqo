@@ -20,7 +20,7 @@
         <details id="job-{{ job.id }}" hx-get="/ui/jobs/{{ job.id }}/history" hx-trigger="toggle once" hx-target="find .history">
           <summary class="job-cols">
             <span><a href="/ui/jobs/{{ job.id }}" class="mono">{{ job.id }}</a></span>
-            <span><span class="status {{ job.status }}">{{ job.status_label }}</span></span>
+            <span><span class="status {{ job.status }}"><span>{{ job.status_label }}</span></span></span>
             <span class="request"><span class="method mono">{{ job.method }}</span><span class="url mono">{{ job.url }}</span></span>
             <span class="mono">{{ job.attempt }}</span>
             <span class="muted" title="{{ job.due_title }}">{{ job.due }}</span>

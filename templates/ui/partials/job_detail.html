@@ -3,7 +3,7 @@
 
   <div class="page-head">
     <h1>Job <span class="mono">{{ job.row.id }}</span></h1>
-    <span class="status {{ job.row.status }}">{{ job.row.status_label }}</span>
+    <span class="status {{ job.row.status }}"><span>{{ job.row.status_label }}</span></span>
     <span class="muted" title="{{ job.row.due_title }}">attempt {{ job.row.attempt }}{% if !job.row.due.is_empty() %} · {{ job.row.due }}{% endif %}</span>
     <div class="actions push">
       {% if job.row.is_processed() %}
@@ -58,7 +58,7 @@
     <article class="card">
       <h2>Result</h2>
       {% if let Some(r) = job.result %}
-      <p><span class="status {{ r.status }}">{{ r.title }}</span> <span class="mono muted">{{ r.detail }}</span></p>
+      <p><span class="status {{ r.status }}"><span>{{ r.title }}</span></span> <span class="mono muted">{{ r.detail }}</span></p>
       {% if !r.headers.is_empty() %}
       <h3>Headers</h3>
       <dl class="headers mono">
@@ -79,7 +79,7 @@
       {% for h in job.history %}
       <li>
         <span class="mono muted" title="{{ h.at_title }}">{{ h.at }}</span>
-        <span class="status {{ h.status }}">{{ h.label }}</span>
+        <span class="status {{ h.status }}"><span>{{ h.label }}</span></span>
         <span class="mono muted">retry {{ h.retry }}</span>
         <span class="mono muted" title="{{ h.instance_full }}">{{ h.instance }}</span>
         <span>{{ h.message }}</span>

@@ -4,10 +4,10 @@
 <div class="page-head">
   <h1>Jobs</h1>
   {% if list.live %}
-  <span class="live"><span class="dot" aria-hidden="true"></span>Live · refreshes every 2 s</span>
+  <span class="live"><span class="dot" aria-hidden="true"></span><span>Live · refreshes every 2 s</span></span>
   <a href="{{ list.pause_href }}" role="button" class="secondary">Pause updates</a>
   {% else %}
-  <span class="live paused">Updates paused</span>
+  <span class="live paused"><span>Updates paused</span></span>
   <a href="{{ list.resume_href }}" role="button" class="secondary">Resume updates</a>
   {% endif %}
 </div>
