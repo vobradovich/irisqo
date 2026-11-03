@@ -4,6 +4,31 @@ use tokio::time::error::Elapsed;
 
 use crate::{features::results::JobResult, otel};
 
+/// A rejected request parameter (`url`, `_delay`, `_cron`...): the API returns them all
+/// at once, the UI form shows each one next to its field.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ParamError {
+    pub param: &'static str,
+    pub message: String,
+}
+
+impl ParamError {
+    pub fn new(param: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            param,
+            message: message.into(),
+        }
+    }
+}
+
+fn describe(errors: &[ParamError]) -> String {
+    errors
+        .iter()
+        .map(|e| format!("{}: {}", e.param, e.message))
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
 // region:    Error
 #[derive(thiserror::Error, Debug)]
 #[allow(clippy::enum_variant_names)]
@@ -37,6 +62,9 @@ pub enum Error {
     #[error("Invalid Params - {0}")]
     InvalidParams(&'static str),
 
+    #[error("Invalid parameters: {}", describe(.0))]
+    Validation(Vec<ParamError>),
+
     #[error("Server Error")]
     ServerError(Box<JobResult>),
 
@@ -63,6 +91,11 @@ impl From<Error> for Problem {
                 // .with_type("https://example.com/probs/out-of-credit")
                 .with_title(StatusCode::BAD_REQUEST.to_string())
                 .with_detail(item.to_string())
+                .with_value("trace_id", trace_id),
+            Error::Validation(ref errors) => problemdetails::new(StatusCode::BAD_REQUEST)
+                .with_title(StatusCode::BAD_REQUEST.to_string())
+                .with_detail(item.to_string())
+                .with_value("errors", serde_json::to_value(errors).unwrap_or_default())
                 .with_value("trace_id", trace_id),
             Error::DbError(sqlx::Error::RowNotFound) => problemdetails::new(StatusCode::NOT_FOUND)
                 // .with_type("https://example.com/probs/out-of-credit")

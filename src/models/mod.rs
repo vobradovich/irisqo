@@ -1,4 +1,4 @@
-pub use error::Error;
+pub use error::{Error, ParamError};
 
 pub use job::HttpMeta;
 pub use job::JobCreate;

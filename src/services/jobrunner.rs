@@ -298,6 +298,7 @@ fn error_type(err: &Error) -> &'static str {
         | Error::HttpError(_)
         | Error::InvalidUrl
         | Error::InvalidParams(_)
+        | Error::Validation(_)
         | Error::ServerError(_)
         | Error::ClientError(_)
         | Error::RetriesExceeded => "_OTHER",
@@ -369,6 +370,7 @@ async fn on_error(
         | Error::HttpError(_)
         | Error::InvalidUrl
         | Error::InvalidParams(_)
+        | Error::Validation(_)
         | Error::ResponseTooLarge
         | Error::RetriesExceeded => {
             error!({ instance_id, job_id }, "====> error {:?}", err);
