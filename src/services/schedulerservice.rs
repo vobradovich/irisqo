@@ -5,7 +5,7 @@ use tracing::{debug, error, info, trace, warn};
 use crate::{
     db,
     models::{AppState, SchedulerOptions},
-    services::heartbeat::INSTANCE_EXPIRE,
+    services::{drain_batches, heartbeat::INSTANCE_EXPIRE},
 };
 use std::sync::Arc;
 
@@ -68,26 +68,14 @@ impl SchedulerService {
 
     /// Moves every due job to the queue, `prefetch` at a time.
     async fn enqueue_due(&self, options: &SchedulerOptions) {
-        let instance_id = &self.app_state.instance_id;
+        let state = &self.app_state;
         let limit = i32::from(options.prefetch.max(1));
-        let mut total = 0;
-        while !self.app_state.shutdown_token.is_cancelled() {
-            let Ok(enqueued) =
-                db::jobqueue::enqueue_scheduled(&self.app_state.pool, instance_id, limit)
-                    .await
-                    .inspect_err(|err| {
-                        error!({ instance_id }, "enqueue_scheduled error {:?}", err)
-                    })
-            else {
-                break;
-            };
-            total += enqueued;
-            if enqueued < u64::from(limit.unsigned_abs()) {
-                break;
-            }
-        }
+        let total = drain_batches(state, "enqueue_scheduled", limit, usize::MAX, || {
+            db::jobqueue::enqueue_scheduled(&state.pool, &state.instance_id, limit)
+        })
+        .await;
         if total > 0 {
-            debug!({ instance_id, total }, "enqueued scheduled jobs");
+            debug!({ instance_id = state.instance_id, total }, "enqueued scheduled jobs");
         }
     }
 }

@@ -37,8 +37,7 @@ async fn echo(
     let mut response = body.into_response();
     if let Some(status) = params
         .get("status")
-        .and_then(|s| s.parse::<u16>().ok())
-        .and_then(|s| StatusCode::from_u16(s).ok())
+        .and_then(|s| s.parse::<StatusCode>().ok())
     {
         *response.status_mut() = status;
     }

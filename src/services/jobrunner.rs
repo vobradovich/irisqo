@@ -74,11 +74,11 @@ pub async fn complete(app_state: &AppState, completions: Vec<Completion>) {
         .partition(|c| c.schedule_id.is_some());
     if !plain.is_empty() {
         let items: Vec<_> = plain.iter().map(|c| (c.entry, &c.result)).collect();
-        let total = items.len();
+        let total = items.len() as u64;
         _ = results::processed_many(&app_state.pool, &items, instance_id)
             .await
             .inspect(|&affected| {
-                if usize::try_from(affected).unwrap_or(usize::MAX) < total {
+                if affected < total {
                     // The lock was lost (lock expired, instance expired, job deleted)
                     warn!({ instance_id, total, affected }, "some jobs are not locked by this attempt, skip");
                 }

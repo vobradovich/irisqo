@@ -3,12 +3,12 @@ use std::{sync::Arc, time::Duration};
 use tokio::{select, time};
 use tracing::{debug, error, info};
 
-use crate::{db, models::AppState};
+use crate::{db, models::AppState, services::drain_batches};
 
 const RETENTION_INTERVAL: Duration = Duration::from_secs(60);
 const PURGE_BATCH: i32 = 1000;
 /// Per run, so that a big backlog is purged gradually.
-const MAX_BATCHES: u32 = 100;
+const MAX_BATCHES: usize = 100;
 
 #[derive(Debug)]
 pub struct RetentionService {
@@ -50,26 +50,23 @@ impl RetentionService {
     pub async fn purge(&self, retention: Duration) {
         let instance_id = &self.app_state.instance_id;
         let pool = &self.app_state.pool;
-        let mut jobs = 0;
-        for _ in 0..MAX_BATCHES {
-            if self.app_state.shutdown_token.is_cancelled() {
-                break;
-            }
-            let Ok(deleted) = db::retention::purge_processed(pool, retention, PURGE_BATCH)
+        let jobs = drain_batches(
+            &self.app_state,
+            "purge_processed",
+            PURGE_BATCH,
+            MAX_BATCHES,
+            || db::retention::purge_processed(pool, retention, PURGE_BATCH),
+        )
+        .await;
+        // schedules lose their last jobs only when jobs are purged
+        let schedules = if jobs > 0 {
+            db::retention::purge_schedules(pool)
                 .await
-                .inspect_err(|err| error!({ instance_id }, "purge_processed error {:?}", err))
-            else {
-                break;
-            };
-            jobs += deleted;
-            if deleted < u64::from(PURGE_BATCH.unsigned_abs()) {
-                break;
-            }
-        }
-        let schedules = db::retention::purge_schedules(pool)
-            .await
-            .inspect_err(|err| error!({ instance_id }, "purge_schedules error {:?}", err))
-            .unwrap_or_default();
+                .inspect_err(|err| error!({ instance_id }, "purge_schedules error {:?}", err))
+                .unwrap_or_default()
+        } else {
+            0
+        };
         let instances = db::retention::purge_instances(pool, retention)
             .await
             .inspect_err(|err| error!({ instance_id }, "purge_instances error {:?}", err))
