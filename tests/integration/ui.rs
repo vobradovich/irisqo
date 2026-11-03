@@ -189,32 +189,37 @@ async fn form_errors_are_shown_by_field(pool: PgPool) -> anyhow::Result<()> {
 }
 
 #[sqlx::test(migrations = "./sql/migrations")]
-async fn choices_rerender_the_form(pool: PgPool) -> anyhow::Result<()> {
+async fn dependent_fields_keep_their_values(pool: PgPool) -> anyhow::Result<()> {
     let state = common::state(pool);
     let addr = common::spawn_app(&state).await;
     let get = |query: &str| format!("http://{addr}/ui/jobs/new/form?{query}");
 
+    // every dependent field is rendered (CSS shows the picked ones), so a value typed
+    // for another choice is still there; the preview reads only the picked choice
     let (_, _, html) = send(
         &state,
         Method::GET,
-        &get("when=now&repeat=once&retry=none"),
+        &get("when=now&delay=30&repeat=once&cron=*/5+*+*+*+*&retry=none&retry_count=3"),
         true,
         "",
     )
     .await;
-    assert!(!html.contains("id=\"delay\"") && !html.contains("id=\"cron\""));
-    let (_, _, html) = send(
-        &state,
-        Method::GET,
-        &get("when=delay&repeat=cron&retry=fibonacci"),
-        true,
-        "",
-    )
-    .await;
+    for field in [
+        "class=\"dep when-delay\"",
+        "class=\"dep repeat-cron\"",
+        "class=\"narrow dep retry-any\"",
+        "id=\"delay\" name=\"delay\" type=\"number\" min=\"0\" value=\"30\"",
+        "value=\"*/5 * * * *\"",
+    ] {
+        assert!(html.contains(field), "{field}");
+    }
     assert!(
-        html.contains("id=\"delay\"")
-            && html.contains("id=\"cron\"")
-            && html.contains("id=\"retry_delay\"")
+        !html.contains("hx-trigger=\"change\""),
+        "choices make no request"
+    );
+    assert!(
+        !html.contains("_delay=30"),
+        "the preview ignores an unpicked choice"
     );
     let (_, _, html) = send(&state, Method::GET, &get("op=add_header"), true, "").await;
     assert!(html.contains("id=\"header-name-0\""));

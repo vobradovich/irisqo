@@ -113,12 +113,29 @@
   --pico-table-border-color: var(--border);
 }
 
-/* Header */
+/* Page width: the header bar spans the window, its content and main share one column
+   (Pico would box the header like main) */
 body > header {
+  max-width: none;
+  padding: 0;
   background: var(--surface);
   border-bottom: 1px solid var(--border);
-  padding-block: 0.25rem;
 }
+body > header > nav,
+body > main {
+  max-width: 75rem;
+  margin-inline: auto;
+  padding-inline: 1.5rem;
+}
+body > header > nav { min-height: 3.75rem; }
+nav a.cta {
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-weight: 600;
+  border-radius: var(--pico-border-radius);
+}
+nav a.cta:hover,
+nav a.cta[aria-current="page"] { background: var(--accent-hover); color: var(--accent-ink); }
 .brand {
   display: inline-flex;
   align-items: center;
@@ -176,6 +193,20 @@ fieldset.card > legend {
 fieldset.card > legend + * { clear: both; }
 aside.card { padding-bottom: 1rem; }
 aside.card h2 { font-size: 1.05rem; margin-bottom: 0.25rem; }
+
+/* Dependent fields: shown by the choice they belong to, with CSS only: no request,
+   and what was typed stays when another choice is picked (the server reads only the
+   fields of the picked choice) */
+#job-form .dep { display: none; }
+#job-form:has(#when-delay:checked) .dep.when-delay,
+#job-form:has(#when-at:checked) .dep.when-at,
+#job-form:has(#repeat-interval:checked) .dep.repeat-interval,
+#job-form:has(#repeat-cron:checked) .dep.repeat-cron,
+#job-form:has(#retry option:not([value="none"]):checked) .dep.retry-any,
+#job-form:has(#retry option:is([value="fixed"], [value="fibonacci"]):checked) .dep.retry-delayed {
+  display: block;
+}
+#job-form:has(#repeat-interval:checked, #repeat-cron:checked) .dep.repeat-any { display: flex; }
 
 /* Choices: radio buttons as pills */
 .choices {

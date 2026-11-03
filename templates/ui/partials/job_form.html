@@ -59,80 +59,67 @@
     <fieldset class="card">
       <legend>When</legend>
       <div class="choices" role="radiogroup" aria-label="Start">
-        <label for="when-now"><input type="radio" id="when-now" name="when" value="now"{% if form.when == "now" %} checked{% endif %} hx-get="/ui/jobs/new/form" hx-trigger="change">Now</label>
-        <label for="when-delay"><input type="radio" id="when-delay" name="when" value="delay"{% if form.when == "delay" %} checked{% endif %} hx-get="/ui/jobs/new/form" hx-trigger="change">After a delay</label>
-        <label for="when-at"><input type="radio" id="when-at" name="when" value="at"{% if form.when == "at" %} checked{% endif %} hx-get="/ui/jobs/new/form" hx-trigger="change">At a time</label>
+        <label for="when-now"><input type="radio" id="when-now" name="when" value="now"{% if form.when == "now" %} checked{% endif %}>Now</label>
+        <label for="when-delay"><input type="radio" id="when-delay" name="when" value="delay"{% if form.when == "delay" %} checked{% endif %}>After a delay</label>
+        <label for="when-at"><input type="radio" id="when-at" name="when" value="at"{% if form.when == "at" %} checked{% endif %}>At a time</label>
       </div>
-      {% if form.when == "delay" %}
-      <label for="delay">Delay, seconds
+      <label for="delay" class="dep when-delay">Delay, seconds
         <input id="delay" name="delay" type="number" min="0" value="{{ form.delay }}"
           {%- if form.error("delay").is_some() %} aria-invalid="true" aria-describedby="delay-error"{% endif %}>
         {% if let Some(e) = form.error("delay") %}<small id="delay-error" class="error">Delay {{ e }}</small>{% endif %}
       </label>
-      {% endif %}
-      {% if form.when == "at" %}
-      <label for="at">At, UTC
+      <label for="at" class="dep when-at">At, UTC
         <input id="at" name="at" type="datetime-local" value="{{ form.at }}"
           {%- if form.error("at").is_some() %} aria-invalid="true" aria-describedby="at-error"{% endif %}>
         {% if let Some(e) = form.error("at") %}<small id="at-error" class="error">Time {{ e }}</small>{% else %}<small class="hint">A time in the past runs the job now.</small>{% endif %}
       </label>
-      {% endif %}
     </fieldset>
 
     <fieldset class="card">
       <legend>Repeat</legend>
       <div class="choices" role="radiogroup" aria-label="Repeat">
-        <label for="repeat-once"><input type="radio" id="repeat-once" name="repeat" value="once"{% if form.repeat == "once" %} checked{% endif %} hx-get="/ui/jobs/new/form" hx-trigger="change">Once</label>
-        <label for="repeat-interval"><input type="radio" id="repeat-interval" name="repeat" value="interval"{% if form.repeat == "interval" %} checked{% endif %} hx-get="/ui/jobs/new/form" hx-trigger="change">Every N seconds</label>
-        <label for="repeat-cron"><input type="radio" id="repeat-cron" name="repeat" value="cron"{% if form.repeat == "cron" %} checked{% endif %} hx-get="/ui/jobs/new/form" hx-trigger="change">Cron</label>
+        <label for="repeat-once"><input type="radio" id="repeat-once" name="repeat" value="once"{% if form.repeat == "once" %} checked{% endif %}>Once</label>
+        <label for="repeat-interval"><input type="radio" id="repeat-interval" name="repeat" value="interval"{% if form.repeat == "interval" %} checked{% endif %}>Every N seconds</label>
+        <label for="repeat-cron"><input type="radio" id="repeat-cron" name="repeat" value="cron"{% if form.repeat == "cron" %} checked{% endif %}>Cron</label>
       </div>
-      {% if form.repeat != "once" %}
-      <div class="row">
-        {% if form.repeat == "interval" %}
-        <label for="interval">Interval, seconds
+      <div class="row dep repeat-any">
+        <label for="interval" class="dep repeat-interval">Interval, seconds
           <input id="interval" name="interval" type="number" min="1" value="{{ form.interval }}"
             {%- if form.error("interval").is_some() %} aria-invalid="true" aria-describedby="interval-error"{% endif %}>
           {% if let Some(e) = form.error("interval") %}<small id="interval-error" class="error">Interval {{ e }}</small>{% endif %}
         </label>
-        {% else %}
-        <label for="cron">Cron expression
+        <label for="cron" class="dep repeat-cron">Cron expression
           <input id="cron" name="cron" class="mono" placeholder="*/15 * * * *" value="{{ form.cron }}"
             {%- if form.error("cron").is_some() %} aria-invalid="true" aria-describedby="cron-error"{% endif %}>
           {% if let Some(e) = form.error("cron") %}<small id="cron-error" class="error">Cron {{ e }}</small>{% else %}<small class="hint">5 fields, or 6 with seconds first.</small>{% endif %}
         </label>
-        {% endif %}
         <label for="until">Until, UTC (optional)
           <input id="until" name="until" type="datetime-local" value="{{ form.until }}"
             {%- if form.error("until").is_some() %} aria-invalid="true" aria-describedby="until-error"{% endif %}>
           {% if let Some(e) = form.error("until") %}<small id="until-error" class="error">Until {{ e }}</small>{% endif %}
         </label>
       </div>
-      {% endif %}
     </fieldset>
 
     <fieldset class="card">
       <legend>Retries and limits</legend>
       <div class="row">
         <label for="retry">Policy
-          <select id="retry" name="retry" hx-get="/ui/jobs/new/form" hx-trigger="change">
+          <select id="retry" name="retry">
             <option value="none"{% if form.retry == "none" %} selected{% endif %}>No retries</option>
             <option value="immediate"{% if form.retry == "immediate" %} selected{% endif %}>Immediate</option>
             <option value="fixed"{% if form.retry == "fixed" %} selected{% endif %}>Fixed delay</option>
             <option value="fibonacci"{% if form.retry == "fibonacci" %} selected{% endif %}>Fibonacci backoff</option>
           </select>
         </label>
-        {% if form.retry != "none" %}
-        <label for="retry_count" class="narrow">Retries
+        <label for="retry_count" class="narrow dep retry-any">Retries
           <input id="retry_count" name="retry_count" type="number" min="0" value="{{ form.retry_count }}"
             {%- if form.error("retry_count").is_some() %} aria-invalid="true" aria-describedby="retry-error"{% endif %}>
         </label>
-        {% endif %}
-        {% if form.retry == "fixed" || form.retry == "fibonacci" %}
-        <label for="retry_delay" class="narrow">Delay, s
+        <label for="retry_delay" class="narrow dep retry-delayed">Delay, s
           <input id="retry_delay" name="retry_delay" type="number" min="1" value="{{ form.retry_delay }}"
             {%- if form.error("retry_count").is_some() %} aria-invalid="true" aria-describedby="retry-error"{% endif %}>
         </label>
-        {% endif %}
         <label for="timeout" class="narrow">Timeout, ms
           <input id="timeout" name="timeout" type="number" min="1" max="{{ form.max_timeout }}" placeholder="{{ form.default_timeout }}" value="{{ form.timeout }}"
             {%- if form.error("timeout").is_some() %} aria-invalid="true" aria-describedby="timeout-error"{% endif %}>
