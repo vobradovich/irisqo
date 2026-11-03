@@ -8,7 +8,7 @@ use axum::{
     Router,
     body::Bytes,
     extract::{Path, RawQuery, State},
-    http::{HeaderMap, HeaderValue, StatusCode, header},
+    http::{HeaderMap, HeaderValue, StatusCode},
     response::IntoResponse,
     routing::get,
 };
@@ -122,22 +122,7 @@ async fn job_create(
         _ => crate::models::JobProtocol::None,
     };
 
-    // Parse Headers
-    let mut header_hashmap = HashMap::new();
-    for (k, v) in headers {
-        if let Some(key) = k {
-            if key == header::HOST {
-                continue;
-            }
-            // the trace context is stored in the job meta and injected per attempt
-            if matches!(key.as_str(), "hx-request" | "traceparent" | "tracestate") {
-                continue;
-            }
-            if let Ok(val) = v.to_str() {
-                header_hashmap.insert(key.to_string(), val.to_owned());
-            }
-        }
-    }
+    let header_hashmap = forwarded_headers(&headers);
     // Trace context of this request: the parent of every attempt
     let (traceparent, tracestate) = otel::current_trace_headers();
     // Build
@@ -184,4 +169,77 @@ async fn job_create(
     put("schedule-id", job.schedule_id.as_deref());
     put("external-id", job.external_id.as_deref());
     Ok((StatusCode::CREATED, headers))
+}
+
+/// Prefix of the request headers forwarded to the target, without the prefix.
+pub const FORWARD_PREFIX: &str = "irisqo-forward-";
+
+/// The headers forwarded to the target: the body ones (`content-type`, `content-encoding`,
+/// `content-language`) and the `irisqo-forward-*` ones without the prefix
+/// (`irisqo-forward-authorization: Bearer x` -> `authorization: Bearer x`).
+/// Everything else (the caller's own `authorization`, `cookie`, proxy headers...) stays here.
+pub fn forwarded_headers(headers: &HeaderMap) -> HashMap<String, String> {
+    headers
+        .iter()
+        .filter_map(|(name, value)| {
+            let name = name.as_str();
+            let target = match name.strip_prefix(FORWARD_PREFIX) {
+                Some(target) => target,
+                None if matches!(
+                    name,
+                    "content-type" | "content-encoding" | "content-language"
+                ) =>
+                {
+                    name
+                }
+                None => return None,
+            };
+            // the client sets the body length and the host, irisqo the trace context
+            let reserved = matches!(
+                target,
+                "" | "host"
+                    | "content-length"
+                    | "transfer-encoding"
+                    | "connection"
+                    | "traceparent"
+                    | "tracestate"
+            ) || target.starts_with("irisqo-");
+            let value = value.to_str().ok()?;
+            (!reserved).then(|| (target.to_owned(), value.to_owned()))
+        })
+        .collect()
+}
+
+#[test]
+fn forwarded_headers_allowlist() {
+    let mut headers = HeaderMap::new();
+    for (name, value) in [
+        ("content-type", "application/json"),
+        ("authorization", "Bearer caller"),
+        ("cookie", "session=caller"),
+        ("x-custom", "dropped"),
+        ("irisqo-forward-authorization", "Bearer target"),
+        ("irisqo-forward-x-custom", "kept"),
+        ("irisqo-forward-host", "evil.example"),
+        ("irisqo-forward-irisqo-job-id", "spoofed"),
+        ("irisqo-forward-", "empty"),
+        (
+            "traceparent",
+            "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+        ),
+    ] {
+        headers.insert(
+            axum::http::HeaderName::from_static(name),
+            HeaderValue::from_static(value),
+        );
+    }
+    let forwarded = forwarded_headers(&headers);
+    assert_eq!(
+        forwarded,
+        HashMap::from([
+            ("content-type".into(), "application/json".into()),
+            ("authorization".into(), "Bearer target".into()),
+            ("x-custom".into(), "kept".into()),
+        ])
+    );
 }

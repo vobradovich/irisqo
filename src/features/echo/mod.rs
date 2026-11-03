@@ -1,6 +1,6 @@
 use crate::models::AppState;
 use axum::{
-    Router,
+    Json, Router,
     body::Body,
     extract::Query,
     http::{HeaderMap, HeaderValue, StatusCode, header},
@@ -9,7 +9,7 @@ use axum::{
 };
 use hyper::Method;
 
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 #[allow(unused_imports)]
 use tracing::{debug, error, info, warn};
 
@@ -26,15 +26,28 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .with_state(state)
 }
 
-/// Echoes the body and `content*` headers back.
-/// `?status=429&retry-after=120` set the response status and `Retry-After` (for tests).
+/// Echoes the body and `content*` headers back. For tests:
+/// - `?status=429&retry-after=120` set the response status and `Retry-After`;
+/// - `?headers=1` answers with the request headers as a JSON object instead of the body;
+/// - `?sleep_ms=500` answers after a delay.
 async fn echo(
     method: Method,
     Query(params): Query<HashMap<String, String>>,
     headers: HeaderMap,
     body: Body,
 ) -> impl IntoResponse {
-    let mut response = body.into_response();
+    if let Some(ms) = params.get("sleep_ms").and_then(|ms| ms.parse().ok()) {
+        tokio::time::sleep(Duration::from_millis(ms)).await;
+    }
+    let mut response = if params.contains_key("headers") {
+        let received: HashMap<&str, &str> = headers
+            .iter()
+            .filter_map(|(k, v)| Some((k.as_str(), v.to_str().ok()?)))
+            .collect();
+        Json(received).into_response()
+    } else {
+        body.into_response()
+    };
     if let Some(status) = params
         .get("status")
         .and_then(|s| s.parse::<StatusCode>().ok())
@@ -51,11 +64,13 @@ async fn echo(
     if let Ok(value) = HeaderValue::from_str(method.as_str()) {
         response_headers.insert("http-method", value);
     }
-    for (k, v) in headers {
-        if let Some(key) = k
-            && key.as_str().starts_with("content")
-        {
-            response_headers.insert(key, v);
+    if !params.contains_key("headers") {
+        for (k, v) in headers {
+            if let Some(key) = k
+                && key.as_str().starts_with("content")
+            {
+                response_headers.insert(key, v);
+            }
         }
     }
     response

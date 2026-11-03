@@ -8,6 +8,7 @@
 //! ```
 
 mod common;
+mod delivery;
 mod otel;
 mod reliability;
 mod smoke;

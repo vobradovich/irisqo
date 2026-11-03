@@ -13,6 +13,7 @@ use crate::{
 };
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full, Limited};
+use hyper::header::HeaderValue;
 use opentelemetry::{
     Context, KeyValue, global,
     trace::{SpanKind, TraceContextExt},
@@ -118,7 +119,7 @@ async fn job_attempt(app_state: &AppState, job_with_retry: JobWithRetry) -> Opti
     let schedule_id = job.schedule_id.clone();
     let job_result = match job.meta.protocol {
         JobProtocol::None => Ok(JobResult::default()),
-        JobProtocol::Http(_) => job_run_http(app_state, job).await,
+        JobProtocol::Http(_) => job_run_http(app_state, job, retry).await,
     };
     let result = match job_result {
         Ok(result) => result,
@@ -165,11 +166,13 @@ pub async fn complete(app_state: &AppState, completions: Vec<Completion>) {
     }
 }
 
-async fn job_run_http(app_state: &AppState, job: JobRow) -> Result<JobResult, Error> {
+async fn job_run_http(app_state: &AppState, job: JobRow, retry: i32) -> Result<JobResult, Error> {
     let job_id = job.id;
     // jobs stored before the limit existed may carry a bigger timeout
     let timeout_ms = job.meta.timeout.min(app_state.worker_options.max_timeout);
+    let schedule_id = job.schedule_id.clone();
     let mut req = hyper::Request::<Full<Bytes>>::try_from(job)?;
+    add_delivery_headers(req.headers_mut(), job_id, retry, schedule_id.as_deref());
     let mut attrs = client_attrs(req.method(), req.uri());
     let span = tracing::info_span!(
         target: otel::TRACING_TARGET,
@@ -251,6 +254,21 @@ async fn job_run_http(app_state: &AppState, job: JobRow) -> Result<JobResult, Er
         return Err(Error::ClientError(Box::new(job_result)));
     }
     Ok(job_result)
+}
+
+/// Lets the target recognize a redelivery (delivery is at least once): the same
+/// `irisqo-job-id` with a higher `irisqo-retry`. A schedule run is a new job.
+fn add_delivery_headers(
+    headers: &mut hyper::HeaderMap,
+    job_id: i64,
+    retry: i32,
+    schedule_id: Option<&str>,
+) {
+    headers.insert("irisqo-job-id", job_id.into());
+    headers.insert("irisqo-retry", retry.into());
+    if let Some(value) = schedule_id.and_then(|s| HeaderValue::from_str(s).ok()) {
+        headers.insert("irisqo-schedule-id", value);
+    }
 }
 
 /// `http.client.request.duration` attributes known before the request is sent.
