@@ -4,6 +4,7 @@
 
 mod assets;
 pub mod form;
+mod instances;
 mod jobs;
 mod schedules;
 pub mod views;
@@ -64,6 +65,8 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route("/ui/jobs/{id}/cancel", post(jobs::job_cancel))
         .route("/ui/jobs/{id}/delete", post(jobs::job_delete))
         .route("/ui/schedules", get(schedules::schedules_page))
+        .route("/ui/instances", get(instances::instances_page))
+        .route("/ui/instances/table", get(instances::instances_table))
         .route("/ui/schedules/{id}/pause", post(schedules::schedule_pause))
         .route(
             "/ui/schedules/{id}/resume",

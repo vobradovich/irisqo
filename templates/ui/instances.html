@@ -1,0 +1,9 @@
+{% extends "ui/layout.html" %}
+{% block title %}Instances{% endblock %}
+{% block content %}
+<hgroup>
+  <h1>Instances</h1>
+  <p>The irisqo processes sharing this queue. Each sends a heartbeat every {{ heartbeat_secs }} s; one silent for {{ expire_secs }} s is stopped and its jobs go back to the queue.</p>
+</hgroup>
+{% include "ui/partials/instances_table.html" %}
+{% endblock %}

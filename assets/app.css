@@ -129,6 +129,7 @@ body > main {
 }
 body > header > nav { min-height: 3.75rem; }
 nav a.cta {
+  white-space: nowrap;
   background: var(--accent);
   color: var(--accent-ink);
   font-weight: 600;
@@ -153,6 +154,13 @@ nav a[aria-current="page"] {
   font-weight: 600;
 }
 body > main { padding-top: 1.75rem; }
+/* phones: the icon alone for the brand, tighter links, a 16px gutter */
+@media (max-width: 36rem) {
+  body > header > nav,
+  body > main { padding-inline: 1rem; }
+  body > header > nav { flex-wrap: wrap; --pico-nav-element-spacing-horizontal: 0.375rem; }
+  .brand-name { display: none; }
+}
 hgroup p { color: var(--muted); }
 
 /* Layout */
@@ -344,6 +352,10 @@ a[role="button"].secondary:hover {
 .status.completed { color: var(--st-completed-fg); background: var(--st-completed-bg); }
 .status.failed { color: var(--st-failed-fg); background: var(--st-failed-bg); }
 .status.cancelled { color: var(--st-cancelled-fg); background: var(--st-cancelled-bg); }
+/* instances */
+.status.running { color: var(--st-completed-fg); background: var(--st-completed-bg); }
+.status.stale { color: var(--st-failed-fg); background: var(--st-failed-bg); }
+.status.stopped { color: var(--st-cancelled-fg); background: var(--st-cancelled-bg); }
 
 .mono { font-family: var(--pico-font-family-monospace); }
 
@@ -608,3 +620,14 @@ pre.body {
 .table-wrap .actions { display: flex; gap: 0.5rem; justify-content: flex-end; }
 .table-wrap .actions button { width: auto; margin: 0; padding: 0.5rem 0.875rem; }
 .state-active { color: var(--success); font-weight: 600; }
+.table-wrap .num { text-align: right; }
+.table-wrap .failed-count { color: var(--danger); }
+.tag {
+  margin-left: 0.25rem;
+  padding: 0.0625rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 0.75rem;
+  white-space: nowrap;
+}

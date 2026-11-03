@@ -117,6 +117,8 @@ through the same validation; its preview shows that request.
 - **Job**: the request, the result, the history; retry, cancel, delete. With `--trace-url`
   (e.g. `http://localhost:5080/web/traces?trace_id={trace_id}`) the result links to its trace.
 - **Schedules**: rule, next and last run; pause, resume, delete.
+- **Instances**: the irisqo processes on this queue: state, last heartbeat, start, the jobs
+  each holds and its results of the last 24 hours, refreshed every 5 s.
 - **New job**: the form.
 
 ## Running

@@ -389,3 +389,57 @@ async fn ui_pages_and_actions(pool: PgPool) -> anyhow::Result<()> {
     assert!(html.starts_with("<div id=\"schedules\"") && html.contains("Resume"));
     Ok(())
 }
+
+#[sqlx::test(migrations = "./sql/migrations")]
+async fn instances_page_shows_heartbeats_and_work(pool: PgPool) -> anyhow::Result<()> {
+    let state = common::state(pool.clone());
+    let addr = common::spawn_app(&state).await;
+    irisqo::features::instances::live(&pool, &state.instance_id).await?;
+    sqlx::query(
+        "INSERT INTO instances(instance_id, last_at, status) VALUES
+            ('quiet-host:01JC0000000000000000000000', now() - interval '1 minute', 'live'),
+            ('old-host:01JB0000000000000000000000', now() - interval '2 hours', 'dead')",
+    )
+    .execute(&pool)
+    .await?;
+    let ids = common::insert_enqueued(&pool, 2).await;
+    sqlx::query("UPDATE enqueued SET instance_id = $1, lock_at = now() WHERE id = ANY($2)")
+        .bind(&state.instance_id)
+        .bind(&ids)
+        .execute(&pool)
+        .await?;
+
+    let (status, _, html) = send(
+        &state,
+        Method::GET,
+        &format!("http://{addr}/ui/instances"),
+        false,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(html.contains("aria-current=\"page\">Instances</a>"));
+    let (host, _) = state.instance_id.rsplit_once(':').expect("host:ulid");
+    let this = html.find(host).expect("this instance");
+    let quiet = html.find("quiet-host").expect("stale instance");
+    let old = html.find("old-host").expect("dead instance");
+    assert!(this.min(quiet) < old, "live instances first");
+    assert!(html.contains("this server"));
+    assert!(html.contains("<span class=\"status running\"><span>Live</span>"));
+    assert!(html.contains("<span class=\"status stale\"><span>No heartbeat</span>"));
+    assert!(html.contains("<span class=\"status stopped\"><span>Stopped</span>"));
+    assert!(
+        html.contains("<td class=\"num mono\">2</td>"),
+        "jobs it holds"
+    );
+
+    let (status, _, html) = send(
+        &state,
+        Method::GET,
+        &format!("http://{addr}/ui/instances/table"),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(html.starts_with("<div id=\"instances\"") && html.contains("hx-trigger=\"every 5s\""));
+    Ok(())
+}

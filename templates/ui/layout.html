@@ -15,13 +15,14 @@
     <nav aria-label="Main">
       <ul>
         <li>
-          <a href="/ui" class="brand">
+          <a href="/ui" class="brand" aria-label="irisqo">
             <svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="4" width="18" height="4" rx="1.5"></rect><rect x="3" y="10" width="13" height="4" rx="1.5"></rect><rect x="3" y="16" width="8" height="4" rx="1.5"></rect></svg>
-            irisqo
+            <span class="brand-name">irisqo</span>
           </a>
         </li>
         <li><a href="/ui/jobs"{% if nav == "jobs" %} aria-current="page"{% endif %}>Jobs</a></li>
         <li><a href="/ui/schedules"{% if nav == "schedules" %} aria-current="page"{% endif %}>Schedules</a></li>
+        <li><a href="/ui/instances"{% if nav == "instances" %} aria-current="page"{% endif %}>Instances</a></li>
       </ul>
       <ul>
         <li><a href="/ui/jobs/new" class="cta"{% if nav == "new" %} aria-current="page"{% endif %}>New job</a></li>
