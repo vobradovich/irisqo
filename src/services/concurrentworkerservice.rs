@@ -56,13 +56,13 @@ impl ConcurrentWorkerService {
                 i32::try_from(batch).unwrap_or(i32::MAX),
             )
             .await
-            .unwrap_or_else(|err| {
+            .inspect_err(|err| {
                 error!(
                     { instance_id },
                     "db::jobqueue::fetch_job_with_retry {:?}", err
                 );
-                Vec::new()
-            });
+            })
+            .unwrap_or_default();
             let empty = jobs.is_empty();
             // The jobs are already assigned to this instance in the db,
             // so hand them all over (even on shutdown) instead of leaving them locked.
