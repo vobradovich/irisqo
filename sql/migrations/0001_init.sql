@@ -66,6 +66,10 @@ CREATE TABLE IF NOT EXISTS processed (
 	body BYTEA NULL
 );
 
+-- retention: oldest processed jobs first
+CREATE INDEX IF NOT EXISTS ix_processed_at ON processed
+	USING btree (at ASC);
+
 CREATE TYPE history_status AS ENUM (
 	'scheduled',
 	'enqueued',

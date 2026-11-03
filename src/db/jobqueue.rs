@@ -1,5 +1,7 @@
+use std::time::Duration;
+
 use crate::features::schedules::JobSchedule;
-use crate::models::{Error, JobCreateRow, JobWithRetry};
+use crate::models::{Error, JobCreateRow, JobEntry, JobWithRetry};
 use crate::models::{JobCreate, JobRow};
 use sqlx::{Pool, Postgres, types::Json};
 
@@ -199,7 +201,12 @@ pub async fn delete(pool: &Pool<Postgres>, job_id: i64) -> Result<u64, Error> {
     Ok(res.rows_affected())
 }
 
-pub async fn enqueue_scheduled(pool: &Pool<Postgres>, instance_id: &str) -> Result<u64, Error> {
+/// Moves up to `limit` due jobs from `scheduled` to `enqueued`.
+pub async fn enqueue_scheduled(
+    pool: &Pool<Postgres>,
+    instance_id: &str,
+    limit: i32,
+) -> Result<u64, Error> {
     const SQL: &str = "
     WITH a AS (
         SELECT id, retry FROM scheduled WHERE at <= extract(epoch from now())::bigint ORDER BY retry, id LIMIT $1 FOR UPDATE SKIP LOCKED
@@ -210,44 +217,81 @@ pub async fn enqueue_scheduled(pool: &Pool<Postgres>, instance_id: &str) -> Resu
     )
     DELETE FROM scheduled WHERE id = ANY(SELECT id FROM b)";
     let res = sqlx::query(SQL)
-        .bind(1000)
+        .bind(limit)
         .bind(instance_id)
         .execute(pool)
         .await?;
     Ok(res.rows_affected())
 }
 
-pub async fn unlock(pool: &Pool<Postgres>, job_id: i64, instance_id: &str) -> Result<u64, Error> {
+/// Puts a job back to the queue for an immediate retry.
+/// Only the current attempt (`instance_id` + `retry`) may do it: returns 0 otherwise.
+pub async fn unlock(
+    pool: &Pool<Postgres>,
+    entry: JobEntry,
+    instance_id: &str,
+) -> Result<u64, Error> {
     const SQL: &str = "
     WITH a AS (
-        UPDATE enqueued SET instance_id = null, lock_at = null, retry = retry + 1 WHERE id = $1 AND instance_id = $2 RETURNING id, retry
+        UPDATE enqueued SET instance_id = null, lock_at = null, retry = retry + 1 WHERE id = $1 AND instance_id = $2 AND retry = $3 RETURNING id, retry
     )
     INSERT INTO history SELECT id, retry, $2 as instance_id, now() as at, 'retried'::history_status as status FROM a RETURNING id";
     let res = sqlx::query(SQL)
-        .bind(job_id)
+        .bind(entry.id)
         .bind(instance_id)
+        .bind(entry.retry)
         .execute(pool)
         .await?;
     Ok(res.rows_affected())
 }
 
+/// Moves a job to `scheduled` for a retry at `at` (unix seconds).
+/// Only the current attempt (`instance_id` + `retry`) may do it: returns 0 otherwise.
 pub async fn retry(
     pool: &Pool<Postgres>,
-    job_id: i64,
+    entry: JobEntry,
     at: i64,
     instance_id: &str,
 ) -> Result<u64, Error> {
     const SQL: &str = "
     WITH a AS (
-        DELETE FROM enqueued WHERE id = $1 AND instance_id = $3 RETURNING id, retry, instance_id
+        DELETE FROM enqueued WHERE id = $1 AND instance_id = $3 AND retry = $4 RETURNING id, retry, instance_id
     ), hist AS (
         INSERT INTO history SELECT id, (retry + 1) as retry, instance_id, now() as at, 'retried'::history_status as status FROM a RETURNING id
     )
     INSERT INTO scheduled SELECT id, $2 as at, (retry + 1) as retry FROM a RETURNING id";
     let res = sqlx::query(SQL)
-        .bind(job_id)
+        .bind(entry.id)
         .bind(at)
         .bind(instance_id)
+        .bind(entry.retry)
+        .execute(pool)
+        .await?;
+    Ok(res.rows_affected())
+}
+
+/// Releases up to `limit` jobs locked for longer than `lease` (`retry + 1`, so a late
+/// result of the stuck attempt is rejected), whatever instance holds them.
+pub async fn reap_expired_locks(
+    pool: &Pool<Postgres>,
+    lease: Duration,
+    instance_id: &str,
+    limit: i32,
+) -> Result<u64, Error> {
+    const SQL: &str = "
+    WITH a AS (
+        SELECT id, instance_id FROM enqueued WHERE lock_at < now() - $1 ORDER BY lock_at LIMIT $3 FOR UPDATE SKIP LOCKED
+    ), b AS (
+        UPDATE enqueued AS e SET instance_id = null, lock_at = null, retry = e.retry + 1
+        FROM a WHERE e.id = a.id
+        RETURNING e.id, e.retry, a.instance_id AS locked_by
+    )
+    INSERT INTO history(id, retry, instance_id, status, message)
+    SELECT id, retry, $2, 'retried'::history_status, 'lock expired: ' || locked_by FROM b";
+    let res = sqlx::query(SQL)
+        .bind(lease)
+        .bind(instance_id)
+        .bind(limit)
         .execute(pool)
         .await?;
     Ok(res.rows_affected())

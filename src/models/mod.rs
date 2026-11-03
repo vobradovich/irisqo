@@ -8,8 +8,8 @@ pub use job::JobMeta;
 pub use job::JobProtocol;
 pub use job::JobRow;
 pub use job::JobWithRetry;
-pub use jobretry::JobRetry;
-pub use state::{AppState, Options, new_instance_id};
+pub use jobretry::{JobRetry, MAX_RETRY_DELAY, with_jitter};
+pub use state::{AppState, Options, SchedulerOptions, WorkerOptions, new_instance_id};
 
 mod error;
 mod job;

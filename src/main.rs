@@ -7,6 +7,7 @@ use opentelemetry_sdk::trace::SdkTracerProvider;
 use opentelemetry_stdout as stdout;
 use tokio::net::TcpListener;
 use tokio::signal;
+use tokio_util::sync::CancellationToken;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
@@ -32,11 +33,23 @@ async fn main() {
         .init();
 
     let state = AppState::new().await;
+    // The heartbeat outlives the other services: it stops only once the workers are done.
+    let heartbeat_stop = CancellationToken::new();
+    let heartbeat = tokio::spawn({
+        let state = Arc::clone(&state);
+        let stop = heartbeat_stop.clone();
+        async move { services::heartbeat::run(&state, stop).await }
+    });
     tokio::join!(
         start_http_server(&state),
         services::start_scheduler_service(&state),
+        services::start_retention_service(&state),
         services::start_worker_service(&state),
     );
+    heartbeat_stop.cancel();
+    _ = heartbeat
+        .await
+        .inspect_err(|err| tracing::error!("heartbeat error {:?}", err));
 
     // All workers have finished their jobs: release whatever is still locked by this instance.
     if let Err(err) = db::instances::kill(&state.pool, &state.instance_id).await {

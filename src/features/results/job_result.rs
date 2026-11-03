@@ -20,7 +20,7 @@ pub struct JobResultRow {
     pub id: i64,
     #[sqlx(json)]
     pub meta: JobResultMeta,
-    #[sqlx(json)]
+    #[sqlx(json(nullable))]
     pub headers: Option<HashMap<String, String>>,
     pub body: Option<Vec<u8>>,
 }
@@ -94,6 +94,62 @@ impl JobResult {
     }
 }
 
+/// Statuses worth another attempt: timeouts, rate limits and server errors.
+/// Any other 4xx means the request itself is wrong and fails the job at once.
+pub fn is_retryable_status(status: StatusCode) -> bool {
+    status.is_server_error()
+        || matches!(
+            status,
+            StatusCode::REQUEST_TIMEOUT | StatusCode::TOO_EARLY | StatusCode::TOO_MANY_REQUESTS
+        )
+}
+
+/// `Retry-After` in seconds from now: delay-seconds or an HTTP-date.
+pub fn parse_retry_after(value: &str, now_secs: i64) -> Option<u32> {
+    let value = value.trim();
+    if let Ok(secs) = value.parse::<u32>() {
+        return Some(secs);
+    }
+    let at = chrono::DateTime::parse_from_rfc2822(value)
+        .ok()?
+        .timestamp();
+    Some(u32::try_from(at.saturating_sub(now_secs).max(0)).unwrap_or(u32::MAX))
+}
+
+impl JobResult {
+    /// HTTP status of the response, if the job got one.
+    pub fn status_code(&self) -> Option<StatusCode> {
+        match &self.meta.result {
+            JobResultType::Http(meta) => Some(meta.status_code),
+            JobResultType::None
+            | JobResultType::Cancelled
+            | JobResultType::Timeout
+            | JobResultType::Error { .. } => None,
+        }
+    }
+
+    /// `processed.status` for this result.
+    pub fn processed_status(&self) -> &'static str {
+        match &self.meta.result {
+            JobResultType::Timeout | JobResultType::Error { .. } => "failed",
+            JobResultType::Cancelled => "cancelled",
+            JobResultType::Http(meta)
+                if meta.status_code.is_client_error() || meta.status_code.is_server_error() =>
+            {
+                "failed"
+            }
+            JobResultType::None | JobResultType::Http(_) => "completed",
+        }
+    }
+
+    /// `Retry-After` of the response in seconds from now.
+    pub fn retry_after(&self, now_secs: i64) -> Option<u32> {
+        let headers = self.headers.as_ref()?;
+        let value = headers.get(hyper::header::RETRY_AFTER.as_str())?;
+        parse_retry_after(value, now_secs)
+    }
+}
+
 impl From<Error> for JobResult {
     fn from(value: Error) -> Self {
         match value {
@@ -130,4 +186,38 @@ impl IntoResponse for JobResult {
         }
         StatusCode::NO_CONTENT.into_response()
     }
+}
+
+#[test]
+fn retryable_statuses() {
+    for code in [408, 425, 429, 500, 502, 503, 504] {
+        assert!(
+            is_retryable_status(StatusCode::from_u16(code).unwrap()),
+            "{code}"
+        );
+    }
+    for code in [400, 401, 403, 404, 409, 422] {
+        assert!(
+            !is_retryable_status(StatusCode::from_u16(code).unwrap()),
+            "{code}"
+        );
+    }
+}
+
+#[test]
+fn retry_after_parse() {
+    // Wed, 21 Oct 2015 07:28:00 GMT
+    let at = 1_445_412_480;
+    assert_eq!(parse_retry_after("120", at), Some(120));
+    assert_eq!(parse_retry_after(" 0 ", at), Some(0));
+    assert_eq!(
+        parse_retry_after("Wed, 21 Oct 2015 07:28:00 GMT", at - 60),
+        Some(60)
+    );
+    assert_eq!(
+        parse_retry_after("Wed, 21 Oct 2015 07:28:00 GMT", at + 60),
+        Some(0)
+    );
+    assert_eq!(parse_retry_after("soon", at), None);
+    assert_eq!(parse_retry_after("-5", at), None);
 }
