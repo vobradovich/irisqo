@@ -20,18 +20,12 @@ impl SchedulerService {
 
     pub async fn run(&self) -> Result<(), Error> {
         let instance_id = &self.app_state.instance_id;
-        if self.app_state.scheduler_options.is_none() {
+        let Some(options) = &self.app_state.scheduler_options else {
             warn!({ instance_id }, "disabled");
             return Ok(());
-        }
+        };
         info!({ instance_id }, "start");
-        let t = self
-            .app_state
-            .scheduler_options
-            .as_ref()
-            .unwrap()
-            .poll_interval;
-        let mut interval = time::interval(t);
+        let mut interval = time::interval(options.poll_interval);
         interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
         while !self.app_state.shutdown_token.is_cancelled() {
             if let Err(err) = self.tick().await {
@@ -43,7 +37,6 @@ impl SchedulerService {
                 _ = interval.tick() => {},
             );
         }
-        db::instances::kill(&self.app_state.pool, instance_id).await?;
         info!({ instance_id }, "stop");
         Ok(())
     }

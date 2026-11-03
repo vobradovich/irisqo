@@ -5,7 +5,7 @@ use sqlx::{Pool, Postgres};
 /// Upsert an instance heartbeat, updating `last_at` when it already exists.
 pub async fn live(pool: &Pool<Postgres>, instance_id: &str) -> Result<(), Error> {
     const SQL: &str = "
-    INSERT INTO instances(instance_id) VALUES ($1) ON CONFLICT (instance_id) DO UPDATE SET last_at = now()
+    INSERT INTO instances(instance_id) VALUES ($1) ON CONFLICT (instance_id) DO UPDATE SET last_at = now(), status = 'live'
     ";
     sqlx::query(SQL).bind(instance_id).execute(pool).await?;
     Ok(())

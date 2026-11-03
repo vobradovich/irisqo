@@ -32,6 +32,8 @@ pub struct SchedulerOptions {
 #[derive(Debug)]
 pub struct WorkerOptions {
     pub workers_count: usize,
+    /// Total number of jobs in flight for `ConcurrentWorkerService`; `None` selects `ChannelWorkerService`.
+    pub concurrency: Option<usize>,
     pub poll_interval: Duration,
     pub prefetch: u16,
     pub timeout: u32,
@@ -45,6 +47,10 @@ impl AppState {
             optional -p,--port n:u16
             /// Workers count. Default: 8
             optional -w,--workers n:usize
+            /// Max db connections (keep below the Postgres max_connections). Default: 32
+            optional --db-connections n:u32
+            /// Jobs in flight across all cores (enables the concurrent worker). Default: off
+            optional --concurrency n:usize
             /// Worker Poll Interval in milliseconds. Default: 1000
             optional --interval n:u64
             /// Prefetch count. Default: 8
@@ -55,17 +61,22 @@ impl AppState {
 
         dotenv().ok();
         let hostname = whoami::hostname().expect("Unable to get hostname");
-        let instance_id = format!("{}:{}", hostname, ulid::Ulid::new());
+        let instance_id = format!("{}:{}", hostname, ulid::Ulid::generate());
         let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
         let conn = PgConnectOptions::from_str(&db_url)
             .expect("Unable to parse DATABASE_URL")
             .application_name(&instance_id);
 
         let pool = PgPoolOptions::new()
-            .max_connections(128)
+            .max_connections(flags.db_connections.unwrap_or(32))
             .connect_with(conn)
             .await
             .expect("Unable to connect to Postgres");
+
+        sqlx::migrate!("./sql/migrations")
+            .run(&pool)
+            .await
+            .expect("Unable to run migrations");
 
         let https = hyper_tls::HttpsConnector::new();
         let state = AppState {
@@ -79,6 +90,7 @@ impl AppState {
             }),
             worker_options: WorkerOptions {
                 workers_count: flags.workers.unwrap_or(8),
+                concurrency: flags.concurrency.filter(|n| *n > 0),
                 poll_interval: Duration::from_millis(flags.interval.unwrap_or(1000)),
                 prefetch: flags.prefetch.unwrap_or(8),
                 timeout: flags.timeout.unwrap_or(3000),

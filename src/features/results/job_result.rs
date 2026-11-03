@@ -119,7 +119,7 @@ impl IntoResponse for JobResult {
                 let headers_mut = response.headers_mut();
                 for (key, value) in map {
                     if let Some(key) = key
-                        && key.to_string().starts_with("content")
+                        && key.as_str().starts_with("content")
                     {
                         headers_mut.insert(key, value);
                     }

@@ -17,6 +17,9 @@ pub async fn kill_expired(pool: &Pool<Postgres>, expire: Duration) -> Result<u64
 
 pub async fn kill(pool: &Pool<Postgres>, instance_id: &str) -> Result<u64, Error> {
     const SQL: &str = "
+    WITH a AS (
+        UPDATE enqueued SET instance_id = null, lock_at = null WHERE instance_id = $1 RETURNING id
+    )
     UPDATE instances SET status = 'dead' WHERE instance_id = $1 RETURNING instance_id
     ";
     let res = sqlx::query(SQL).bind(instance_id).execute(pool).await?;

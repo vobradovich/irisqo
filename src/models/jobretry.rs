@@ -75,17 +75,17 @@ impl FromStr for JobRetry {
             return Ok(JobRetry::None);
         }
         let parts: Vec<&str> = s.split(['|', ',']).collect();
-        let retry_count: u16 = parts[0]
-            .parse()
-            .map_err(|_| Error::InvalidParams("retry"))?;
+        let invalid = |_| Error::InvalidParams("retry");
 
-        match parts.len() {
-            1 | 2 => Ok(JobRetry::Immediate { retry_count }),
-            3 => {
-                let retry_delay: u32 = parts[2]
-                    .parse()
-                    .map_err(|_| Error::InvalidParams("retry"))?;
-                let retry = match parts[1] {
+        match parts.as_slice() {
+            [] => Ok(JobRetry::None),
+            [count] | [count, _] => Ok(JobRetry::Immediate {
+                retry_count: count.parse().map_err(invalid)?,
+            }),
+            [count, kind, delay] => {
+                let retry_count: u16 = count.parse().map_err(invalid)?;
+                let retry_delay: u32 = delay.parse().map_err(invalid)?;
+                let retry = match *kind {
                     "exponential" | "fibonacci" => JobRetry::Fibonacci {
                         retry_count,
                         retry_delay,
@@ -97,7 +97,10 @@ impl FromStr for JobRetry {
                 };
                 Ok(retry)
             }
-            _ => Ok(JobRetry::None),
+            [count, ..] => {
+                count.parse::<u16>().map_err(invalid)?;
+                Ok(JobRetry::None)
+            }
         }
     }
 }

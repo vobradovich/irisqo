@@ -44,9 +44,13 @@ async fn main() {
     tokio::join!(
         start_http_server(&state),
         services::start_scheduler_service(&state),
-        services::start_channel_worker_service(&state),
+        services::start_worker_service(&state),
     );
 
+    // All workers have finished their jobs: release whatever is still locked by this instance.
+    if let Err(err) = db::instances::kill(&state.pool, &state.instance_id).await {
+        tracing::error!("db::instances::kill error {:?}", err);
+    }
     eprintln!("->> SHUTDOWN")
 }
 

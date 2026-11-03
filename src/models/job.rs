@@ -1,4 +1,4 @@
-use std::{collections::HashMap, time::SystemTime};
+use std::collections::HashMap;
 
 use bytes::Bytes;
 use http_body_util::Full;
@@ -78,19 +78,6 @@ pub enum JobProtocol {
     // Kafka,
     // Redis,
     // RabbitMq,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum JobDelay {
-    #[default]
-    None,
-    Delay {
-        delay: u32,
-    },
-    At {
-        at: Option<SystemTime>,
-    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
