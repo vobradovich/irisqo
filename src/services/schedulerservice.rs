@@ -5,6 +5,7 @@ use tracing::{debug, error, info, trace, warn};
 use crate::{
     db,
     models::{AppState, SchedulerOptions},
+    services::heartbeat::INSTANCE_EXPIRE,
 };
 use std::sync::Arc;
 
@@ -46,7 +47,7 @@ impl SchedulerService {
         let instance_id = &self.app_state.instance_id;
         let pool = &self.app_state.pool;
         trace!({ instance_id }, "tick");
-        _ = db::instances::kill_expired(pool, options.instance_expire, instance_id)
+        _ = db::instances::kill_expired(pool, INSTANCE_EXPIRE, instance_id)
             .await
             .inspect(|&expired| {
                 if expired > 0 {

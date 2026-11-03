@@ -8,6 +8,5 @@
 //! ```
 
 mod common;
-mod fixes;
 mod reliability;
 mod smoke;

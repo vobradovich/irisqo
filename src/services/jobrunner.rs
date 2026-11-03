@@ -167,13 +167,11 @@ async fn processed_scheduled(app_state: &AppState, completion: Completion) -> Re
         return Ok(());
     }
     if let Some(next_at) = next_at {
-        match db::jobqueue::clone_schedule_at(&mut *tx, job_id, next_at, instance_id).await? {
-            Some(next_id) => {
-                debug!({ instance_id, job_id, next_id, next_at }, "==> clone and schedule");
-            }
-            None => {
-                debug!({ instance_id, job_id }, "==> schedule deleted or inactive, stop");
-            }
+        // `None`: the schedule was deleted or deactivated meanwhile
+        if let Some(next_id) =
+            db::jobqueue::clone_schedule_at(&mut *tx, job_id, next_at, instance_id).await?
+        {
+            debug!({ instance_id, job_id, next_id, next_at }, "==> clone and schedule");
         }
     }
     tx.commit().await?;

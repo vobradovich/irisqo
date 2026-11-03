@@ -6,8 +6,10 @@ use tracing::{error, info};
 
 use crate::{features, models::AppState};
 
-/// Must stay well below `SchedulerOptions::instance_expire`.
+/// Must stay well below [`INSTANCE_EXPIRE`].
 pub const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
+/// An instance without a heartbeat for this long is dead: its jobs are released.
+pub const INSTANCE_EXPIRE: Duration = Duration::from_secs(30);
 
 /// Keeps the instance alive until `stop` is cancelled.
 ///

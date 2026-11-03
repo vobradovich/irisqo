@@ -22,15 +22,16 @@ impl RetentionService {
 
     pub async fn run(&self) {
         let instance_id = &self.app_state.instance_id;
-        let Some(retention) = self
+        let hours = self
             .app_state
             .scheduler_options
             .as_ref()
-            .and_then(|o| o.retention)
-        else {
+            .map_or(0, |o| o.retention_hours);
+        if hours == 0 {
             info!({ instance_id }, "disabled");
             return;
-        };
+        }
+        let retention = Duration::from_secs(u64::from(hours) * 3600);
         info!({ instance_id, retention_secs = retention.as_secs() }, "start");
         let mut interval = time::interval(RETENTION_INTERVAL);
         interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);

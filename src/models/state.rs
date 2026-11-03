@@ -28,13 +28,11 @@ pub struct SchedulerOptions {
     pub poll_interval: Duration,
     /// Max jobs moved from `scheduled` to `enqueued` by one statement.
     pub prefetch: u16,
-    /// An instance without a heartbeat for this long is dead: its jobs are released.
-    pub instance_expire: Duration,
     /// A job locked for this long is released whatever instance holds it
     /// (the result write failed, the worker hung): `max_timeout` + a grace period.
     pub lock_lease: Duration,
-    /// Processed jobs older than this are deleted; `None` keeps them forever.
-    pub retention: Option<Duration>,
+    /// Processed jobs older than this are deleted; `0` keeps them forever.
+    pub retention_hours: u32,
 }
 
 #[derive(Debug)]
@@ -96,7 +94,6 @@ impl AppState {
             .connect_with(conn)
             .await
             .expect("Unable to connect to Postgres");
-        check_max_connections(&pool, db_connections).await;
 
         sqlx::migrate!("./sql/migrations")
             .run(&pool)
@@ -114,7 +111,6 @@ impl AppState {
         options: &Options,
     ) -> Arc<AppState> {
         let max_timeout = options.max_timeout.unwrap_or(300_000);
-        let retention_hours = options.retention_hours.unwrap_or(7 * 24);
         let https = hyper_tls::HttpsConnector::new();
         let state = AppState {
             port: options.port.unwrap_or(8102),
@@ -124,13 +120,11 @@ impl AppState {
             scheduler_options: Some(SchedulerOptions {
                 poll_interval: Duration::from_millis(5000),
                 prefetch: 1000,
-                instance_expire: Duration::from_secs(30),
                 lock_lease: Duration::from_millis(u64::from(max_timeout)) + LOCK_GRACE,
-                retention: (retention_hours > 0)
-                    .then(|| Duration::from_secs(u64::from(retention_hours) * 3600)),
+                retention_hours: options.retention_hours.unwrap_or(7 * 24),
             }),
             worker_options: WorkerOptions {
-                concurrency: options.concurrency.filter(|n| *n > 0).unwrap_or(64),
+                concurrency: options.concurrency.unwrap_or(64).max(1),
                 poll_interval: Duration::from_millis(options.interval.unwrap_or(1000)),
                 prefetch: options.prefetch.unwrap_or(8),
                 timeout: options.timeout.unwrap_or(3000).min(max_timeout),
@@ -139,25 +133,6 @@ impl AppState {
             shutdown_token: CancellationToken::new(),
         };
         Arc::new(state)
-    }
-}
-
-/// Warns when the pool alone may exhaust the server connections
-/// (every instance has its own pool, plus admin and replication connections).
-async fn check_max_connections(pool: &Pool<Postgres>, db_connections: u32) {
-    let max: Option<String> = sqlx::query_scalar("SHOW max_connections")
-        .fetch_one(pool)
-        .await
-        .inspect_err(|err| tracing::warn!("SHOW max_connections error {:?}", err))
-        .ok();
-    let Some(max) = max.and_then(|m| m.parse::<u32>().ok()) else {
-        return;
-    };
-    if db_connections > max / 2 {
-        tracing::warn!(
-            { db_connections, max_connections = max },
-            "--db-connections is more than a half of the Postgres max_connections"
-        );
     }
 }
 

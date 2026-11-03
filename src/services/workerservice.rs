@@ -35,7 +35,7 @@ impl WorkerService {
     pub async fn run(&self) {
         let instance_id = &self.app_state.instance_id;
         let app_state: &Arc<AppState> = &self.app_state;
-        let concurrency = app_state.worker_options.concurrency.max(1);
+        let concurrency = app_state.worker_options.concurrency;
 
         let cores = thread::available_parallelism().map_or(1, NonZeroUsize::get);
         let workers_count = cores.min(concurrency);
