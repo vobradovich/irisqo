@@ -1,40 +1,61 @@
-mod channelworkerservice;
-mod concurrentworkerservice;
+pub mod heartbeat;
 pub mod jobrunner;
-mod schedulerservice;
+pub mod retentionservice;
+pub mod schedulerservice;
+pub mod workerservice;
 
-use crate::models::AppState;
+use crate::models::{AppState, Error};
 use std::sync::Arc;
+use tracing::error;
+
+/// Repeats a batch statement while it fills whole batches of `limit` rows, at most
+/// `max_batches` times; stops on shutdown or on the first error (logged as `what`).
+/// Returns the total of affected rows.
+async fn drain_batches<F, Fut>(
+    app_state: &AppState,
+    what: &str,
+    limit: i32,
+    max_batches: usize,
+    mut batch: F,
+) -> u64
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<u64, Error>>,
+{
+    let instance_id = &app_state.instance_id;
+    let mut total = 0;
+    for _ in 0..max_batches {
+        if app_state.shutdown_token.is_cancelled() {
+            break;
+        }
+        let Ok(affected) = batch()
+            .await
+            .inspect_err(|err| error!({ instance_id }, "{what} error {:?}", err))
+        else {
+            break;
+        };
+        total += affected;
+        if affected < u64::from(limit.unsigned_abs()) {
+            break;
+        }
+    }
+    total
+}
 
 pub async fn start_scheduler_service(state: &Arc<AppState>) {
-    let app_state = Arc::clone(state);
-    let service = schedulerservice::SchedulerService::new(app_state);
-    service.run().await.expect("Failed to run SchedulerService");
+    schedulerservice::SchedulerService::new(Arc::clone(state))
+        .run()
+        .await;
 }
 
-/// Runs `ConcurrentWorkerService` when `--concurrency` is set, `ChannelWorkerService` otherwise.
+pub async fn start_retention_service(state: &Arc<AppState>) {
+    retentionservice::RetentionService::new(Arc::clone(state))
+        .run()
+        .await;
+}
+
 pub async fn start_worker_service(state: &Arc<AppState>) {
-    if state.worker_options.concurrency.is_some() {
-        start_concurrent_worker_service(state).await;
-    } else {
-        start_channel_worker_service(state).await;
-    }
-}
-
-async fn start_channel_worker_service(state: &Arc<AppState>) {
-    let app_state = Arc::clone(state);
-    let service = channelworkerservice::ChannelWorkerService::new(app_state);
-    service
+    workerservice::WorkerService::new(Arc::clone(state))
         .run()
-        .await
-        .expect("Failed to run ChannelWorkerService");
-}
-
-async fn start_concurrent_worker_service(state: &Arc<AppState>) {
-    let app_state = Arc::clone(state);
-    let service = concurrentworkerservice::ConcurrentWorkerService::new(app_state);
-    service
-        .run()
-        .await
-        .expect("Failed to run ConcurrentWorkerService");
+        .await;
 }

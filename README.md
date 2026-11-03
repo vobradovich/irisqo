@@ -43,7 +43,9 @@ GET {{host}}/to/https://postman-echo.com/get?_retry=3|fixed|5
 GET {{host}}/to/https://postman-echo.com/get?_retry=3|fibonacci|5
 ```
 
-A single retry delay is capped at 24 hours.
+Retried: network errors, timeouts, `408`, `425`, `429` and `5xx`. Any other `4xx` fails the job at once.
+Delays get ±20 % jitter, never come sooner than the response `Retry-After` (seconds or HTTP-date),
+and are capped at 24 hours.
 
 ### Timeout
 `_timeout` sets the request timeout in milliseconds (default `--timeout`, 3000), capped by `--max-timeout` (default 300000).
@@ -53,6 +55,30 @@ Delay a request by adding the `_delay` or `_delay_until` [Unix Time] query param
 ```
 GET {{host}}/to/https://postman-echo.com/get?_delay=5
 ```
+
+## Running
+
+```bash
+DATABASE_URL=postgres://user:pass@localhost/irisqo cargo run --release -- --help
+```
+
+| Option | Default | |
+|---|---|---|
+| `--port` | 8102 | API port |
+| `--concurrency` | 64 | jobs in flight across all cores |
+| `--db-connections` | 32 | pool size per instance, keep the sum over instances below Postgres `max_connections` |
+| `--interval` | 1000 | ms between queue polls when the queue is empty |
+| `--prefetch` | 8 | jobs assigned per fetch: `max(prefetch, concurrency / 4)` |
+| `--timeout` / `--max-timeout` | 3000 / 300000 | default and max request timeout, ms |
+| `--retention-hours` | 168 | processed jobs older than this are deleted, `0` keeps them |
+
+### Delivery guarantees
+At least once. Every instance sends a heartbeat; jobs of an instance silent for 30 s are released,
+and so is any job locked for longer than `--max-timeout` + 60 s (a failed result write, a hung worker).
+A late result of such an attempt is rejected: a job is completed only by its current attempt
+(instance + retry number). On `SIGINT`/`SIGTERM` the instance stops taking jobs, finishes the ones in
+flight, writes their results and releases the rest.
+
 ## Development
 
 ```bash

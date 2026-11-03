@@ -17,7 +17,7 @@ pub struct JobRow {
     pub id: i64,
     #[sqlx(json)]
     pub meta: JobMeta,
-    #[sqlx(json)]
+    #[sqlx(json(nullable))]
     pub headers: Option<HashMap<String, String>>,
     pub body: Option<Vec<u8>>,
     pub schedule_id: Option<String>,

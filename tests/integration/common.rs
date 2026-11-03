@@ -98,7 +98,7 @@ pub async fn enqueue_all_scheduled(state: &AppState) -> u64 {
         .execute(&state.pool)
         .await
         .expect("make scheduled due");
-    db::jobqueue::enqueue_scheduled(&state.pool, &state.instance_id)
+    db::jobqueue::enqueue_scheduled(&state.pool, &state.instance_id, 10_000)
         .await
         .expect("enqueue_scheduled")
 }
@@ -108,4 +108,28 @@ pub async fn count(pool: &PgPool, sql: &'static str) -> i64 {
         .fetch_one(pool)
         .await
         .expect("count")
+}
+
+/// Inserts `n` no-protocol jobs straight into `enqueued`; returns their ids.
+pub async fn insert_enqueued(pool: &PgPool, n: i32) -> Vec<i64> {
+    sqlx::query_scalar(
+        "WITH a AS (
+            INSERT INTO jobs(meta) SELECT '{\"protocol\": \"none\", \"retry\": \"none\", \"timeout\": 1000}'::jsonb
+            FROM generate_series(1, $1) RETURNING id
+        )
+        INSERT INTO enqueued(id) SELECT id FROM a RETURNING id",
+    )
+    .bind(n)
+    .fetch_all(pool)
+    .await
+    .expect("insert enqueued")
+}
+
+/// Statuses of a job's history, oldest first.
+pub async fn history(pool: &PgPool, job_id: i64) -> Vec<(String, Option<String>)> {
+    sqlx::query_as("SELECT status::text, message FROM history WHERE id = $1 ORDER BY at, status")
+        .bind(job_id)
+        .fetch_all(pool)
+        .await
+        .expect("history")
 }

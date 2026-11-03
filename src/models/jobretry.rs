@@ -74,6 +74,15 @@ impl JobRetry {
     }
 }
 
+/// Spreads a retry delay by ±20 % so that jobs failed together do not retry together.
+pub fn with_jitter(delay: u32) -> u32 {
+    let spread = delay / 5;
+    if spread == 0 {
+        return delay;
+    }
+    (delay - spread).saturating_add(fastrand::u32(..=2 * spread))
+}
+
 impl FromStr for JobRetry {
     type Err = Error;
 
@@ -231,4 +240,15 @@ fn next_retry_in_is_capped() {
         retry_delay: u32::MAX,
     };
     assert_eq!(fixed.next_retry_in(0), Some(MAX_RETRY_DELAY));
+}
+
+#[test]
+fn jitter_bounds() {
+    assert_eq!(with_jitter(0), 0);
+    assert_eq!(with_jitter(4), 4);
+    for _ in 0..1000 {
+        let d = with_jitter(100);
+        assert!((80..=120).contains(&d), "{d}");
+    }
+    assert!(with_jitter(u32::MAX) >= u32::MAX - u32::MAX / 5);
 }

@@ -158,20 +158,17 @@ async fn job_create(
     debug!("{:?}", serde_json::to_string(&job_create.meta));
     let job = db::jobqueue::create(&state.pool, job_create, &state.instance_id).await?;
     let mut headers = HeaderMap::new();
-    if let Ok(location) = HeaderValue::from_str(&format!("/api/v1/jobs/{}", job.id)) {
-        headers.insert(header::LOCATION, location);
-    }
-    headers.insert("job-id", job.id.into());
-    if let Some(schedule_id) = job.schedule_id
-        && let Ok(value) = HeaderValue::from_str(&schedule_id)
-    {
-        headers.insert("schedule-id", value);
-    }
-    // user-provided: may not be a valid header value
-    if let Some(external_id) = job.external_id
-        && let Ok(value) = HeaderValue::from_str(&external_id)
-    {
-        headers.insert("external-id", value);
-    }
+    // schedule-id and external-id (user-provided) may not be valid header values
+    let mut put = |name: &'static str, value: Option<&str>| {
+        if let Some(value) = value
+            && let Ok(value) = HeaderValue::from_str(value)
+        {
+            headers.insert(name, value);
+        }
+    };
+    put("location", Some(&format!("/api/v1/jobs/{}", job.id)));
+    put("job-id", Some(&job.id.to_string()));
+    put("schedule-id", job.schedule_id.as_deref());
+    put("external-id", job.external_id.as_deref());
     Ok((StatusCode::CREATED, headers))
 }

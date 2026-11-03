@@ -2,13 +2,14 @@ use crate::models::AppState;
 use axum::{
     Router,
     body::Body,
-    http::{HeaderMap, HeaderValue, StatusCode},
+    extract::Query,
+    http::{HeaderMap, HeaderValue, StatusCode, header},
     response::IntoResponse,
     routing::get,
 };
 use hyper::Method;
 
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 #[allow(unused_imports)]
 use tracing::{debug, error, info, warn};
 
@@ -25,9 +26,28 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .with_state(state)
 }
 
-async fn echo(method: Method, headers: HeaderMap, body: Body) -> impl IntoResponse {
+/// Echoes the body and `content*` headers back.
+/// `?status=429&retry-after=120` set the response status and `Retry-After` (for tests).
+async fn echo(
+    method: Method,
+    Query(params): Query<HashMap<String, String>>,
+    headers: HeaderMap,
+    body: Body,
+) -> impl IntoResponse {
     let mut response = body.into_response();
+    if let Some(status) = params
+        .get("status")
+        .and_then(|s| s.parse::<StatusCode>().ok())
+    {
+        *response.status_mut() = status;
+    }
     let response_headers = response.headers_mut();
+    if let Some(value) = params
+        .get("retry-after")
+        .and_then(|v| HeaderValue::from_str(v).ok())
+    {
+        response_headers.insert(header::RETRY_AFTER, value);
+    }
     if let Ok(value) = HeaderValue::from_str(method.as_str()) {
         response_headers.insert("http-method", value);
     }

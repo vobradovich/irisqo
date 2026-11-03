@@ -26,20 +26,30 @@ pub struct AppState {
 #[derive(Debug)]
 pub struct SchedulerOptions {
     pub poll_interval: Duration,
+    /// Max jobs moved from `scheduled` to `enqueued` by one statement.
     pub prefetch: u16,
+    /// A job locked for this long is released whatever instance holds it
+    /// (the result write failed, the worker hung): `max_timeout` + a grace period.
+    pub lock_lease: Duration,
+    /// Processed jobs older than this are deleted; `0` keeps them forever.
+    pub retention_hours: u32,
 }
 
 #[derive(Debug)]
 pub struct WorkerOptions {
-    pub workers_count: usize,
-    /// Total number of jobs in flight for `ConcurrentWorkerService`; `None` selects `ChannelWorkerService`.
-    pub concurrency: Option<usize>,
+    /// Jobs in flight across all cores.
+    pub concurrency: usize,
     pub poll_interval: Duration,
+    /// Jobs assigned by one fetch: `max(prefetch, concurrency / 4)`.
     pub prefetch: u16,
     pub timeout: u32,
     /// Upper bound for the per-job `_timeout`, in milliseconds.
     pub max_timeout: u32,
 }
+
+/// Extra time on top of `max_timeout` before a lock counts as stuck.
+const LOCK_GRACE: Duration = Duration::from_secs(60);
+const DEFAULT_DB_CONNECTIONS: u32 = 32;
 
 // Generates `pub struct Options`; `Options::from_vec(vec![])` gives the defaults (tests).
 xflags::xflags! {
@@ -47,11 +57,9 @@ xflags::xflags! {
     cmd options {
         /// API Port number. Default: 8102
         optional -p,--port n: u16
-        /// Workers count. Default: 8
-        optional -w,--workers n: usize
         /// Max db connections (keep below the Postgres max_connections). Default: 32
         optional --db-connections n: u32
-        /// Jobs in flight across all cores (enables the concurrent worker). Default: off
+        /// Jobs in flight across all cores. Default: 64
         optional --concurrency n: usize
         /// Worker Poll Interval in milliseconds. Default: 1000
         optional --interval n: u64
@@ -61,6 +69,8 @@ xflags::xflags! {
         optional --timeout n: u32
         /// Max job timeout (`_timeout`) in milliseconds. Default: 300000
         optional --max-timeout n: u32
+        /// Keep processed jobs for this many hours, 0 keeps them forever. Default: 168 (7 days)
+        optional --retention-hours n: u32
     }
 }
 
@@ -77,8 +87,10 @@ impl AppState {
             .expect("Unable to parse DATABASE_URL")
             .application_name(&instance_id);
 
+        let db_connections = options.db_connections.unwrap_or(DEFAULT_DB_CONNECTIONS);
         let pool = PgPoolOptions::new()
-            .max_connections(options.db_connections.unwrap_or(32))
+            .max_connections(db_connections)
+            .acquire_timeout(Duration::from_secs(10))
             .connect_with(conn)
             .await
             .expect("Unable to connect to Postgres");
@@ -108,10 +120,11 @@ impl AppState {
             scheduler_options: Some(SchedulerOptions {
                 poll_interval: Duration::from_millis(5000),
                 prefetch: 1000,
+                lock_lease: Duration::from_millis(u64::from(max_timeout)) + LOCK_GRACE,
+                retention_hours: options.retention_hours.unwrap_or(7 * 24),
             }),
             worker_options: WorkerOptions {
-                workers_count: options.workers.unwrap_or(8),
-                concurrency: options.concurrency.filter(|n| *n > 0),
+                concurrency: options.concurrency.unwrap_or(64).max(1),
                 poll_interval: Duration::from_millis(options.interval.unwrap_or(1000)),
                 prefetch: options.prefetch.unwrap_or(8),
                 timeout: options.timeout.unwrap_or(3000).min(max_timeout),
