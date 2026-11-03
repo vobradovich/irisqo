@@ -1,7 +1,7 @@
 CREATE TYPE instance_status AS ENUM ('live', 'dead');
 
 CREATE TABLE IF NOT EXISTS instances (
-	id varchar(64) PRIMARY KEY,
+	instance_id varchar(64) PRIMARY KEY,
 	last_at timestamptz NOT NULL DEFAULT NOW(),
 	status instance_status NOT NULL DEFAULT 'live'
 );
@@ -34,17 +34,23 @@ CREATE TABLE IF NOT EXISTS scheduled (
 	id bigint NOT NULL PRIMARY KEY REFERENCES jobs(id) MATCH SIMPLE ON UPDATE NO ACTION ON DELETE CASCADE,
 	at bigint NOT NULL,
 	retry int NOT NULL DEFAULT 0,
-	is_retried bool NOT NULL GENERATED ALWAYS AS (retry > 0) STORED
+	is_retried bool NOT NULL GENERATED ALWAYS AS (retry > 0) STORED,
+	CONSTRAINT ck_scheduled_retry CHECK (retry >= 0)
 );
+
+CREATE INDEX IF NOT EXISTS ix_scheduled_at ON scheduled
+	USING btree (at ASC);
 
 CREATE TABLE IF NOT EXISTS enqueued (
 	id bigint NOT NULL PRIMARY KEY REFERENCES jobs (id) MATCH SIMPLE ON UPDATE NO ACTION ON DELETE CASCADE,
 	retry int NOT NULL DEFAULT 0,
 	instance_id varchar(64) NULL,
-	lock_at timestamptz NULL
+	lock_at timestamptz NULL,
+	CONSTRAINT ck_enqueued_retry CHECK (retry >= 0),
+	CONSTRAINT ck_enqueued_lock CHECK ((instance_id IS NULL) = (lock_at IS NULL))
 );
 
-CREATE TYPE  processed_status AS ENUM ('completed', 'failed', 'cancelled');
+CREATE TYPE processed_status AS ENUM ('completed', 'failed', 'cancelled');
 
 CREATE TABLE IF NOT EXISTS processed (
 	id bigint NOT NULL PRIMARY KEY REFERENCES jobs (id) MATCH SIMPLE ON UPDATE NO ACTION ON DELETE CASCADE,
@@ -75,40 +81,17 @@ CREATE TABLE IF NOT EXISTS history (
 	status history_status NOT NULL,
 	message text NULL
 );
+CREATE INDEX IF NOT EXISTS ix_history_id_at ON history
+	USING btree (id ASC, at ASC);
+
+CREATE INDEX IF NOT EXISTS ix_jobs_schedule_id ON jobs
+	USING btree (schedule_id)
+	WHERE schedule_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS ix_enqueued_instance_id ON enqueued
+	USING btree (instance_id)
+	WHERE instance_id IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS ix_enqueued_retry_id ON enqueued
 	USING btree (retry ASC NULLS LAST, id ASC NULLS LAST)
 	WHERE lock_at IS NULL;
-
-
--- select 'retried' as name, count(*) as count from public.scheduled where is_retried
--- union all
--- select 'scheduled' as name, count(*) as count from public.scheduled where not is_retried
--- union all
--- select 'enqueued' as name, count(*) as count from public.enqueued where lock_at is null
--- union all
--- select 'processing' as name, count(*) as count from public.enqueued where lock_at is not null
--- union all 
--- select status::text as name, count(*) as count from public.processed group by status;
-
-select (CASE is_retried WHEN TRUE THEN 'retried'::history_status ELSE 'scheduled'::history_status END) as name, count(*) as count from public.scheduled group by is_retried
-union all
-select (CASE lock_at is null WHEN TRUE THEN 'enqueued'::history_status ELSE 'assigned'::history_status END) as name, count(*) as count from public.enqueued group by lock_at is null
-union all
-select status::text::history_status as name, count(*) as count from public.processed group by status;
-
-WITH a AS (
-	INSERT INTO jobs( meta, headers, body)		
-		SELECT
-			'{"retry": "none", "timeout": 3000, "protocol": "none"}'::jsonb as meta,
-			'{}'::jsonb as headers,
-			null as body
-		from generate_Series(1, 1000) s
-	RETURNING id
-)
-INSERT INTO enqueued SELECT id FROM a RETURNING id
-
-SELECT p.id, p.status, p.at - j.created_at, p.instance_id FROM processed p
-inner join jobs j on j.id = p.id
-order by p.id desc
-limit 10

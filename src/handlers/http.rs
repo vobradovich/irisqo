@@ -118,6 +118,9 @@ async fn job_create(
             if key == header::HOST {
                 continue;
             }
+            if key.as_str() == "hx-request" {
+                continue;
+            }
             if let Ok(val) = v.to_str() {
                 header_hashmap.insert(key.to_string(), val.to_owned());
             }
@@ -154,7 +157,10 @@ async fn job_create(
         headers.insert("schedule-id", schedule_id.parse().unwrap());
     }
     if let Some(external_id) = job.external_id {
-        headers.insert("external-id", external_id.parse().unwrap());
+        // user-provided: may not be a valid header value
+        if let Ok(value) = external_id.parse() {
+            headers.insert("external-id", value);
+        }
     }
     Ok((StatusCode::CREATED, headers))
 }

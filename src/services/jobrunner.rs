@@ -8,7 +8,7 @@ use crate::{
     models::{AppState, Error, JobEntry, JobMeta, JobProtocol, JobRow, JobWithRetry},
 };
 use bytes::Bytes;
-use http_body_util::{BodyExt, Full};
+use http_body_util::{BodyExt, Full, Limited};
 #[allow(unused_imports)]
 use opentelemetry::{global, trace::TraceContextExt};
 use std::{collections::HashMap, time::Duration};
@@ -16,21 +16,7 @@ use tokio::time;
 #[allow(unused_imports)]
 use tracing::{debug, error, info, warn};
 
-#[allow(dead_code)]
-pub async fn job_get_and_run(app_state: &AppState, entry: JobEntry) {
-    let instance_id = &app_state.instance_id;
-    let JobEntry { id: job_id, retry } = entry;
-    let job = db::jobqueue::get_by_id(&app_state.pool, job_id)
-        .await
-        .and_then(|o| o.ok_or(Error::JobNotFound(job_id)))
-        .map_err(|err| {
-            error!({ instance_id, job_id, retry }, "db::jobqueue::get_by_id error {:?}", err);
-        });
-    if let Ok(job) = job {
-        let job_with_retry = JobWithRetry { job, retry };
-        job_run(app_state, job_with_retry).await;
-    }
-}
+const MAX_RESPONSE_BODY: usize = 10 * 1024 * 1024;
 
 pub async fn job_run(app_state: &AppState, job_with_retry: JobWithRetry) {
     let instance_id = &app_state.instance_id;
@@ -86,25 +72,34 @@ async fn job_run_http(app_state: &AppState, job: JobRow) -> Result<JobResult, Er
     // global::get_text_map_propagator(|propagator| {
     //     propagator.inject_context(&cx, &mut crate::otel::HeaderInjector(req.headers_mut()))
     // });
-    // Call
-    let future = app_state.client.request(req);
-    // first '?' - timeout
-    // second '?' - HyperError
-    let response = time::timeout(Duration::from_millis(timeout_ms.into()), future).await??;
-    debug!({ instance_id = app_state.instance_id, job_id }, "====> response={:?}", response);
-    // StatusCode
-    let status_code: hyper::StatusCode = response.status();
-    let version: hyper::Version = response.version();
-    // Headers
-    let mut header_hashmap = HashMap::new();
-    for (k, v) in response.headers() {
-        if let Ok(val) = v.to_str() {
-            header_hashmap.insert(k.to_string(), val.to_owned());
+    // Call: the timeout covers the whole exchange, including reading the body
+    let call = async {
+        let response = app_state.client.request(req).await?;
+        debug!({ instance_id = app_state.instance_id, job_id }, "====> response={:?}", response);
+        // StatusCode
+        let status_code: hyper::StatusCode = response.status();
+        let version: hyper::Version = response.version();
+        // Headers
+        let mut header_hashmap = HashMap::new();
+        for (k, v) in response.headers() {
+            if let Ok(val) = v.to_str() {
+                header_hashmap.insert(k.to_string(), val.to_owned());
+            }
         }
-    }
-    // Body
-    let collected = response.into_body().collect().await?;
-    let bytes = collected.to_bytes();
+        // Body
+        let collected = Limited::new(response.into_body(), MAX_RESPONSE_BODY)
+            .collect()
+            .await
+            .map_err(|err| match err.downcast::<hyper::Error>() {
+                Ok(err) => Error::HyperError(*err),
+                Err(_) => Error::ResponseTooLarge,
+            })?;
+        Ok::<_, Error>((status_code, version, header_hashmap, collected.to_bytes()))
+    };
+    // first '?' - timeout
+    // second '?' - request/body error
+    let (status_code, version, header_hashmap, bytes) =
+        time::timeout(Duration::from_millis(timeout_ms.into()), call).await??;
     // Result
     let job_result = JobResult::http(status_code, version, Some(header_hashmap), bytes);
     if status_code.is_server_error() {
@@ -122,18 +117,22 @@ async fn processed(
     schedule_id: Option<&str>,
     result: JobResult,
 ) -> Result<(), Error> {
-    results::processed(&app_state.pool, job_id, result).await?;
+    let instance_id = &app_state.instance_id;
     let next_at = schedule_next_at(app_state, schedule_id).await;
-    if let Some(next_at) = next_at {
-        let next_id = db::jobqueue::clone_schedule_at(
-            &app_state.pool,
-            job_id,
-            next_at,
-            &app_state.instance_id,
-        )
-        .await?;
-        debug!({ instance_id = app_state.instance_id, job_id, next_id, next_at }, "==> clone and schedule");
+    // Result and next schedule run are written atomically
+    let mut tx = app_state.pool.begin().await?;
+    let affected = results::processed(&mut *tx, job_id, instance_id, result).await?;
+    if affected == 0 {
+        // The lock was lost (instance expired, job deleted): nothing to complete or reschedule
+        warn!({ instance_id, job_id }, "job is not locked by this instance, skip");
+        return Ok(());
     }
+    if let Some(next_at) = next_at {
+        let next_id =
+            db::jobqueue::clone_schedule_at(&mut *tx, job_id, next_at, instance_id).await?;
+        debug!({ instance_id, job_id, next_id, next_at }, "==> clone and schedule");
+    }
+    tx.commit().await?;
     Ok(())
 }
 
@@ -161,6 +160,7 @@ async fn on_error(
     let job_id = entry.id;
     match err {
         Error::HyperError(_)
+        | Error::HyperClientError(_)
         | Error::Timeout(_)
         | Error::ServerError(_)
         | Error::ClientError(_) => {
@@ -171,7 +171,14 @@ async fn on_error(
             let job_result: JobResult = err.into();
             Some(job_result)
         }
-        _ => {
+        Error::JobNotFound(_)
+        | Error::DbError(_)
+        | Error::IoError(_)
+        | Error::HttpError(_)
+        | Error::InvalidUrl
+        | Error::InvalidParams(_)
+        | Error::ResponseTooLarge
+        | Error::RetriesExceeded => {
             error!({ instance_id = app_state.instance_id, job_id }, "====> error {:?}", err);
             let job_result: JobResult = err.into();
             Some(job_result)
@@ -186,14 +193,20 @@ async fn retry_or_fail(app_state: &AppState, entry: JobEntry, meta: JobMeta) -> 
     match meta.retry.next_retry_in(retry) {
         None => Err(Error::RetriesExceeded),
         Some(0) => {
-            db::jobqueue::unlock(&app_state.pool, job_id, instance_id).await?;
+            let affected = db::jobqueue::unlock(&app_state.pool, job_id, instance_id).await?;
+            if affected == 0 {
+                warn!({ instance_id, job_id }, "job is not locked by this instance, skip unlock");
+            }
             debug!({ instance_id, job_id, retry }, "==> unlock");
             Ok(())
         }
         Some(delay) => {
             let now_secs = JobSchedule::now_secs();
             let at = now_secs + i64::from(delay);
-            db::jobqueue::retry(&app_state.pool, job_id, at).await?;
+            let affected = db::jobqueue::retry(&app_state.pool, job_id, at, instance_id).await?;
+            if affected == 0 {
+                warn!({ instance_id, job_id }, "job is not locked by this instance, skip retry");
+            }
             debug!({ instance_id, job_id, retry }, "==> retry");
             Ok(())
         }

@@ -43,6 +43,9 @@ pub enum Error {
     #[error("Client Error")]
     ClientError(JobResult),
 
+    #[error("Response Too Large")]
+    ResponseTooLarge,
+
     #[error("Retries Exceeded")]
     RetriesExceeded,
 }

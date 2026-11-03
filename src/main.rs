@@ -44,9 +44,13 @@ async fn main() {
     tokio::join!(
         start_http_server(&state),
         services::start_scheduler_service(&state),
-        services::start_channel_worker_service(&state),
+        services::start_worker_service(&state),
     );
 
+    // All workers have finished their jobs: release whatever is still locked by this instance.
+    if let Err(err) = db::instances::kill(&state.pool, &state.instance_id).await {
+        tracing::error!("db::instances::kill error {:?}", err);
+    }
     eprintln!("->> SHUTDOWN")
 }
 
@@ -56,6 +60,7 @@ async fn start_http_server(state: &Arc<AppState>) {
         .merge(handlers::http::routes(Arc::clone(state)))
         .merge(features::live::routes(Arc::clone(state)))
         .merge(features::echo::routes(Arc::clone(state)))
+        .merge(features::ui::routes(Arc::clone(state)))
         .nest("/api/v1", handlers::jobs::routes(Arc::clone(state)))
         .nest("/api/v1", features::history::routes(Arc::clone(state)))
         .nest("/api/v1", features::results::routes(Arc::clone(state)))

@@ -1,0 +1,131 @@
+<div class="space-y-4 mt-4">
+    <div>
+        <label class="block font-medium">Timeout</label>
+        <p class="text-sm text-gray-600">Request timeout in milliseconds.</p>
+        <input id="timeout" type="number" min="0" class="w-full border rounded p-2 mt-1" placeholder="3000">
+    </div>
+
+    <div>
+        <label class="block font-medium">Delay Type</label>
+        <p class="text-sm text-gray-600">Choose to delay by seconds or until a specific time.</p>
+        <div
+            class="relative flex space-x-2 rounded-lg  items-center gap-1 border border-stroke bg-white p-1 dark:border-dark-stroke dark:bg-white">
+            <button type="button" @click="delayType = ''; updateQuery()"
+                :class="delayType === '' ? 'bg-blue-600 text-white' : ''"
+                class="inline-flex items-center justify-center px-4 py-2 rounded-lg font-medium transition-colors duration-200">
+                None
+            </button>
+            <button type="button" @click="delayType = 'delay'; updateQuery()"
+                :class="delayType === 'delay' ? 'bg-blue-600 text-white' : ''"
+                class="inline-flex items-center justify-center px-4 py-2 rounded-lg font-medium transition-colors duration-200">
+                Delay
+            </button>
+            <button type="button" @click="delayType = 'delay_until'; updateQuery()"
+                :class="delayType === 'delay_until' ? 'bg-blue-600 text-white' : ''"
+                class="inline-flex items-center justify-center px-4 py-2 rounded-lg font-medium transition-colors duration-200">
+                Delay Until
+            </button>
+        </div>
+    </div>
+    <div x-show="delayType === 'delay'">
+        <label class="block font-medium">Delay (seconds)</label>
+        <p class="text-sm text-gray-600">Number of seconds to wait before executing the job.</p>
+        <input id="delay" type="number" min="0" class="w-full border rounded p-2 mt-1" placeholder="60">
+    </div>
+    <div x-show="delayType === 'delay_until'">
+        <label class="block font-medium">Delay Until</label>
+        <p class="text-sm text-gray-600">UTC date/time when the job should run. Converted to epoch seconds.</p>
+        <input id="delay_until" type="datetime-local" class="w-full border rounded p-2 mt-1">
+    </div>
+    <div>
+        <label class="block font-medium">Schedule Type</label>
+        <p class="text-sm text-gray-600">Run repeatedly using an interval or cron expression.</p>
+        <div
+            class="relative flex space-x-2 rounded-lg items-center gap-1 border border-stroke bg-white p-1 dark:border-dark-stroke dark:bg-white">
+            <button type="button" @click="scheduleType = ''; updateQuery()"
+                :class="scheduleType === '' ? 'bg-blue-600 text-white' : ''"
+                class="inline-flex items-center justify-center px-4 py-2 rounded-lg font-medium transition-colors duration-200">
+                None
+            </button>
+            <button type="button" @click="scheduleType = 'interval'; updateQuery()"
+                :class="scheduleType === 'interval' ? 'bg-blue-600 text-white' : ''"
+                class="inline-flex items-center justify-center px-4 py-2 rounded-lg font-medium transition-colors duration-200">
+                Interval
+            </button>
+            <button type="button" @click="scheduleType = 'cron'; updateQuery()"
+                :class="scheduleType === 'cron' ? 'bg-blue-600 text-white' : ''"
+                class="inline-flex items-center justify-center px-4 py-2 rounded-lg font-medium transition-colors duration-200">
+                Cron
+            </button>
+        </div>
+    </div>
+    <div x-show="scheduleType === 'interval'">
+        <label class="block font-medium">Interval (seconds)</label>
+        <p class="text-sm text-gray-600">Execute repeatedly every N seconds.</p>
+        <input id="interval" type="number" class="w-full border rounded p-2 mt-1" placeholder="60">
+    </div>
+    <div x-show="scheduleType === 'cron'">
+        <label class="block font-medium">Cron Schedule</label>
+        <p class="text-sm text-gray-600">Cron expression defining job run times.</p>
+        <input id="cron" type="text" class="w-full border rounded p-2 mt-1" placeholder="*/5 * * * *">
+    </div>
+    <div x-show="scheduleType !== ''">
+        <label class="block font-medium">Until</label>
+        <p class="text-sm text-gray-600">Stop scheduling after this epoch second.</p>
+        <input id="until" type="number" class="w-full border rounded p-2 mt-1">
+    </div>
+
+    <div>
+        <label class="block font-medium">Retry Policy</label>
+        <p class="text-sm text-gray-600">Control how failed jobs are retried.</p>
+        <div
+            class="relative flex space-x-2 rounded-lg items-center gap-1 border border-stroke bg-white p-1 dark:border-dark-stroke dark:bg-white">
+            <button type="button" @click="retryType = ''; updateQuery()"
+                :class="retryType === '' ? 'bg-blue-600 text-white' : ''"
+                class="inline-flex items-center justify-center px-4 py-2 rounded-lg font-medium transition-colors duration-200">
+                None
+            </button>
+            <button type="button" @click="retryType = 'immediate'; updateQuery()"
+                :class="retryType === 'immediate' ? 'bg-blue-600 text-white' : ''"
+                class="inline-flex items-center justify-center px-4 py-2 rounded-lg font-medium transition-colors duration-200">
+                Immediate
+            </button>
+            <button type="button" @click="retryType = 'fixed'; updateQuery()"
+                :class="retryType === 'fixed' ? 'bg-blue-600 text-white' : ''"
+                class="inline-flex items-center justify-center px-4 py-2 rounded-lg font-medium transition-colors duration-200">
+                Fixed
+            </button>
+            <button type="button" @click="retryType = 'fibonacci'; updateQuery()"
+                :class="retryType === 'fibonacci' ? 'bg-blue-600 text-white' : ''"
+                class="inline-flex items-center justify-center px-4 py-2 rounded-lg font-medium transition-colors duration-200">
+                Fibonacci
+            </button>
+        </div>
+    </div>
+    <template x-if="retryType === 'immediate'">
+        <div>
+            <label class="block font-medium">Retry Count</label>
+            <p class="text-sm text-gray-600">Number of immediate retries.</p>
+            <input id="retry_count" type="number" min="0" class="w-full border rounded p-2 mt-1">
+        </div>
+    </template>
+    <template x-if="retryType === 'fixed' || retryType === 'fibonacci'">
+        <div class="space-y-4">
+            <div>
+                <label class="block font-medium">Retry Count</label>
+                <p class="text-sm text-gray-600">Number of attempts.</p>
+                <input id="retry_count" type="number" min="0" class="w-full border rounded p-2 mt-1">
+            </div>
+            <div>
+                <label class="block font-medium">Retry Delay</label>
+                <p class="text-sm text-gray-600">Delay between attempts in seconds.</p>
+                <input id="retry_delay" type="number" min="0" class="w-full border rounded p-2 mt-1">
+            </div>
+        </div>
+    </template>
+    <div>
+        <label class="block font-medium">External ID</label>
+        <p class="text-sm text-gray-600">Optional identifier (max 64 chars) returned with the job.</p>
+        <input id="external_id" type="text" class="w-full border rounded p-2 mt-1">
+    </div>
+</div>

@@ -59,22 +59,22 @@ impl ChannelWorkerService {
                 i32::from(app_state.worker_options.prefetch),
             );
             empty = true;
-            loop {
-                select!(
-                    biased;
-                    _ = &mut shutdown_token => break,
-                    res = rows.next() => match res {
-                        Some(Ok(entry)) => {
-                            _ = tx.send(entry).await;
-                            empty = false;
-                        },
-                        Some(Err(err)) => {
-                            error!({ instance_id }, "db::jobqueue::fetch_job_with_retry {:?}", err);
-                            break;
-                        },
-                        _ => break,
+            // The rows are already assigned to this instance in the db,
+            // so drain them all (even on shutdown) instead of leaving them locked.
+            while let Some(res) = rows.next().await {
+                match res {
+                    Ok(entry) => {
+                        _ = tx.send(entry).await;
+                        empty = false;
                     }
-                );
+                    Err(err) => {
+                        error!(
+                            { instance_id },
+                            "db::jobqueue::fetch_job_with_retry {:?}", err
+                        );
+                        break;
+                    }
+                }
             }
             if empty {
                 wait_tick_or_shutdown(&mut interval, &mut shutdown_token).await;

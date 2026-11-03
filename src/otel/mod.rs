@@ -53,7 +53,7 @@ pub fn make_span_from_request<B>(request: &http::Request<B>) -> tracing::Span {
         request_id = Empty,
         exception.message = Empty, // to set on response
     );
-    span.set_parent(parent);
+    let _ = span.set_parent(parent);
     span
 }
 

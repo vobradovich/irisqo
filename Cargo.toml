@@ -6,60 +6,55 @@ license = "MIT"
 
 [dependencies]
 # Runtime
-tokio = { version = "1", features = ["full"] }
-tokio-util = { version = "0.7" }
-futures = "0.3"
-async-channel = "2.3"
+tokio = { version = "1.54", features = ["full"] }
+tokio-util = { version = "0.7.20" }
+futures = "0.3.34"
+async-channel = "2.5"
 # JSON libs
-serde = "1.0"
-serde_json = { version = "1.0", features = ["raw_value"] }
-serde_derive = "1.0"
+serde = "1"
+serde_json = { version = "1", features = ["raw_value"] }
 http-serde = "2.1"
 serde_urlencoded = "0.7"
 # Web libs
+askama = "0.16"
+askama_web = { version = "0.16", features = ["axum-0.8"] }
 axum = "0.8"
 tower = "0.5"
-tower-http = { version = "0.6", features = ["trace"] }
-hyper = { version = "1.6", features = ["full"] }
-hyper-util = { version = "0.1", features = ["client-legacy"] }
+tower-http = { version = "0.7", features = ["trace"] }
+hyper = { version = "1.12", features = ["full"] }
+hyper-util = { version = "0.1.21", features = ["client-legacy"] }
 hyper-tls = { version = "0.6" }
+http = "1"
 http-body-util = { version = "0.1" }
 url = { version = "2.5" }
 # Configuration & Observability
 dotenvy = "0.15"
-opentelemetry = { version = "0.30", features = ["metrics", "trace"] }
+opentelemetry = { version = "0.33", features = ["metrics", "trace"] }
 # opentelemetry-otlp = { version = "0.14", features = [
 #     "metrics",
 #     "tls",
 #     "trace",
 # ] }
-opentelemetry_sdk = "0.30"
+opentelemetry_sdk = "0.33"
 # opentelemetry-http = { version = "0.30", features = ["hyper", "tokio"] }
-opentelemetry-stdout = { version = "0.30", features = ["metrics", "trace"] }
+opentelemetry-stdout = { version = "0.33", features = ["metrics", "trace"] }
 tracing = { version = "0.1" }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-tracing-opentelemetry = { version = "0.31" }
+tracing-opentelemetry = { version = "0.34" }
 xflags = { version = "0.3" }
 
 # DB
-sqlx = { version = "0.8", features = [
-    "runtime-tokio-native-tls",
-    "postgres",
-    "macros",
-    "uuid",
-    "chrono",
-    "json",
-] }
+sqlx = { version = "0.9", features = ["runtime-tokio", "tls-native-tls", "postgres", "macros", "uuid", "chrono", "json"] }
 # sqlb = "0.0.8"
 # Types
-thiserror = "2.0"
-uuid = { version = "1.17", features = ["serde"] }
+thiserror = "2"
+uuid = { version = "1.29", features = ["serde"] }
 chrono = { version = "0.4", features = ["serde"] }
-problemdetails = { version = "0.6", features = ["axum"] }
-whoami = { version = "1.6" }
+problemdetails = { version = "0.7", features = ["axum"] }
+whoami = { version = "2.0" }
 bytes = { version = "1", features = ["serde"] }
-ulid = { version = "1" }
-cron = { version = "0.15" }
+ulid = { version = "3" }
+cron = { version = "0.17" }
 
 [dev-dependencies]
 anyhow = "1"
