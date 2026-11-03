@@ -1,0 +1,348 @@
+/* irisqo UI: the Caramel scheme on top of Pico (classless).
+   Dark first: <html data-theme="dark">; data-theme="light" is the light pair.
+   No inline styles in the templates: the UI is served with style-src 'self'. */
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #151413;
+  --surface: #1e1c1a;
+  --surface-2: #282522;
+  --border: #3a3632;
+  --field: #4a4540;
+  --text: #eee8e0;
+  --muted: #a9a097;
+  --accent: #e9a23b;
+  --accent-hover: #f2bc6a;
+  --accent-ink: #1a1206;
+  --accent-soft: #382a17;
+  --accent-ring: rgba(233, 162, 59, 0.28);
+  --link: #e9a23b;
+  --link-hover: #f2bc6a;
+  --danger: #ff9e97;
+  --danger-bg: #3e201e;
+  --success: #92d9a9;
+  --success-bg: #1b3125;
+
+  --st-scheduled-fg: #c4b8ff; --st-scheduled-bg: #2b2641;
+  --st-enqueued-fg: #d2cbc2; --st-enqueued-bg: #2f2c29;
+  --st-processing-fg: #8fcbff; --st-processing-bg: #1a2a3b;
+  --st-retrying-fg: #f2a7d4; --st-retrying-bg: #3a2034;
+  --st-completed-fg: #92d9a9; --st-completed-bg: #1b3125;
+  --st-failed-fg: #ff9e97; --st-failed-bg: #3e201e;
+  --st-cancelled-fg: #a9a097; --st-cancelled-bg: #2a2724;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f8f6f2;
+  --surface: #ffffff;
+  --surface-2: #f1ede7;
+  --border: #e6e0d7;
+  --field: #cfc7bc;
+  --text: #1d1a16;
+  --muted: #6a6157;
+  --accent: #e9a23b;
+  --accent-hover: #d98f26;
+  --accent-ink: #1a1206;
+  --accent-soft: #fbeedb;
+  --accent-ring: rgba(233, 162, 59, 0.35);
+  --link: #94570c;
+  --link-hover: #7a4609;
+  --danger: #b42318;
+  --danger-bg: #fdecea;
+  --success: #17603a;
+  --success-bg: #daf3e1;
+
+  --st-scheduled-fg: #3e3290; --st-scheduled-bg: #ece8ff;
+  --st-enqueued-fg: #4e473f; --st-enqueued-bg: #efebe5;
+  --st-processing-fg: #0e4f80; --st-processing-bg: #ddeefc;
+  --st-retrying-fg: #8a2463; --st-retrying-bg: #fbe4f1;
+  --st-completed-fg: #17603a; --st-completed-bg: #daf3e1;
+  --st-failed-fg: #8f1d1d; --st-failed-bg: #fce1e1;
+  --st-cancelled-fg: #5a5249; --st-cancelled-bg: #ece8e2;
+}
+
+/* Pico variables from the tokens */
+:root[data-theme] {
+  --pico-font-family-sans-serif: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --pico-font-family-monospace: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --pico-font-size: 100%;
+  --pico-line-height: 1.45;
+  --pico-border-radius: 0.5rem;
+  --pico-background-color: var(--bg);
+  --pico-color: var(--text);
+  --pico-h1-color: var(--text);
+  --pico-h2-color: var(--text);
+  --pico-h3-color: var(--text);
+  --pico-muted-color: var(--muted);
+  --pico-muted-border-color: var(--border);
+  --pico-text-selection-color: var(--accent-ring);
+  --pico-primary: var(--link);
+  --pico-primary-underline: var(--link);
+  --pico-primary-hover: var(--link-hover);
+  --pico-primary-hover-underline: var(--link-hover);
+  --pico-primary-background: var(--accent);
+  --pico-primary-border: var(--accent);
+  --pico-primary-hover-background: var(--accent-hover);
+  --pico-primary-hover-border: var(--accent-hover);
+  --pico-primary-focus: var(--accent-ring);
+  --pico-primary-inverse: var(--accent-ink);
+  --pico-secondary: var(--muted);
+  --pico-secondary-background: var(--surface-2);
+  --pico-secondary-border: var(--border);
+  --pico-secondary-hover-background: var(--border);
+  --pico-secondary-hover-border: var(--field);
+  --pico-secondary-inverse: var(--text);
+  --pico-secondary-focus: var(--accent-ring);
+  --pico-code-background-color: var(--surface-2);
+  --pico-code-color: var(--text);
+  --pico-card-background-color: var(--surface);
+  --pico-card-sectioning-background-color: var(--surface);
+  --pico-form-element-background-color: var(--bg);
+  --pico-form-element-active-background-color: var(--bg);
+  --pico-form-element-selected-background-color: var(--surface-2);
+  --pico-form-element-border-color: var(--field);
+  --pico-form-element-active-border-color: var(--accent);
+  --pico-form-element-focus-color: var(--accent-ring);
+  --pico-form-element-color: var(--text);
+  --pico-form-element-invalid-border-color: var(--danger);
+  --pico-form-element-invalid-active-border-color: var(--danger);
+  --pico-form-element-valid-border-color: var(--field);
+  --pico-del-color: var(--danger);
+  --pico-ins-color: var(--success);
+  --pico-table-border-color: var(--border);
+}
+
+/* Page width: the header bar spans the window, its content and main share one column
+   (Pico would box the header like main) */
+body > header {
+  max-width: none;
+  padding: 0;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+body > header > nav,
+body > main {
+  max-width: 75rem;
+  margin-inline: auto;
+  padding-inline: 1.5rem;
+}
+body > header > nav { min-height: 3.75rem; }
+nav a.cta {
+  background: var(--accent);
+  color: var(--accent-ink);
+  font-weight: 600;
+  border-radius: var(--pico-border-radius);
+}
+nav a.cta:hover,
+nav a.cta[aria-current="page"] { background: var(--accent-hover); color: var(--accent-ink); }
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--text);
+  font-weight: 700;
+  font-size: 1.15rem;
+  text-decoration: none;
+}
+.brand svg { color: var(--accent); }
+nav a[aria-current="page"] {
+  color: var(--text);
+  background: var(--surface-2);
+  border-radius: var(--pico-border-radius);
+  font-weight: 600;
+}
+body > main { padding-top: 1.75rem; }
+hgroup p { color: var(--muted); }
+
+/* Layout */
+.split {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1.25rem;
+  align-items: flex-start;
+}
+.split > form { flex: 999 1 34rem; min-width: 0; }
+.split > aside { flex: 1 1 20rem; min-width: 0; }
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 0.75rem;
+  align-items: flex-start;
+}
+.row > label { flex: 1 1 10rem; min-width: 0; }
+.row > .narrow { flex: 0 1 8rem; }
+.row > .wide { flex: 3 1 18rem; }
+
+/* Cards: the form sections and the preview */
+fieldset.card,
+aside.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+  padding: 1rem 1.25rem 0.25rem;
+  margin-bottom: 1rem;
+}
+fieldset.card > legend {
+  float: left;
+  width: 100%;
+  padding: 0 0 0.75rem;
+  font-size: 1.05rem;
+  font-weight: 700;
+}
+fieldset.card > legend + * { clear: both; }
+aside.card { padding-bottom: 1rem; }
+aside.card h2 { font-size: 1.05rem; margin-bottom: 0.25rem; }
+
+/* Dependent fields: shown by the choice they belong to, with CSS only: no request,
+   and what was typed stays when another choice is picked (the server reads only the
+   fields of the picked choice) */
+#job-form .dep { display: none; }
+#job-form:has(#when-delay:checked) .dep.when-delay,
+#job-form:has(#when-at:checked) .dep.when-at,
+#job-form:has(#repeat-interval:checked) .dep.repeat-interval,
+#job-form:has(#repeat-cron:checked) .dep.repeat-cron,
+#job-form:has(#retry option:not([value="none"]):checked) .dep.retry-any,
+#job-form:has(#retry option:is([value="fixed"], [value="fibonacci"]):checked) .dep.retry-delayed {
+  display: block;
+}
+#job-form:has(#repeat-interval:checked, #repeat-cron:checked) .dep.repeat-any { display: flex; }
+
+/* Choices: radio buttons as pills */
+.choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+}
+.choices label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 2.75rem;
+  margin: 0;
+  padding: 0 0.875rem;
+  border: 1px solid var(--field);
+  border-radius: var(--pico-border-radius);
+  font-weight: 500;
+  cursor: pointer;
+}
+.choices label:has(input:checked) {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.choices input[type="radio"] { margin: 0; }
+
+/* Forwarded headers */
+fieldset.nested {
+  border: 0;
+  padding: 0;
+  margin: 0 0 0.5rem;
+}
+fieldset.nested > legend {
+  padding: 0;
+  font-weight: 600;
+}
+fieldset.nested > .hint {
+  display: block;
+  margin-bottom: 0.75rem;
+}
+.header-row {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(0, 3fr) auto;
+  gap: 0.5rem;
+  align-items: start;
+}
+.header-row input { margin-bottom: 0.5rem; }
+.icon-button {
+  width: 2.75rem;
+  height: 2.75rem;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Messages */
+.hint, small.hint { color: var(--muted); }
+small.error,
+.field-error { color: var(--danger); font-weight: 500; }
+.alert {
+  padding: 0.75rem 1rem;
+  border-radius: 0.625rem;
+  margin-bottom: 1rem;
+  font-weight: 500;
+}
+.alert.error { background: var(--danger-bg); color: var(--danger); }
+.alert.success { background: var(--success-bg); color: var(--success); }
+.alert a { color: inherit; }
+
+/* Request preview */
+pre.preview {
+  margin: 0.75rem 0;
+  padding: 0.75rem 0.875rem;
+  border-radius: 0.5rem;
+  background: var(--surface-2);
+  font-size: 0.8rem;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* Pico classless has no .secondary: a quiet button */
+button.secondary,
+a[role="button"].secondary {
+  --pico-background-color: var(--surface-2);
+  --pico-border-color: var(--border);
+  --pico-color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+}
+button.secondary:hover,
+a[role="button"].secondary:hover {
+  background: var(--border);
+  border-color: var(--field);
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+.actions button,
+.actions input { width: auto; margin: 0; }
+
+/* Status chips (jobs list, history) */
+.status {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.125rem 0.625rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+.status::before {
+  content: "";
+  width: 0.375rem;
+  height: 0.375rem;
+  border-radius: 50%;
+  background: currentColor;
+}
+.status.scheduled { color: var(--st-scheduled-fg); background: var(--st-scheduled-bg); }
+.status.enqueued { color: var(--st-enqueued-fg); background: var(--st-enqueued-bg); }
+.status.processing,
+.status.assigned { color: var(--st-processing-fg); background: var(--st-processing-bg); }
+.status.retrying,
+.status.retried { color: var(--st-retrying-fg); background: var(--st-retrying-bg); }
+.status.completed { color: var(--st-completed-fg); background: var(--st-completed-bg); }
+.status.failed { color: var(--st-failed-fg); background: var(--st-failed-bg); }
+.status.cancelled { color: var(--st-cancelled-fg); background: var(--st-cancelled-bg); }
+
+.mono { font-family: var(--pico-font-family-monospace); }
+
+/* htmx: the indicator styles htmx would inject inline */
+.htmx-indicator { opacity: 0; transition: opacity 200ms ease-in; }
+.htmx-request .htmx-indicator,
+.htmx-request.htmx-indicator { opacity: 1; }

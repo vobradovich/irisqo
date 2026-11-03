@@ -98,7 +98,7 @@ impl TryFrom<JobRow> for hyper::Request<Full<Bytes>> {
     fn try_from(value: JobRow) -> Result<Self, Self::Error> {
         let meta = value.meta;
         let JobProtocol::Http(meta) = meta.protocol else {
-            return Err(Error::InvalidUrl);
+            return Err(Error::invalid("url", "is not an HTTP URL"));
         };
 
         let body: Bytes = value.body.map_or(Bytes::new(), Bytes::from);

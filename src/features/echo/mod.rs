@@ -1,4 +1,4 @@
-use crate::models::AppState;
+use crate::models::{AppState, Problem};
 use axum::{
     Json, Router,
     body::Body,
@@ -76,10 +76,6 @@ async fn echo(
     response
 }
 
-async fn error() -> impl IntoResponse {
-    let trace_id = crate::otel::current_trace_id();
-    problemdetails::new(StatusCode::INTERNAL_SERVER_ERROR)
-        // .with_type("https://example.com/probs/out-of-credit")
-        .with_title(StatusCode::INTERNAL_SERVER_ERROR.to_string())
-        .with_value("trace_id", trace_id)
+async fn error() -> Problem {
+    Problem::new(StatusCode::INTERNAL_SERVER_ERROR)
 }

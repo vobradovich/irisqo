@@ -13,3 +13,4 @@ mod otel;
 mod reliability;
 mod smoke;
 mod telemetry;
+mod ui;

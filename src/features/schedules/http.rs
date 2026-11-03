@@ -1,3 +1,4 @@
+use crate::models::Problem;
 use crate::{
     features::{Paging, PagingResult},
     models::AppState,
@@ -9,7 +10,6 @@ use axum::{
     response::{IntoResponse, Response},
     routing::get,
 };
-use problemdetails::Problem;
 use std::sync::Arc;
 
 pub fn routes(state: Arc<AppState>) -> Router {

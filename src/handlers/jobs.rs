@@ -1,3 +1,4 @@
+use crate::models::Problem;
 use crate::{db, models::AppState};
 use axum::{
     Json, Router,
@@ -6,7 +7,6 @@ use axum::{
     response::{IntoResponse, Response},
     routing::get,
 };
-use problemdetails::Problem;
 use std::sync::Arc;
 
 pub fn routes(state: Arc<AppState>) -> Router {

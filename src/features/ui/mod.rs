@@ -1,17 +1,141 @@
-use crate::models::AppState;
+//! Server-rendered UI: Askama templates, htmx for the partial updates, Pico for the
+//! base styles. Every live region is a partial with a stable id, so the same templates
+//! and endpoints would serve another hypermedia library (Datastar) as well.
+
+mod assets;
+pub mod form;
+
+use crate::{features::schedules::JobSchedule, handlers::http::create_job, models::AppState};
 use askama::Template;
 use askama_web::WebTemplate;
-use axum::{Router, routing::get};
-use std::sync::Arc;
+use axum::{
+    Router,
+    body::Bytes,
+    extract::{RawQuery, State},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
+    middleware,
+    response::{IntoResponse, Redirect, Response},
+    routing::{get, post},
+};
+use form::{Created, JobForm};
+use std::{collections::BTreeMap, sync::Arc};
+use tracing::error;
+
+/// No inline scripts or styles anywhere in the UI: everything comes from `/ui/assets`.
+const CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; \
+    connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'";
 
 #[derive(Template, WebTemplate)]
-#[template(path = "ui/ui.html")]
-struct UiTemplate;
-
-pub fn routes(state: Arc<AppState>) -> Router {
-    Router::new().route("/ui", get(ui)).with_state(state)
+#[template(path = "ui/new_job.html")]
+struct NewJobPage {
+    nav: &'static str,
+    form: JobForm,
 }
 
-async fn ui() -> UiTemplate {
-    UiTemplate
+#[derive(Template, WebTemplate)]
+#[template(path = "ui/partials/job_form.html")]
+struct JobFormPartial {
+    form: JobForm,
+}
+
+#[derive(Template, WebTemplate)]
+#[template(path = "ui/partials/job_preview.html")]
+struct JobPreviewPartial {
+    form: JobForm,
+}
+
+pub fn routes(state: Arc<AppState>) -> Router {
+    Router::new()
+        .route("/ui", get(|| async { Redirect::to("/ui/jobs/new") }))
+        .route("/ui/jobs/new", get(new_job_page))
+        .route("/ui/jobs/new/form", get(new_job_form))
+        .route("/ui/jobs/new/preview", get(new_job_preview))
+        .route("/ui/jobs", post(create_job_from_form))
+        .route("/ui/assets/{name}", get(assets::asset))
+        .layer(middleware::map_response(security_headers))
+        .with_state(state)
+}
+
+async fn security_headers(mut response: Response) -> Response {
+    let headers = response.headers_mut();
+    headers.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static(CSP),
+    );
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("same-origin"),
+    );
+    response
+}
+
+fn page(form: JobForm) -> NewJobPage {
+    NewJobPage { nav: "new", form }
+}
+
+async fn new_job_page(State(state): State<Arc<AppState>>) -> NewJobPage {
+    page(JobForm::default().with_limits(&state.worker_options))
+}
+
+/// The whole form again, for a choice that shows other fields (`hx-get` on change).
+async fn new_job_form(
+    State(state): State<Arc<AppState>>,
+    RawQuery(query): RawQuery,
+) -> JobFormPartial {
+    let form = JobForm::from_pairs(query.unwrap_or_default().as_bytes());
+    JobFormPartial {
+        form: form.with_limits(&state.worker_options),
+    }
+}
+
+async fn new_job_preview(
+    State(state): State<Arc<AppState>>,
+    RawQuery(query): RawQuery,
+) -> JobPreviewPartial {
+    let form = JobForm::from_pairs(query.unwrap_or_default().as_bytes());
+    JobPreviewPartial {
+        form: form.with_limits(&state.worker_options),
+    }
+}
+
+/// htmx gets the form partial, a plain form post the whole page; 422 when rejected
+/// (htmx 4 swaps error responses too).
+async fn create_job_from_form(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    let htmx = headers.contains_key("hx-request");
+    let form = JobForm::from_pairs(&body).with_limits(&state.worker_options);
+    let outcome = match form.prepare(&state.worker_options, JobSchedule::now_secs()) {
+        Err(errors) => Err(errors),
+        Ok(job) => create_job(&state, job).await.map_err(|err| {
+            error!("ui create_job error {:?}", err);
+            BTreeMap::from([("form", "it could not be stored, try again.".to_owned())])
+        }),
+    };
+    let (status, form, trigger) = match outcome {
+        Ok(row) => {
+            let mut fresh = JobForm::default().with_limits(&state.worker_options);
+            fresh.created = Some(Created {
+                id: row.id,
+                schedule_id: row.schedule_id,
+            });
+            (StatusCode::OK, fresh, Some([("hx-trigger", "job-created")]))
+        }
+        Err(errors) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            JobForm { errors, ..form },
+            None,
+        ),
+    };
+    if htmx {
+        (status, trigger, JobFormPartial { form }).into_response()
+    } else {
+        (status, trigger, page(form)).into_response()
+    }
 }

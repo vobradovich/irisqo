@@ -1,6 +1,6 @@
 use std::{fmt::Display, str::FromStr};
 
-use crate::models::Error;
+use crate::models::ParamError;
 use chrono::{TimeZone, Utc};
 use cron::Schedule;
 use serde::{Deserialize, Serialize};
@@ -65,36 +65,39 @@ impl Default for JobSchedule {
 }
 
 impl FromStr for JobSchedule {
-    type Err = Error;
+    type Err = ParamError;
 
+    /// Seconds (`300`) or a cron expression of 5 fields, or 6 with seconds first
+    /// (fields are separated by spaces or `|`).
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         if s.is_empty() {
-            return Err(Error::InvalidParams("schedule"));
+            return Err(ParamError::new("schedule", "is empty"));
         }
-        let interval = s.parse::<u32>();
-        if let Ok(val) = interval {
-            if val == 0 {
-                return Err(Error::InvalidParams("interval"));
+        if let Ok(interval) = s.parse::<u32>() {
+            return match interval {
+                0 => Err(ParamError::new(
+                    "interval",
+                    "must be a positive number of seconds",
+                )),
+                interval => Ok(JobSchedule::Interval { interval }),
+            };
+        }
+        let mut parts: Vec<&str> = s.split(['|', ' ']).filter(|p| !p.is_empty()).collect();
+        match parts.len() {
+            5 => parts.insert(0, "0"),
+            6 | 7 => {}
+            n => {
+                return Err(ParamError::new(
+                    "cron",
+                    format!("needs 5 or 6 fields, got {n}: e.g. */15 * * * *"),
+                ));
             }
-            return Ok(JobSchedule::Interval { interval: val });
         }
-        let mut parts: Vec<&str> = s.split(['|', ' ']).collect();
-        let fixed: String = match parts.len() {
-            5 => {
-                parts.insert(0, "0");
-                Ok(parts.join(" "))
-            }
-            6 => Ok(parts.join(" ")),
-            7 => Ok(parts.join(" ")),
-            _ => Err(Error::InvalidParams("schedule")),
-        }?;
-        let schedule = Schedule::from_str(&fixed);
-        if let Ok(s) = schedule {
-            return Ok(JobSchedule::Cron {
-                cron: s.to_string(),
-            });
-        }
-        Err(Error::InvalidParams("schedule"))
+        let schedule = Schedule::from_str(&parts.join(" "))
+            .map_err(|_| ParamError::new("cron", "is not a valid cron expression"))?;
+        Ok(JobSchedule::Cron {
+            cron: schedule.to_string(),
+        })
     }
 }
 

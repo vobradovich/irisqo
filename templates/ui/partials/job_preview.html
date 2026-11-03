@@ -1,0 +1,7 @@
+<aside id="preview" class="card" aria-labelledby="preview-title"
+  hx-get="/ui/jobs/new/preview" hx-trigger="input delay:400ms from:#job-form, change from:#job-form"
+  hx-target="this" hx-swap="outerHTML" hx-include="#job-form">
+  <h2 id="preview-title">Same request with the API</h2>
+  <small class="hint">Built by the server from the form: exactly what irisqo parses.</small>
+  <pre class="preview">{{ form.preview() }}</pre>
+</aside>

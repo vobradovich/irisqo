@@ -1,8 +1,39 @@
 use axum::http::StatusCode;
-use problemdetails::Problem;
 use tokio::time::error::Elapsed;
 
-use crate::{features::results::JobResult, otel};
+use super::Problem;
+use crate::features::results::JobResult;
+
+/// The problem type of [`Error::InvalidParams`] (RFC 9457 `type`), documented there.
+pub const INVALID_PARAMS_TYPE: &str =
+    "https://github.com/vobradovich/irisqo/blob/main/docs/problems.md#invalid-parameters";
+
+/// A rejected request parameter (`url`, `_delay`, `_cron`...): the API returns them all
+/// at once (RFC 9457 `errors` extension), the UI form shows each one next to its field.
+#[derive(Debug, serde::Serialize)]
+pub struct ParamError {
+    /// The query parameter (`_delay`) or `url`.
+    pub parameter: &'static str,
+    /// What is wrong, for a human: "must be a number of seconds".
+    pub detail: String,
+}
+
+impl ParamError {
+    pub fn new(parameter: &'static str, detail: impl Into<String>) -> Self {
+        Self {
+            parameter,
+            detail: detail.into(),
+        }
+    }
+}
+
+fn describe(errors: &[ParamError]) -> String {
+    errors
+        .iter()
+        .map(|e| format!("{}: {}", e.parameter, e.detail))
+        .collect::<Vec<_>>()
+        .join("; ")
+}
 
 // region:    Error
 #[derive(thiserror::Error, Debug)]
@@ -31,11 +62,9 @@ pub enum Error {
     #[error(transparent)]
     HyperClientError(#[from] hyper_util::client::legacy::Error),
 
-    #[error("Invalid Url")]
-    InvalidUrl,
-
-    #[error("Invalid Params - {0}")]
-    InvalidParams(&'static str),
+    /// The request parameters are wrong: every one of them, for a 400.
+    #[error("Invalid parameters: {}", describe(.0))]
+    InvalidParams(Vec<ParamError>),
 
     #[error("Server Error")]
     ServerError(Box<JobResult>),
@@ -50,31 +79,53 @@ pub enum Error {
     RetriesExceeded,
 }
 
+impl Error {
+    /// One invalid parameter.
+    pub fn invalid(parameter: &'static str, detail: impl Into<String>) -> Self {
+        Error::InvalidParams(vec![ParamError::new(parameter, detail)])
+    }
+}
+
+/// RFC 9457 problem details. Only the invalid parameters are explained; any other
+/// error is logged and answered with its status alone: no internals in the response.
 impl From<Error> for Problem {
     fn from(item: Error) -> Problem {
-        let trace_id = otel::current_trace_id();
         match item {
-            Error::InvalidUrl => problemdetails::new(StatusCode::BAD_REQUEST)
-                // .with_type("https://example.com/probs/out-of-credit")
-                .with_title(StatusCode::BAD_REQUEST.to_string())
-                .with_detail(item.to_string())
-                .with_value("trace_id", trace_id),
-            Error::InvalidParams(_) => problemdetails::new(StatusCode::BAD_REQUEST)
-                // .with_type("https://example.com/probs/out-of-credit")
-                .with_title(StatusCode::BAD_REQUEST.to_string())
-                .with_detail(item.to_string())
-                .with_value("trace_id", trace_id),
-            Error::DbError(sqlx::Error::RowNotFound) => problemdetails::new(StatusCode::NOT_FOUND)
-                // .with_type("https://example.com/probs/out-of-credit")
-                .with_title(StatusCode::NOT_FOUND.to_string())
-                .with_detail(item.to_string())
-                .with_value("trace_id", trace_id),
-            _ => problemdetails::new(StatusCode::INTERNAL_SERVER_ERROR)
-                // .with_type("https://example.com/probs/out-of-credit")
-                .with_title(StatusCode::INTERNAL_SERVER_ERROR.to_string())
-                .with_detail(item.to_string())
-                .with_instance(format!("{:?}", item))
-                .with_value("trace_id", trace_id),
+            Error::InvalidParams(errors) => {
+                let detail = match errors.len() {
+                    1 => "1 parameter is invalid.".to_owned(),
+                    n => format!("{n} parameters are invalid."),
+                };
+                Problem {
+                    kind: Some(INVALID_PARAMS_TYPE),
+                    title: "Invalid parameters",
+                    detail: Some(detail),
+                    errors: Some(errors),
+                    ..Problem::new(StatusCode::BAD_REQUEST)
+                }
+            }
+            Error::JobNotFound(_) | Error::DbError(sqlx::Error::RowNotFound) => {
+                Problem::new(StatusCode::NOT_FOUND)
+            }
+            Error::Timeout(_)
+            | Error::DbError(_)
+            | Error::IoError(_)
+            | Error::HttpError(_)
+            | Error::HyperError(_)
+            | Error::HyperClientError(_)
+            | Error::ServerError(_)
+            | Error::ClientError(_)
+            | Error::ResponseTooLarge
+            | Error::RetriesExceeded => {
+                let problem = Problem {
+                    detail: Some(
+                        "The request could not be processed, see the server logs.".to_owned(),
+                    ),
+                    ..Problem::new(StatusCode::INTERNAL_SERVER_ERROR)
+                };
+                tracing::error!(trace_id = problem.trace_id, "request failed: {:?}", item);
+                problem
+            }
         }
     }
 }

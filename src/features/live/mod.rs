@@ -1,7 +1,7 @@
 use crate::models::AppState;
 use crate::models::Error;
+use crate::models::Problem;
 use axum::{Router, extract::State, http::StatusCode, response::IntoResponse, routing::get};
-use problemdetails::Problem;
 use sqlx::{Pool, Postgres};
 use std::sync::Arc;
 

@@ -1,10 +1,10 @@
 use crate::features::Paging;
 use crate::features::PagingResult;
 use crate::models::AppState;
+use crate::models::Problem;
 use axum::Json;
 use axum::extract::Query;
 use axum::{Router, extract::State, response::IntoResponse, routing::get};
-use problemdetails::Problem;
 use std::sync::Arc;
 
 pub fn routes(state: Arc<AppState>) -> Router {

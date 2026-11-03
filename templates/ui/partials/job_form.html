@@ -1,0 +1,137 @@
+<div id="job-new" class="split" hx-target:inherited="this" hx-swap:inherited="outerHTML" hx-include:inherited="#job-form">
+  <form id="job-form" action="/ui/jobs" method="post" hx-post="/ui/jobs" novalidate>
+
+    {% if let Some(created) = form.created %}
+    <div class="alert success" role="status">
+      Job <a href="/api/v1/jobs/{{ created.id }}" class="mono">{{ created.id }}</a> queued
+      {%- if let Some(schedule_id) = created.schedule_id %}, schedule <span class="mono">{{ schedule_id }}</span>{% endif %}.
+    </div>
+    {% endif %}
+    {% if !form.errors.is_empty() %}
+    <div class="alert error" role="alert">
+      The job was not queued: {% if let Some(e) = form.error("form") %}{{ e }}{% else %}check the fields below.{% endif %}
+    </div>
+    {% endif %}
+
+    <fieldset class="card">
+      <legend>Request</legend>
+      <div class="row">
+        <label for="method" class="narrow">Method
+          <select id="method" name="method">
+            {% for m in form::METHODS %}
+            <option{% if *m == form.method %} selected{% endif %}>{{ m }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label for="url" class="wide">URL
+          <input id="url" name="url" type="url" class="mono" required placeholder="https://example.com/hook" value="{{ form.url }}"{{ invalid(form, "url", "url-error") }}>
+          {{ note(form, "url", "url-error", "URL", "") }}
+        </label>
+      </div>
+      <label for="content_type">Content-Type
+        <input id="content_type" name="content_type" class="mono" value="{{ form.content_type }}">
+      </label>
+      <label for="body">Body
+        <textarea id="body" name="body" rows="4" class="mono">{{ form.body }}</textarea>
+      </label>
+
+      <fieldset class="nested" aria-describedby="headers-hint">
+        <legend>Headers for the target</legend>
+        <small id="headers-hint" class="hint">Sent as <span class="mono">Irisqo-Forward-*</span>: only these reach the target.</small>
+        {% for header in form.headers %}
+        <div class="header-row">
+          <input id="header-name-{{ loop.index0 }}" name="header_name" class="mono" aria-label="Header name" placeholder="authorization" value="{{ header.name }}">
+          <input id="header-value-{{ loop.index0 }}" name="header_value" type="password" class="mono" aria-label="Header value" value="{{ header.value }}">
+          <button type="button" class="secondary icon-button" aria-label="Remove header {{ header.name }}"
+            hx-get="/ui/jobs/new/form" hx-vals='{"op": "remove_header", "index": "{{ loop.index0 }}"}'>
+            <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"></path></svg>
+          </button>
+        </div>
+        {% endfor %}
+        {% if let Some(e) = form.error("headers") %}<small class="error">Header {{ e }}</small>{% endif %}
+        <p class="actions">
+          <button type="button" class="secondary" hx-get="/ui/jobs/new/form" hx-vals='{"op": "add_header"}'>Add header</button>
+        </p>
+      </fieldset>
+    </fieldset>
+
+    <fieldset class="card">
+      <legend>When</legend>
+      <div class="choices" role="radiogroup" aria-label="Start">
+        {{ radio("when", "now", "Now", form.when.as_str()) }}
+        {{ radio("when", "delay", "After a delay", form.when.as_str()) }}
+        {{ radio("when", "at", "At a time", form.when.as_str()) }}
+      </div>
+      <label for="delay" class="dep when-delay">Delay, seconds
+        <input id="delay" name="delay" type="number" min="0" value="{{ form.delay }}"{{ invalid(form, "delay", "delay-error") }}>
+        {{ note(form, "delay", "delay-error", "Delay", "") }}
+      </label>
+      <label for="at" class="dep when-at">At, UTC
+        <input id="at" name="at" type="datetime-local" value="{{ form.at }}"{{ invalid(form, "at", "at-error") }}>
+        {{ note(form, "at", "at-error", "Time", "A time in the past runs the job now.") }}
+      </label>
+    </fieldset>
+
+    <fieldset class="card">
+      <legend>Repeat</legend>
+      <div class="choices" role="radiogroup" aria-label="Repeat">
+        {{ radio("repeat", "once", "Once", form.repeat.as_str()) }}
+        {{ radio("repeat", "interval", "Every N seconds", form.repeat.as_str()) }}
+        {{ radio("repeat", "cron", "Cron", form.repeat.as_str()) }}
+      </div>
+      <div class="row dep repeat-any">
+        <label for="interval" class="dep repeat-interval">Interval, seconds
+          <input id="interval" name="interval" type="number" min="1" value="{{ form.interval }}"{{ invalid(form, "interval", "interval-error") }}>
+          {{ note(form, "interval", "interval-error", "Interval", "") }}
+        </label>
+        <label for="cron" class="dep repeat-cron">Cron expression
+          <input id="cron" name="cron" class="mono" placeholder="*/15 * * * *" value="{{ form.cron }}"{{ invalid(form, "cron", "cron-error") }}>
+          {{ note(form, "cron", "cron-error", "Cron", "5 fields, or 6 with seconds first.") }}
+        </label>
+        <label for="until">Until, UTC (optional)
+          <input id="until" name="until" type="datetime-local" value="{{ form.until }}"{{ invalid(form, "until", "until-error") }}>
+          {{ note(form, "until", "until-error", "Until", "") }}
+        </label>
+      </div>
+    </fieldset>
+
+    <fieldset class="card">
+      <legend>Retries and limits</legend>
+      <div class="row">
+        <label for="retry">Policy
+          <select id="retry" name="retry">
+            <option value="none"{% if form.retry == "none" %} selected{% endif %}>No retries</option>
+            <option value="immediate"{% if form.retry == "immediate" %} selected{% endif %}>Immediate</option>
+            <option value="fixed"{% if form.retry == "fixed" %} selected{% endif %}>Fixed delay</option>
+            <option value="fibonacci"{% if form.retry == "fibonacci" %} selected{% endif %}>Fibonacci backoff</option>
+          </select>
+        </label>
+        <label for="retry_count" class="narrow dep retry-any">Retries
+          <input id="retry_count" name="retry_count" type="number" min="0" value="{{ form.retry_count }}"{{ invalid(form, "retry_count", "retry-error") }}>
+        </label>
+        <label for="retry_delay" class="narrow dep retry-delayed">Delay, s
+          <input id="retry_delay" name="retry_delay" type="number" min="1" value="{{ form.retry_delay }}"{{ invalid(form, "retry_count", "retry-error") }}>
+        </label>
+        <label for="timeout" class="narrow">Timeout, ms
+          <input id="timeout" name="timeout" type="number" min="1" max="{{ form.max_timeout }}" placeholder="{{ form.default_timeout }}" value="{{ form.timeout }}"{{ invalid(form, "timeout", "timeout-error") }}>
+        </label>
+      </div>
+      {% if let Some(e) = form.error("retry_count") %}<p><small id="retry-error" class="error">Retry policy {{ e }}</small></p>{% endif %}
+      {% if let Some(e) = form.error("timeout") %}<p><small id="timeout-error" class="error">Timeout {{ e }}</small></p>{% endif %}
+      <p><small class="hint">Network errors, timeouts, 408, 425, 429 and 5xx are retried, with ±20 % jitter and never sooner than Retry-After. Timeout: up to {{ form.max_timeout }} ms.</small></p>
+      <label for="external_id">External id (optional)
+        <input id="external_id" name="external_id" class="mono" maxlength="64" value="{{ form.external_id }}"{{ invalid(form, "external_id", "external-id-error") }}>
+        {{ note(form, "external_id", "external-id-error", "External id", "The same id returns the existing job instead of a new one.") }}
+      </label>
+    </fieldset>
+
+    <p class="actions">
+      <button type="submit">Queue job</button>
+      <a href="/ui/jobs/new" role="button" class="secondary">Reset</a>
+    </p>
+  </form>
+  {% include "ui/partials/job_preview.html" %}
+</div>
+{% macro invalid(form, field, id) %}{% if form.error(field).is_some() %} aria-invalid="true" aria-describedby="{{ id }}"{% endif %}{% endmacro %}
+{% macro note(form, field, id, label, hint) %}{% if let Some(e) = form.error(field) %}<small id="{{ id }}" class="error">{{ label }} {{ e }}</small>{% else if !hint.is_empty() %}<small class="hint">{{ hint }}</small>{% endif %}{% endmacro %}
+{% macro radio(name, value, label, current) %}<label for="{{ name }}-{{ value }}"><input type="radio" id="{{ name }}-{{ value }}" name="{{ name }}" value="{{ value }}"{% if current == value %} checked{% endif %}>{{ label }}</label>{% endmacro %}

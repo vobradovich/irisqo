@@ -12,7 +12,7 @@
 - [x] Retries and Delays
 - [x] OpenTelemetry Tracing
 - [x] Schedules, Intervals, and Cron
-- [ ] UI
+- [ ] UI (New job form so far)
 
 ## API
 
@@ -72,6 +72,31 @@ Delay a request by adding the `_delay` or `_delay_until` [Unix Time] query param
 ```
 GET {{host}}/to/https://postman-echo.com/get?_delay=5
 ```
+
+### Errors
+Errors are `application/problem+json` ([RFC 9457](https://www.rfc-editor.org/rfc/rfc9457)).
+Invalid job parameters are rejected with `400` and every problem at once:
+```json
+{
+  "type": "https://github.com/vobradovich/irisqo/blob/main/docs/problems.md#invalid-parameters",
+  "title": "Invalid parameters",
+  "status": 400,
+  "detail": "2 parameters are invalid.",
+  "errors": [
+    { "parameter": "_delay", "detail": "must be a number of seconds" },
+    { "parameter": "_cron", "detail": "needs 5 or 6 fields, got 4: e.g. */15 * * * *" }
+  ],
+  "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736"
+}
+```
+Other errors carry only their status, with `trace_id`: see [docs/problems.md](docs/problems.md).
+
+## UI
+`/ui` serves a server-rendered UI: Askama templates, [htmx](https://htmx.org) for the partial updates and
+[Pico CSS](https://picocss.com) for the base styles. Both are compiled into the binary (`assets/`), so
+there is nothing to fetch from a CDN, and the pages carry a strict `Content-Security-Policy`
+(no inline scripts or styles). The New job form builds the same `/to/` request as the API and goes
+through the same validation; its preview shows that request.
 
 ## Running
 
