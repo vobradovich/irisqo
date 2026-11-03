@@ -1,4 +1,4 @@
-<div id="job-new" class="split" hx-target="this" hx-swap="outerHTML" hx-include="#job-form">
+<div id="job-new" class="split" hx-target:inherited="this" hx-swap:inherited="outerHTML" hx-include:inherited="#job-form">
   <form id="job-form" action="/ui/jobs" method="post" hx-post="/ui/jobs" novalidate>
 
     {% if let Some(created) = form.created %}

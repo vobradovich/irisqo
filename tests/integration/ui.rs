@@ -75,7 +75,7 @@ async fn pages_use_only_embedded_assets(pool: PgPool) -> anyhow::Result<()> {
     );
     assert!(!html.contains("style=\""), "no inline styles");
     for asset in [
-        "/ui/assets/htmx-2.0.8.min.js",
+        "/ui/assets/htmx-4.0.1.min.js",
         "/ui/assets/pico-2.1.1.classless.min.css",
         "/ui/assets/app.css",
     ] {
@@ -164,7 +164,7 @@ async fn form_errors_are_shown_by_field(pool: PgPool) -> anyhow::Result<()> {
         body,
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
     assert!(!headers.contains_key("hx-trigger"));
     assert!(html.contains("needs 5 or 6 fields, got 4"), "{html}");
     assert!(html.contains("aria-describedby=\"cron-error\""));

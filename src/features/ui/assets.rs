@@ -16,9 +16,9 @@ struct Asset {
 
 const ASSETS: &[Asset] = &[
     Asset {
-        name: "htmx-2.0.8.min.js",
+        name: "htmx-4.0.1.min.js",
         content_type: "text/javascript; charset=utf-8",
-        bytes: include_bytes!("../../../assets/vendor/htmx-2.0.8.min.js"),
+        bytes: include_bytes!("../../../assets/vendor/htmx-4.0.1.min.js"),
         immutable: true,
     },
     Asset {

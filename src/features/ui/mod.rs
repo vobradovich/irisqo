@@ -103,8 +103,8 @@ async fn new_job_preview(
     }
 }
 
-/// htmx gets the form partial (200 even with errors, so that htmx swaps it in);
-/// a plain form post gets the whole page.
+/// htmx gets the form partial, a plain form post the whole page; 422 when rejected
+/// (htmx 4 swaps error responses too).
 async fn create_job_from_form(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -135,10 +135,15 @@ async fn create_job_from_form(
             schedule_id: row.schedule_id,
         });
     }
-    let mut response = match (htmx, ok) {
-        (true, _) => JobFormPartial { form }.into_response(),
-        (false, true) => page(form).into_response(),
-        (false, false) => (StatusCode::UNPROCESSABLE_ENTITY, page(form)).into_response(),
+    let status = if ok {
+        StatusCode::OK
+    } else {
+        StatusCode::UNPROCESSABLE_ENTITY
+    };
+    let mut response = if htmx {
+        (status, JobFormPartial { form }).into_response()
+    } else {
+        (status, page(form)).into_response()
     };
     if ok {
         response
