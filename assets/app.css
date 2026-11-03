@@ -367,7 +367,9 @@ a[role="button"].secondary:hover {
   gap: 0.75rem 1rem;
   margin-bottom: 1.25rem;
 }
-.page-head h1 { margin: 0; }
+/* The title box trimmed to its capitals, so the badges center on the letters
+   rather than on the line box with its room for descenders */
+.page-head h1 { margin: 0; line-height: 1; text-box: trim-both cap alphabetic; }
 .page-head > a[role="button"] { margin-left: auto; }
 .live {
   display: inline-flex;
