@@ -1,22 +1,13 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use axum::Router;
-use models::AppState;
+use irisqo::{AppState, db, services};
 use opentelemetry::trace::TracerProvider as _;
 use opentelemetry_sdk::trace::SdkTracerProvider;
 use opentelemetry_stdout as stdout;
 use tokio::net::TcpListener;
 use tokio::signal;
-use tower_http::trace::TraceLayer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-
-mod db;
-mod features;
-mod handlers;
-mod models;
-mod otel;
-mod services;
 
 #[tokio::main]
 async fn main() {
@@ -56,24 +47,9 @@ async fn main() {
 
 async fn start_http_server(state: &Arc<AppState>) {
     let addr: SocketAddr = SocketAddr::from(([0, 0, 0, 0], state.port));
-    let app = Router::new()
-        .merge(handlers::http::routes(Arc::clone(state)))
-        .merge(features::live::routes(Arc::clone(state)))
-        .merge(features::echo::routes(Arc::clone(state)))
-        .merge(features::ui::routes(Arc::clone(state)))
-        .nest("/api/v1", handlers::jobs::routes(Arc::clone(state)))
-        .nest("/api/v1", features::history::routes(Arc::clone(state)))
-        .nest("/api/v1", features::results::routes(Arc::clone(state)))
-        .nest("/api/v1", features::schedules::routes(Arc::clone(state)))
-        .nest("/api/v1", features::instances::routes(Arc::clone(state)))
-        .layer(
-            TraceLayer::new_for_http()
-                .make_span_with(otel::make_span_from_request)
-                .on_response(otel::on_response)
-                .on_failure(otel::on_failure),
-        );
+    let app = irisqo::app(state);
 
-    let listener = TcpListener::bind(addr).await.unwrap();
+    let listener = TcpListener::bind(addr).await.expect("Failed to bind");
     tracing::info!("listen {:?}", addr);
     axum::serve(listener, app.into_make_service())
         .with_graceful_shutdown(shutdown_signal())

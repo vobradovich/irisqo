@@ -9,7 +9,7 @@ pub use job::JobProtocol;
 pub use job::JobRow;
 pub use job::JobWithRetry;
 pub use jobretry::JobRetry;
-pub use state::AppState;
+pub use state::{AppState, Options, new_instance_id};
 
 mod error;
 mod job;
