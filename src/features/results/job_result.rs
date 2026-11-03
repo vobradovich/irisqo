@@ -165,7 +165,7 @@ impl From<Error> for JobResult {
     fn from(value: Error) -> Self {
         match value {
             Error::Timeout(_) => JobResult::with_type(JobResultType::Timeout),
-            Error::ClientError(res) | Error::ServerError(res) => res,
+            Error::ClientError(res) | Error::ServerError(res) => *res,
             Error::JobNotFound(_)
             | Error::DbError(_)
             | Error::IoError(_)

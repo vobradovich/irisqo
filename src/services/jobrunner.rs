@@ -245,10 +245,10 @@ async fn job_run_http(app_state: &AppState, job: JobRow) -> Result<JobResult, Er
     let job_result = JobResult::http(status_code, version, Some(header_hashmap), bytes);
     if status_code.is_server_error() {
         span.record("otel.status_code", "ERROR");
-        return Err(Error::ServerError(job_result));
+        return Err(Error::ServerError(Box::new(job_result)));
     }
     if status_code.is_client_error() {
-        return Err(Error::ClientError(job_result));
+        return Err(Error::ClientError(Box::new(job_result)));
     }
     Ok(job_result)
 }
