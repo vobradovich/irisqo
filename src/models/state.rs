@@ -132,7 +132,8 @@ impl Options {
                 *option = Some(
                     value
                         .parse()
-                        .map_err(|err| format!("{name}={value}: {err}"))?,
+                        // no value: it may be a secret (IRISQO_API_TOKEN)
+                        .map_err(|err| format!("{name}: {err}"))?,
                 );
             }
             Ok(())
@@ -274,5 +275,21 @@ fn options_fall_back_to_the_environment() {
     let err = bad
         .fill_from(|name| (name == "IRISQO_PORT").then(|| "port".to_owned()))
         .expect_err("not a number");
-    assert!(err.starts_with("IRISQO_PORT=port"), "{err}");
+    assert!(err.starts_with("IRISQO_PORT: "), "{err}");
+}
+
+#[test]
+fn a_bad_token_is_not_echoed() {
+    let secret = "s3cr3t-short";
+    let err = Options::from_vec(vec![])
+        .expect("options")
+        .fill_from(|name| (name == "IRISQO_API_TOKEN").then(|| secret.to_owned()))
+        .expect_err("too short");
+    assert!(
+        err.starts_with("IRISQO_API_TOKEN:") && !err.contains(secret),
+        "{err}"
+    );
+
+    let err = Options::from_vec(vec!["--api-token".into(), secret.into()]).expect_err("too short");
+    assert!(!err.to_string().contains(secret), "{err}");
 }

@@ -15,6 +15,7 @@ impl ApiTokens {
 
     /// One of the tokens, compared in constant time (no early exit on the first byte that
     /// differs, which would tell an attacker how much of a guess is right).
+    #[must_use = "an unchecked token lets every request in"]
     pub fn accepts(&self, candidate: &str) -> bool {
         self.0.iter().fold(false, |found, token| {
             found | constant_time_eq(token.as_bytes(), candidate.as_bytes())
@@ -36,6 +37,10 @@ impl FromStr for ApiTokens {
             .filter(|token| !token.is_empty())
             .map(str::to_owned)
             .collect();
+        // a blank value must not leave the API open while it looks configured
+        if tokens.is_empty() {
+            return Err("at least one token is required".to_owned());
+        }
         if tokens.iter().any(|token| token.len() < MIN_TOKEN_LEN) {
             return Err(format!(
                 "a token needs at least {MIN_TOKEN_LEN} characters: e.g. openssl rand -hex 32"
@@ -64,5 +69,6 @@ fn tokens() {
     assert!(!tokens.accepts(""));
     assert_eq!(format!("{tokens:?}"), "ApiTokens(2 tokens)");
     assert!("short".parse::<ApiTokens>().is_err());
+    assert!("".parse::<ApiTokens>().is_err() && " , ".parse::<ApiTokens>().is_err());
     assert!(ApiTokens::default().is_empty() && !ApiTokens::default().accepts(""));
 }

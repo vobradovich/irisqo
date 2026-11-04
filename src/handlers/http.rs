@@ -241,6 +241,7 @@ pub fn forwarded_headers(headers: &HeaderMap) -> HashMap<String, String> {
 
 /// Headers a client cannot set on the target request (lowercase name): the HTTP client
 /// sets the host and the body length, irisqo the trace context and the `irisqo-*` ones.
+#[must_use = "an unchecked header is forwarded"]
 pub fn is_reserved_header(name: &str) -> bool {
     matches!(
         name,

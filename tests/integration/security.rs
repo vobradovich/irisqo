@@ -220,23 +220,6 @@ async fn allowed_targets_pass(pool: PgPool) -> anyhow::Result<()> {
 const TOKEN: &str = "0123456789abcdef0123456789abcdef";
 const NEXT_TOKEN: &str = "fedcba9876543210fedcba9876543210";
 
-/// A request with `headers`.
-async fn send(
-    state: &irisqo::AppState,
-    method: Method,
-    uri: &str,
-    headers: &[(&str, &str)],
-) -> hyper::Response<hyper::body::Incoming> {
-    let mut request = hyper::Request::builder().method(method).uri(uri);
-    for (name, value) in headers {
-        request = request.header(*name, *value);
-    }
-    let request = request
-        .body(http_body_util::Full::new(bytes::Bytes::new()))
-        .expect("request");
-    state.client.request(request).await.expect("response")
-}
-
 #[sqlx::test(migrations = "./sql/migrations")]
 async fn api_token_opens_the_api(pool: PgPool) -> anyhow::Result<()> {
     let tokens = format!("{TOKEN},{NEXT_TOKEN}");
@@ -257,7 +240,7 @@ async fn api_token_opens_the_api(pool: PgPool) -> anyhow::Result<()> {
             "Bearer realm=\"irisqo\"",
         ),
     ] {
-        let response = send(&state, Method::POST, &create, &headers).await;
+        let response = common::request_with(&state, Method::POST, &create, &headers).await;
         assert_eq!(
             common::header(&response, "www-authenticate").as_deref(),
             Some(challenge)
@@ -267,13 +250,13 @@ async fn api_token_opens_the_api(pool: PgPool) -> anyhow::Result<()> {
         assert_eq!(content_type, "application/problem+json");
         assert_eq!(body["title"], "Unauthorized");
     }
-    let response = send(&state, Method::GET, &url("/api/v1/schedules"), &[]).await;
+    let response = common::request(&state, Method::GET, &url("/api/v1/schedules")).await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "/api/v1 too");
     assert_eq!(common::count(&pool, "SELECT count(*) FROM jobs").await, 0);
 
     // either token; the caller's Authorization is not forwarded, Irisqo-Forward-* is
     let bearer = format!("Bearer {TOKEN}");
-    let response = send(
+    let response = common::request_with(
         &state,
         Method::POST,
         &create,
@@ -291,7 +274,7 @@ async fn api_token_opens_the_api(pool: PgPool) -> anyhow::Result<()> {
     assert_eq!(headers, serde_json::json!({ "x-api-key": "target-key" }));
 
     let next = format!("bearer {NEXT_TOKEN}");
-    let response = send(
+    let response = common::request_with(
         &state,
         Method::GET,
         &url(&format!("/api/v1/jobs/{id}")),
@@ -312,7 +295,7 @@ async fn api_token_opens_the_api(pool: PgPool) -> anyhow::Result<()> {
         ("/ui/assets/app.css", StatusCode::OK),
         ("/api/v1/nope", StatusCode::NOT_FOUND),
     ] {
-        let response = send(&state, Method::GET, &url(path), &[]).await;
+        let response = common::request(&state, Method::GET, &url(path)).await;
         assert_eq!(response.status(), expected, "{path}");
     }
     Ok(())
