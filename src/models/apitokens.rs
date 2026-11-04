@@ -1,24 +1,30 @@
 use std::{fmt, str::FromStr};
 
 /// `--api-token`: the tokens that open the API, comma separated, so a new one can be rolled
-/// out before the old one is removed. None: the API is open.
-#[derive(Clone, PartialEq, Eq, Default)]
+/// out before the old one is removed. Never empty (only [`FromStr`] makes one): an open API
+/// is `None` in [`crate::AppState`], not an empty list.
+#[derive(Clone, PartialEq, Eq)]
 pub struct ApiTokens(Vec<String>);
 
 /// Shorter tokens are refused: they could be guessed.
 pub const MIN_TOKEN_LEN: usize = 16;
 
 impl ApiTokens {
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
     /// One of the tokens, compared in constant time (no early exit on the first byte that
     /// differs, which would tell an attacker how much of a guess is right).
     #[must_use = "an unchecked token lets every request in"]
     pub fn accepts(&self, candidate: &str) -> bool {
         self.0.iter().fold(false, |found, token| {
             found | constant_time_eq(token.as_bytes(), candidate.as_bytes())
+        })
+    }
+
+    /// Like [`ApiTokens::accepts`], for a value made from a token by `derive` (the UI login
+    /// pass, signed with the token): the tokens themselves never leave this type.
+    #[must_use = "an unchecked value lets every request in"]
+    pub fn accepts_derived(&self, candidate: &str, derive: impl Fn(&str) -> String) -> bool {
+        self.0.iter().fold(false, |found, token| {
+            found | constant_time_eq(derive(token).as_bytes(), candidate.as_bytes())
         })
     }
 }
@@ -70,5 +76,4 @@ fn tokens() {
     assert_eq!(format!("{tokens:?}"), "ApiTokens(2 tokens)");
     assert!("short".parse::<ApiTokens>().is_err());
     assert!("".parse::<ApiTokens>().is_err() && " , ".parse::<ApiTokens>().is_err());
-    assert!(ApiTokens::default().is_empty() && !ApiTokens::default().accepts(""));
 }

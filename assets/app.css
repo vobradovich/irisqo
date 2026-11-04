@@ -137,7 +137,8 @@ nav a.cta[aria-current="page"] { background: var(--accent-hover); color: var(--a
 }
 .brand img { display: block; }
 /* theme switch: the icon of the current choice (auto, light, dark) */
-.theme-toggle {
+/* icon buttons of the header: the theme switch, the logout */
+.header-icon {
   display: flex;
   width: auto;
   margin: 0;
@@ -146,8 +147,9 @@ nav a.cta[aria-current="page"] { background: var(--accent-hover); color: var(--a
   background: transparent;
   color: var(--muted);
 }
-.theme-toggle:hover,
-.theme-toggle:focus-visible { background: var(--surface-2); color: var(--text); }
+.header-icon:hover,
+.header-icon:focus-visible { background: var(--surface-2); color: var(--text); }
+form.logout { margin: 0; }
 .theme-toggle svg { display: none; }
 [data-theme-choice="auto"] .theme-toggle .i-auto,
 [data-theme-choice="light"] .theme-toggle .i-light,
@@ -639,3 +641,15 @@ pre.body {
   font-size: 0.75rem;
   white-space: nowrap;
 }
+
+/* login */
+.login {
+  max-width: 26rem;
+  margin: 2rem auto;
+  padding: 1.5rem 1.5rem 0.5rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 0.75rem;
+}
+.login h1 { font-size: 1.5rem; margin-bottom: 0.5rem; }
+.login button { width: 100%; }

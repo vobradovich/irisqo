@@ -18,7 +18,7 @@ async fn main() {
 
     let state = AppState::new(&options).await;
     tracing::info!(environment = %state.environment, "starting");
-    if state.api_tokens.is_empty() && !state.environment.is_development() {
+    if state.api_tokens.is_none() && !state.environment.is_development() {
         tracing::warn!(
             "no --api-token (IRISQO_API_TOKEN): the API is open to anyone who reaches it"
         );

@@ -118,9 +118,13 @@ Authorization: Bearer {{token}}
 ```
 
 The caller's `Authorization` stays here: only `Irisqo-Forward-*` headers reach the target.
-`/live`, `/ready` and the UI need no token; the UI does not ask for one yet, so keep it internal
-or behind the proxy. Without a token the API is open, and an instance outside development says so
-in its log at start.
+`/live` and `/ready` need no token. Without a token the API and the UI are open, and an instance
+outside development says so in its log at start.
+
+The UI asks for the same token at `/ui/login` and keeps a pass in an `HttpOnly` cookie: the token's
+HMAC of an expiry a week ahead, not the token itself, `SameSite=Lax`, and `Secure` behind an HTTPS
+proxy (`X-Forwarded-Proto: https`). A pass lasts until it expires or its token is removed from
+`--api-token`; the button in the header logs out.
 
 ### Targets
 Outside development a job cannot call a non-public address: loopback, the private networks

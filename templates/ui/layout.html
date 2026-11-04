@@ -24,19 +24,32 @@
             <span class="brand-name">irisqo</span>
           </a>
         </li>
-        <li><a href="/ui/jobs"{% if nav == "jobs" %} aria-current="page"{% endif %}>Jobs</a></li>
-        <li><a href="/ui/schedules"{% if nav == "schedules" %} aria-current="page"{% endif %}>Schedules</a></li>
-        <li><a href="/ui/instances"{% if nav == "instances" %} aria-current="page"{% endif %}>Instances</a></li>
+        {% if nav.current != "login" %}
+        <li><a href="/ui/jobs"{% if nav.current == "jobs" %} aria-current="page"{% endif %}>Jobs</a></li>
+        <li><a href="/ui/schedules"{% if nav.current == "schedules" %} aria-current="page"{% endif %}>Schedules</a></li>
+        <li><a href="/ui/instances"{% if nav.current == "instances" %} aria-current="page"{% endif %}>Instances</a></li>
+        {% endif %}
       </ul>
       <ul>
         <li>
-          <button type="button" id="theme-toggle" class="theme-toggle" hidden>
+          <button type="button" id="theme-toggle" class="header-icon theme-toggle" hidden>
             <svg class="i-auto" aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"></circle><path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor"></path></svg>
             <svg class="i-light" aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path></svg>
             <svg class="i-dark" aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"></path></svg>
           </button>
         </li>
-        <li><a href="/ui/jobs/new" class="cta"{% if nav == "new" %} aria-current="page"{% endif %}>New<span class="cta-more"> job</span></a></li>
+        {% if nav.logout %}
+        <li>
+          <form method="post" action="/ui/logout" class="logout">
+            <button type="submit" class="header-icon" aria-label="Log out" title="Log out">
+              <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"></path></svg>
+            </button>
+          </form>
+        </li>
+        {% endif %}
+        {% if nav.current != "login" %}
+        <li><a href="/ui/jobs/new" class="cta"{% if nav.current == "new" %} aria-current="page"{% endif %}>New<span class="cta-more"> job</span></a></li>
+        {% endif %}
       </ul>
     </nav>
   </header>

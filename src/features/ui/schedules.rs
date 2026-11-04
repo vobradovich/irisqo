@@ -12,7 +12,7 @@ use axum::{
 use chrono::{DateTime, TimeZone, Utc};
 
 use super::{
-    is_htmx, server_error,
+    Nav, is_htmx, server_error,
     views::{filters, relative, utc},
 };
 use crate::{
@@ -106,7 +106,7 @@ impl ScheduleRowView {
 #[derive(Template, WebTemplate)]
 #[template(path = "ui/schedules.html")]
 pub struct SchedulesPage {
-    nav: &'static str,
+    nav: Nav,
     rows: Vec<ScheduleRowView>,
 }
 
@@ -128,7 +128,7 @@ async fn load(state: &AppState) -> Result<Vec<ScheduleRowView>, Error> {
 pub async fn schedules_page(State(state): State<Arc<AppState>>) -> Response {
     match load(&state).await {
         Ok(rows) => SchedulesPage {
-            nav: "schedules",
+            nav: Nav::new(&state, "schedules"),
             rows,
         }
         .into_response(),
