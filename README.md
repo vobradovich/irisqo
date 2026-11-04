@@ -110,6 +110,8 @@ Other errors carry only their status, with `trace_id`: see [docs/problems.md](do
 there is nothing to fetch from a CDN, and the pages carry a strict `Content-Security-Policy`
 (no inline scripts or styles). The New job form builds the same `/to/` request as the API and goes
 through the same validation; its preview shows that request.
+The theme follows the system setting; the switch in the header picks light or dark instead, kept in
+the browser (`assets/theme.js`, the only script besides htmx).
 
 [![Jobs: the queue stats and the jobs by state](docs/screenshots/jobs.png)](docs/screenshots/jobs.png)
 

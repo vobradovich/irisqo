@@ -78,6 +78,7 @@ async fn pages_use_only_embedded_assets(pool: PgPool) -> anyhow::Result<()> {
         "/ui/assets/htmx-4.0.1.min.js",
         "/ui/assets/pico-2.1.1.classless.min.css",
         "/ui/assets/app.css",
+        "/ui/assets/theme.js",
         "/ui/assets/logo.svg",
         "/ui/assets/favicon-32.png",
         "/ui/assets/apple-touch-icon.png",

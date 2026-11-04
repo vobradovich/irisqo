@@ -34,6 +34,12 @@ const ASSETS: &[Asset] = &[
         immutable: false,
     },
     Asset {
+        name: "theme.js",
+        content_type: "text/javascript; charset=utf-8",
+        bytes: include_bytes!("../../../assets/theme.js"),
+        immutable: false,
+    },
+    Asset {
         name: "logo.svg",
         content_type: "image/svg+xml",
         bytes: include_bytes!("../../../assets/logo.svg"),
