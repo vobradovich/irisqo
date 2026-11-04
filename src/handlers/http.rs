@@ -4,7 +4,7 @@ use crate::{
     features::schedules::JobSchedule,
     models::{
         AppState, Error, HttpMeta, JobCreate, JobCreateRow, JobMeta, JobProtocol, JobRetry,
-        ParamError, WorkerOptions,
+        ParamError, WorkerOptions, headers::forwarded_headers,
     },
     otel::{self, metrics::metrics},
 };
@@ -212,78 +212,4 @@ pub async fn create_job(state: &AppState, job: JobCreate) -> Result<JobCreateRow
                 .jobs_created
                 .add(1, &[KeyValue::new("job.type", job_type)]);
         })
-}
-
-/// Prefix of the request headers forwarded to the target, without the prefix.
-pub const FORWARD_PREFIX: &str = "irisqo-forward-";
-
-/// The headers forwarded to the target: the body ones (`content-type`, `content-encoding`,
-/// `content-language`) and the `irisqo-forward-*` ones without the prefix
-/// (`irisqo-forward-authorization: Bearer x` -> `authorization: Bearer x`).
-/// Everything else (the caller's own `authorization`, `cookie`, proxy headers...) stays here.
-pub fn forwarded_headers(headers: &HeaderMap) -> HashMap<String, String> {
-    headers
-        .iter()
-        .filter_map(|(name, value)| {
-            let name = name.as_str();
-            let target = name.strip_prefix(FORWARD_PREFIX).or_else(|| {
-                matches!(
-                    name,
-                    "content-type" | "content-encoding" | "content-language"
-                )
-                .then_some(name)
-            })?;
-            let value = value.to_str().ok()?;
-            (!is_reserved_header(target)).then(|| (target.to_owned(), value.to_owned()))
-        })
-        .collect()
-}
-
-/// Headers a client cannot set on the target request (lowercase name): the HTTP client
-/// sets the host and the body length, irisqo the trace context and the `irisqo-*` ones.
-#[must_use = "an unchecked header is forwarded"]
-pub fn is_reserved_header(name: &str) -> bool {
-    matches!(
-        name,
-        "" | "host"
-            | "content-length"
-            | "transfer-encoding"
-            | "connection"
-            | "traceparent"
-            | "tracestate"
-    ) || name.starts_with("irisqo-")
-}
-
-#[test]
-fn forwarded_headers_allowlist() {
-    let mut headers = HeaderMap::new();
-    for (name, value) in [
-        ("content-type", "application/json"),
-        ("authorization", "Bearer caller"),
-        ("cookie", "session=caller"),
-        ("x-custom", "dropped"),
-        ("irisqo-forward-authorization", "Bearer target"),
-        ("irisqo-forward-x-custom", "kept"),
-        ("irisqo-forward-host", "evil.example"),
-        ("irisqo-forward-irisqo-job-id", "spoofed"),
-        ("irisqo-forward-", "empty"),
-        (
-            "traceparent",
-            "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
-        ),
-    ] {
-        headers.insert(
-            axum::http::HeaderName::from_static(name),
-            HeaderValue::from_static(value),
-        );
-    }
-    let forwarded = forwarded_headers(&headers);
-    assert_eq!(
-        forwarded,
-        HashMap::from([
-            ("content-type".into(), "application/json".into()),
-            ("authorization".into(), "Bearer target".into()),
-            ("x-custom".into(), "kept".into()),
-        ])
-    );
 }

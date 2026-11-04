@@ -534,3 +534,65 @@ async fn ui_refuses_cross_site_posts(pool: PgPool) -> anyhow::Result<()> {
     );
     Ok(())
 }
+
+#[sqlx::test(migrations = "./sql/migrations")]
+async fn forwarded_values_are_hidden(pool: PgPool) -> anyhow::Result<()> {
+    let state = common::state(pool.clone());
+    let addr = common::spawn_app(&state).await;
+    let response = common::request_with(
+        &state,
+        Method::POST,
+        &format!("http://{addr}/to/http://{addr}/echo?_delay=600"),
+        &[
+            ("content-type", "application/json"),
+            ("irisqo-forward-accept", "application/json"),
+            ("irisqo-forward-authorization", "Bearer target-secret"),
+            ("irisqo-forward-x-signature", "sha256=abc"),
+        ],
+    )
+    .await;
+    let id = common::header(&response, "job-id").expect("job-id");
+
+    // the API: names, and the values of the open headers only
+    let response = common::request(
+        &state,
+        Method::GET,
+        &format!("http://{addr}/api/v1/jobs/{id}"),
+    )
+    .await;
+    let bytes = response
+        .into_body()
+        .collect()
+        .await
+        .expect("body")
+        .to_bytes();
+    let job: serde_json::Value = serde_json::from_slice(&bytes)?;
+    assert_eq!(
+        job["headers"],
+        serde_json::json!({
+            "content-type": "application/json",
+            "accept": "application/json",
+            "authorization": "••••",
+            "x-signature": "••••",
+        })
+    );
+    // the UI the same
+    let response =
+        common::request(&state, Method::GET, &format!("http://{addr}/ui/jobs/{id}")).await;
+    let bytes = response
+        .into_body()
+        .collect()
+        .await
+        .expect("body")
+        .to_bytes();
+    let page = String::from_utf8_lossy(&bytes);
+    assert!(page.contains("<dt>x-signature</dt><dd>••••</dd>"), "{page}");
+    assert!(!page.contains("target-secret") && !page.contains("sha256=abc"));
+    // stored as given: the target gets them
+    let stored: serde_json::Value = sqlx::query_scalar("SELECT headers FROM jobs")
+        .fetch_one(&pool)
+        .await?;
+    assert_eq!(stored["authorization"], "Bearer target-secret");
+    assert_eq!(stored["x-signature"], "sha256=abc");
+    Ok(())
+}
