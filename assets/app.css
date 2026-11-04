@@ -139,8 +139,9 @@ nav a.cta {
 }
 nav a.cta:hover,
 nav a.cta[aria-current="page"] { background: var(--accent-hover); color: var(--accent-ink); }
+/* a flex box, not inline: on the text baseline the brand sat 3 px above the links */
 .brand {
-  display: inline-flex;
+  display: flex;
   align-items: center;
   gap: 0.5rem;
   color: var(--text);
