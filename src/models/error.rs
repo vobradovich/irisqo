@@ -39,10 +39,15 @@ fn describe(errors: &[ParamError]) -> String {
 #[derive(thiserror::Error, Debug)]
 #[allow(clippy::enum_variant_names)]
 pub enum Error {
-    // #[error("Entity Not Found - {0}[{1}] ")]
-    // EntityNotFound(&'static str, String),
     #[error("Job Not Found - {0}")]
     JobNotFound(i64),
+
+    /// No such job, or it is not processed yet.
+    #[error("Result Not Found - {0}")]
+    ResultNotFound(i64),
+
+    #[error("Schedule Not Found - {0}")]
+    ScheduleNotFound(String),
 
     #[error(transparent)]
     Timeout(#[from] Elapsed),
@@ -86,6 +91,13 @@ impl Error {
     }
 }
 
+fn not_found(detail: String) -> Problem {
+    Problem {
+        detail: Some(detail),
+        ..Problem::new(StatusCode::NOT_FOUND)
+    }
+}
+
 /// RFC 9457 problem details. Only the invalid parameters are explained; any other
 /// error is logged and answered with its status alone: no internals in the response.
 impl From<Error> for Problem {
@@ -104,9 +116,12 @@ impl From<Error> for Problem {
                     ..Problem::new(StatusCode::BAD_REQUEST)
                 }
             }
-            Error::JobNotFound(_) | Error::DbError(sqlx::Error::RowNotFound) => {
-                Problem::new(StatusCode::NOT_FOUND)
-            }
+            Error::JobNotFound(id) => not_found(format!("Job {id} does not exist.")),
+            Error::ResultNotFound(id) => not_found(format!(
+                "Job {id} has no result: it does not exist or is not processed yet."
+            )),
+            Error::ScheduleNotFound(id) => not_found(format!("Schedule {id} does not exist.")),
+            Error::DbError(sqlx::Error::RowNotFound) => Problem::new(StatusCode::NOT_FOUND),
             Error::Timeout(_)
             | Error::DbError(_)
             | Error::IoError(_)

@@ -11,6 +11,7 @@ mod common;
 mod delivery;
 mod otel;
 mod reliability;
+mod security;
 mod smoke;
 mod telemetry;
 mod ui;

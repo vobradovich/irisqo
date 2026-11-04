@@ -102,7 +102,9 @@ Invalid job parameters are rejected with `400` and every problem at once:
   "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736"
 }
 ```
-Other errors carry only their status, with `trace_id`: see [docs/problems.md](docs/problems.md).
+A missing job, result or schedule is a `404` with a `detail` (a `GET` of a job not processed yet has
+no result either; a `DELETE` of a missing one stays `204`). Other errors carry only their status,
+with `trace_id`: see [docs/problems.md](docs/problems.md).
 
 ## UI
 `/ui` serves a server-rendered UI (`/` sends a browser there): Askama templates, [htmx](https://htmx.org) for the partial updates and

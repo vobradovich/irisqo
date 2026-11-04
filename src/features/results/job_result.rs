@@ -167,6 +167,8 @@ impl From<Error> for JobResult {
             Error::Timeout(_) => JobResult::with_type(JobResultType::Timeout),
             Error::ClientError(res) | Error::ServerError(res) => *res,
             Error::JobNotFound(_)
+            | Error::ResultNotFound(_)
+            | Error::ScheduleNotFound(_)
             | Error::DbError(_)
             | Error::IoError(_)
             | Error::HttpError(_)

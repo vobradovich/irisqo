@@ -1,4 +1,4 @@
-use crate::models::Problem;
+use crate::models::{Error, Problem};
 use crate::{db, db::jobqueue::ActionOutcome, models::AppState};
 use axum::{
     Json, Router,
@@ -29,11 +29,10 @@ async fn get_by_id(
     State(state): State<Arc<AppState>>,
     Path(id): Path<i64>,
 ) -> Result<Response, Problem> {
-    let job = db::jobqueue::get_by_id(&state.pool, id).await?;
-    match job {
-        None => Ok(StatusCode::NO_CONTENT.into_response()),
-        Some(o) => Ok(Json(o).into_response()),
-    }
+    let job = db::jobqueue::get_by_id(&state.pool, id)
+        .await?
+        .ok_or(Error::JobNotFound(id))?;
+    Ok(Json(job).into_response())
 }
 
 fn action_status(outcome: ActionOutcome) -> StatusCode {

@@ -294,6 +294,8 @@ fn error_type(err: &Error) -> &'static str {
         Error::ResponseTooLarge => "response_too_large",
         Error::HyperClientError(_) | Error::HyperError(_) | Error::IoError(_) => "connection",
         Error::JobNotFound(_)
+        | Error::ResultNotFound(_)
+        | Error::ScheduleNotFound(_)
         | Error::DbError(_)
         | Error::HttpError(_)
         | Error::InvalidParams(_)
@@ -363,6 +365,8 @@ async fn on_error(
             res.retry_after(JobSchedule::now_secs()),
         ),
         Error::JobNotFound(_)
+        | Error::ResultNotFound(_)
+        | Error::ScheduleNotFound(_)
         | Error::DbError(_)
         | Error::IoError(_)
         | Error::HttpError(_)
