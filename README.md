@@ -41,6 +41,11 @@ Irisqo-Forward-Authorization: Bearer token-for-the-target
 Content-Type: application/json
 ```
 
+The forwarded headers are stored for the target and never given back: the API
+(`GET /api/v1/jobs/{id}`) and the UI show their names, and the values of the open ones only
+(`Content-Type`, `Content-Encoding`, `Content-Language`, `Accept`, `Accept-Encoding`,
+`Accept-Language`, `User-Agent`, `Cache-Control`); any other value reads `••••`.
+
 Every delivery also carries:
 - `Irisqo-Job-Id` - the job, the same on every retry: delivery is at least once, use it to drop duplicates;
 - `Irisqo-Retry` - the attempt, from 0;

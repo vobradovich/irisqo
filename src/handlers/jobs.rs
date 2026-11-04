@@ -29,9 +29,11 @@ async fn get_by_id(
     State(state): State<Arc<AppState>>,
     Path(id): Path<i64>,
 ) -> Result<Response, Problem> {
-    let job = db::jobqueue::get_by_id(&state.pool, id)
+    let mut job = db::jobqueue::get_by_id(&state.pool, id)
         .await?
         .ok_or(Error::JobNotFound(id))?;
+    // the forwarded headers are for the target: only the open ones are shown
+    job.headers = job.headers.map(super::http::shown_headers);
     Ok(Json(job).into_response())
 }
 

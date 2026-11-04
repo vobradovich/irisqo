@@ -11,16 +11,19 @@ use crate::{
         history::JobHistoryRow,
         results::{JobResult, JobResultType},
     },
+    handlers::http::{HIDDEN, shown_value},
     models::{JobProtocol, JobRetry, JobRow},
 };
 
-/// Secrets are not echoed back: header values whose name looks like a credential.
+/// A header of the target's answer: the value is hidden when the name looks like a
+/// credential (`set-cookie`, `x-auth-token`...). Our own forwarded headers go through
+/// [`shown_value`] instead: only the open ones are shown.
 pub fn mask(name: &str, value: &str) -> String {
     let secret = ["auth", "token", "key", "secret", "cookie", "password"]
         .iter()
         .any(|s| name.to_ascii_lowercase().contains(s));
     if secret && !value.is_empty() {
-        "••••".to_owned()
+        HIDDEN.to_owned()
     } else {
         value.to_owned()
     }
@@ -188,11 +191,15 @@ fn body_text(body: &[u8]) -> String {
     text
 }
 
-fn sorted_headers(headers: Option<&HashMap<String, String>>) -> Vec<(String, String)> {
+/// `shown`: the value as the page shows it.
+fn sorted_headers(
+    headers: Option<&HashMap<String, String>>,
+    shown: fn(&str, &str) -> String,
+) -> Vec<(String, String)> {
     let mut list: Vec<_> = headers
         .into_iter()
         .flatten()
-        .map(|(k, v)| (k.clone(), mask(k, v)))
+        .map(|(k, v)| (k.clone(), shown(k, v)))
         .collect();
     list.sort();
     list
@@ -231,7 +238,8 @@ impl ResultView {
             title,
             status: result.processed_status().to_owned(),
             detail,
-            headers: sorted_headers(result.headers.as_ref()),
+            // the target's answer: only what looks like a credential is hidden
+            headers: sorted_headers(result.headers.as_ref(), mask),
             body: body_text(&result.body),
             body_size: result.body.len(),
             trace_id: result.meta.trace_id.clone(),
@@ -280,7 +288,8 @@ impl JobDetailView {
             retry_policy: retry_policy(&view.meta.retry),
             timeout: format!("{} ms", view.meta.timeout),
             external_id: view.external_id.clone().unwrap_or_else(|| "—".into()),
-            headers: sorted_headers(job.headers.as_ref()),
+            // ours, for the target: only the open headers are shown, as in the API
+            headers: sorted_headers(job.headers.as_ref(), shown_value),
             body: body_text(body),
             body_size: body.len(),
             result,

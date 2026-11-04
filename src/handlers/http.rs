@@ -217,6 +217,48 @@ pub async fn create_job(state: &AppState, job: JobCreate) -> Result<JobCreateRow
 /// Prefix of the request headers forwarded to the target, without the prefix.
 pub const FORWARD_PREFIX: &str = "irisqo-forward-";
 
+/// The body headers, forwarded without the prefix.
+const BODY_HEADERS: [&str; 3] = ["content-type", "content-encoding", "content-language"];
+
+/// The forwarded headers whose values the API and the UI show: they describe the request
+/// and carry no secret. Any other value (`authorization`, an API key, a signature...) is
+/// shown as [`HIDDEN`]: stored for the target, never given back.
+const OPEN_HEADERS: [&str; 8] = [
+    "content-type",
+    "content-encoding",
+    "content-language",
+    "accept",
+    "accept-encoding",
+    "accept-language",
+    "user-agent",
+    "cache-control",
+];
+
+pub const HIDDEN: &str = "••••";
+
+/// The value of a forwarded header as shown: itself for an [open](OPEN_HEADERS) one.
+pub fn shown_value(name: &str, value: &str) -> String {
+    let open = OPEN_HEADERS
+        .iter()
+        .any(|open| name.eq_ignore_ascii_case(open));
+    if open || value.is_empty() {
+        value.to_owned()
+    } else {
+        HIDDEN.to_owned()
+    }
+}
+
+/// The forwarded headers as shown.
+pub fn shown_headers(headers: HashMap<String, String>) -> HashMap<String, String> {
+    headers
+        .into_iter()
+        .map(|(name, value)| {
+            let value = shown_value(&name, &value);
+            (name, value)
+        })
+        .collect()
+}
+
 /// The headers forwarded to the target: the body ones (`content-type`, `content-encoding`,
 /// `content-language`) and the `irisqo-forward-*` ones without the prefix
 /// (`irisqo-forward-authorization: Bearer x` -> `authorization: Bearer x`).
@@ -226,13 +268,9 @@ pub fn forwarded_headers(headers: &HeaderMap) -> HashMap<String, String> {
         .iter()
         .filter_map(|(name, value)| {
             let name = name.as_str();
-            let target = name.strip_prefix(FORWARD_PREFIX).or_else(|| {
-                matches!(
-                    name,
-                    "content-type" | "content-encoding" | "content-language"
-                )
-                .then_some(name)
-            })?;
+            let target = name
+                .strip_prefix(FORWARD_PREFIX)
+                .or_else(|| BODY_HEADERS.contains(&name).then_some(name))?;
             let value = value.to_str().ok()?;
             (!is_reserved_header(target)).then(|| (target.to_owned(), value.to_owned()))
         })
@@ -286,4 +324,17 @@ fn forwarded_headers_allowlist() {
             ("x-custom".into(), "kept".into()),
         ])
     );
+}
+
+#[test]
+fn only_open_headers_are_shown() {
+    assert_eq!(
+        shown_value("Content-Type", "application/json"),
+        "application/json"
+    );
+    assert_eq!(shown_value("accept", "text/plain"), "text/plain");
+    for secret in ["authorization", "x-api-key", "x-signature", "x-anything"] {
+        assert_eq!(shown_value(secret, "value"), HIDDEN, "{secret}");
+    }
+    assert_eq!(shown_value("x-empty", ""), "");
 }
