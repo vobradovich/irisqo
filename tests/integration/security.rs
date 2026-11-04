@@ -76,3 +76,25 @@ async fn missing_objects_are_404(pool: PgPool) -> anyhow::Result<()> {
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
     Ok(())
 }
+
+#[sqlx::test(migrations = "./sql/migrations")]
+async fn dev_endpoints_only_in_development(pool: PgPool) -> anyhow::Result<()> {
+    for (env, expected) in [
+        ("development", StatusCode::OK),
+        ("staging", StatusCode::NOT_FOUND),
+        ("production", StatusCode::NOT_FOUND),
+    ] {
+        let state = common::state_with(pool.clone(), &["--env", env]);
+        let addr = common::spawn_app(&state).await;
+        let response = common::request(&state, Method::GET, &format!("http://{addr}/echo")).await;
+        assert_eq!(response.status(), expected, "/echo in {env}");
+        let response = common::request(&state, Method::GET, &format!("http://{addr}/error")).await;
+        let expected = if expected == StatusCode::OK {
+            StatusCode::INTERNAL_SERVER_ERROR
+        } else {
+            expected
+        };
+        assert_eq!(response.status(), expected, "/error in {env}");
+    }
+    Ok(())
+}
