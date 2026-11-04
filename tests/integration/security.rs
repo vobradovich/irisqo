@@ -98,3 +98,121 @@ async fn dev_endpoints_only_in_development(pool: PgPool) -> anyhow::Result<()> {
     }
     Ok(())
 }
+
+/// Creates a job through the API of `state`; returns the status and the body.
+async fn create(
+    state: &irisqo::AppState,
+    addr: std::net::SocketAddr,
+    target: &str,
+) -> (StatusCode, serde_json::Value) {
+    let response = common::create(state, addr, target).await;
+    let status = response.status();
+    let bytes = response
+        .into_body()
+        .collect()
+        .await
+        .expect("body")
+        .to_bytes();
+    (status, serde_json::from_slice(&bytes).unwrap_or_default())
+}
+
+#[sqlx::test(migrations = "./sql/migrations")]
+async fn private_targets_are_refused_outside_development(pool: PgPool) -> anyhow::Result<()> {
+    let prod = common::state_with(pool.clone(), &["--env", "production"]);
+    let addr = common::spawn_app(&prod).await;
+    for target in [
+        "http://127.0.0.1:8080/hook",
+        "http://169.254.169.254/latest/meta-data/",
+        "http://[::1]/hook",
+        "http://localhost/hook",
+        "http://10.0.0.7/hook",
+    ] {
+        let (status, body) = create(&prod, addr, target).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{target}");
+        assert_eq!(body["errors"][0]["parameter"], "url", "{target}: {body}");
+        assert_eq!(
+            body["errors"][0]["detail"], "is a private address",
+            "{target}"
+        );
+    }
+    let (status, _) = create(&prod, addr, "https://example.com/hook?_delay=600").await;
+    assert_eq!(
+        status,
+        StatusCode::CREATED,
+        "a public name is checked when resolved"
+    );
+    Ok(())
+}
+
+#[sqlx::test(migrations = "./sql/migrations")]
+async fn worker_refuses_private_targets(pool: PgPool) -> anyhow::Result<()> {
+    // jobs made where they were allowed (or before the check existed), run in production
+    let dev = common::state(pool.clone());
+    let dev_addr = common::spawn_app(&dev).await;
+    let port = dev_addr.port();
+    let mut ids = Vec::new();
+    for target in [
+        format!("http://localhost:{port}/echo"),
+        format!("http://127.0.0.1:{port}/echo"),
+    ] {
+        let response = common::create(&dev, dev_addr, &target).await;
+        ids.push(
+            common::header(&response, "job-id")
+                .expect("job-id")
+                .parse::<i64>()?,
+        );
+    }
+
+    let prod = common::state_with(pool.clone(), &["--env", "production"]);
+    assert_eq!(common::run_enqueued(&prod).await, 2);
+    for id in ids {
+        assert_eq!(
+            common::processed_status(&pool, id).await.as_deref(),
+            Some("failed"),
+            "job {id}: no retry"
+        );
+        let response = common::request(
+            &dev,
+            Method::GET,
+            &format!("http://{dev_addr}/api/v1/jobs/{id}/result"),
+        )
+        .await;
+        let bytes = response
+            .into_body()
+            .collect()
+            .await
+            .expect("body")
+            .to_bytes();
+        let result = String::from_utf8_lossy(&bytes);
+        assert!(result.contains("Blocked target"), "job {id}: {result}");
+    }
+    Ok(())
+}
+
+#[sqlx::test(migrations = "./sql/migrations")]
+async fn allowed_targets_pass(pool: PgPool) -> anyhow::Result<()> {
+    // the target: /echo of a development instance
+    let dev = common::state(pool.clone());
+    let dev_addr = common::spawn_app(&dev).await;
+
+    let prod = common::state_with(
+        pool.clone(),
+        &["--env", "production", "--allow-targets", "127.0.0.0/8"],
+    );
+    let addr = common::spawn_app(&prod).await;
+    let (status, _) = create(
+        &prod,
+        addr,
+        &format!("http://localhost:{}/echo", dev_addr.port()),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(common::run_enqueued(&prod).await, 1);
+    let completed = common::count(
+        &pool,
+        "SELECT count(*) FROM processed WHERE status = 'completed'",
+    )
+    .await;
+    assert_eq!(completed, 1);
+    Ok(())
+}

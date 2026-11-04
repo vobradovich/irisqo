@@ -11,7 +11,7 @@ use sqlx::{
 use std::{fmt::Display, str::FromStr, sync::Arc, time::Duration};
 use tokio_util::sync::CancellationToken;
 
-use super::Environment;
+use super::{AllowTargets, Environment, TargetPolicy, targets::GuardedResolver};
 
 //type DbPool = Pool<Postgres>;
 #[derive(Debug)]
@@ -20,7 +20,7 @@ pub struct AppState {
     pub port: u16,
     pub instance_id: String,
     pub pool: Pool<Postgres>,
-    pub client: Client<HttpsConnector<HttpConnector>, Full<Bytes>>,
+    pub client: Client<HttpsConnector<HttpConnector<GuardedResolver>>, Full<Bytes>>,
     pub scheduler_options: Option<SchedulerOptions>,
     pub worker_options: WorkerOptions,
     /// Link to a trace in the UI: `{trace_id}` is replaced, e.g.
@@ -53,6 +53,8 @@ pub struct WorkerOptions {
     pub max_timeout: u32,
     /// On shutdown, how long the running jobs may finish; the rest are released.
     pub shutdown_timeout: Duration,
+    /// The addresses a job may call.
+    pub targets: Arc<TargetPolicy>,
 }
 
 /// Extra time on top of `max_timeout` before a lock counts as stuck.
@@ -87,6 +89,9 @@ xflags::xflags! {
         /// development, staging or production: development serves /echo and /error and
         /// allows private targets. Default: production
         optional --env name: Environment
+        /// Private addresses and networks a job may call anyway, comma separated:
+        /// 10.1.0.0/16,192.168.1.10. Default: none (development allows all)
+        optional --allow-targets list: AllowTargets
     }
 }
 
@@ -140,6 +145,7 @@ impl Options {
             retention_hours,
             trace_url,
             env,
+            allow_targets,
         } = self;
         take(port, "IRISQO_PORT", &var)?;
         take(db_connections, "IRISQO_DB_CONNECTIONS", &var)?;
@@ -152,6 +158,7 @@ impl Options {
         take(retention_hours, "IRISQO_RETENTION_HOURS", &var)?;
         take(trace_url, "IRISQO_TRACE_URL", &var)?;
         take(env, "IRISQO_ENV", &var)?;
+        take(allow_targets, "IRISQO_ALLOW_TARGETS", &var)?;
         Ok(())
     }
 
@@ -194,7 +201,14 @@ impl AppState {
         options: &Options,
     ) -> Arc<AppState> {
         let max_timeout = options.max_timeout.unwrap_or(300_000);
-        let https = hyper_tls::HttpsConnector::new();
+        let targets = Arc::new(TargetPolicy::new(
+            options.environment(),
+            options.allow_targets.clone().unwrap_or_default(),
+        ));
+        // host names resolve only to the allowed addresses
+        let mut http = HttpConnector::new_with_resolver(GuardedResolver::new(Arc::clone(&targets)));
+        http.enforce_http(false);
+        let https = HttpsConnector::new_with_connector(http);
         let state = AppState {
             environment: options.environment(),
             port: options.port.unwrap_or(8102),
@@ -214,6 +228,7 @@ impl AppState {
                 timeout: options.timeout.unwrap_or(3000).min(max_timeout),
                 max_timeout,
                 shutdown_timeout: Duration::from_secs(options.shutdown_timeout.unwrap_or(20)),
+                targets,
             },
             trace_url: options
                 .trace_url

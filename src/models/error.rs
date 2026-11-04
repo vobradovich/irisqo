@@ -80,6 +80,10 @@ pub enum Error {
     #[error("Response Too Large")]
     ResponseTooLarge,
 
+    /// The target address is not allowed (SSRF): never retried.
+    #[error("Blocked target: {0}")]
+    BlockedTarget(String),
+
     #[error("Retries Exceeded")]
     RetriesExceeded,
 }
@@ -131,6 +135,7 @@ impl From<Error> for Problem {
             | Error::ServerError(_)
             | Error::ClientError(_)
             | Error::ResponseTooLarge
+            | Error::BlockedTarget(_)
             | Error::RetriesExceeded => {
                 let problem = Problem {
                     detail: Some(

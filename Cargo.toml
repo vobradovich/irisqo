@@ -25,6 +25,8 @@ hyper-tls = { version = "0.6" }
 http = "1"
 http-body-util = { version = "0.1" }
 url = { version = "2.5" }
+ipnet = "2"
+tower-service = "0.3"
 # Configuration & Observability
 dotenvy = "0.15"
 opentelemetry = { version = "0.33", features = ["trace", "metrics", "logs"] }
