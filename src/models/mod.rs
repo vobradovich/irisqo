@@ -18,6 +18,7 @@ pub use targets::{AllowTargets, TargetPolicy};
 mod apitokens;
 mod environment;
 mod error;
+pub mod headers;
 mod job;
 mod jobretry;
 mod problem;

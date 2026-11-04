@@ -12,8 +12,11 @@ use hyper::Method;
 use url::form_urlencoded;
 
 use crate::{
-    handlers::http::{JobRequest, is_reserved_header, prepare_job, shown_value},
-    models::{JobCreate, ParamError, WorkerOptions},
+    handlers::http::{JobRequest, prepare_job},
+    models::{
+        JobCreate, ParamError, WorkerOptions,
+        headers::{is_reserved_header, shown_value},
+    },
 };
 
 pub(super) const METHODS: [&str; 5] = ["GET", "POST", "PUT", "PATCH", "DELETE"];

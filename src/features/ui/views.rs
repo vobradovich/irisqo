@@ -11,7 +11,7 @@ use crate::{
         history::JobHistoryRow,
         results::{JobResult, JobResultType},
     },
-    handlers::http::{HIDDEN, shown_value},
+    models::headers::{HIDDEN, shown_value},
     models::{JobProtocol, JobRetry, JobRow},
 };
 
