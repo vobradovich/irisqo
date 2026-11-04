@@ -111,6 +111,19 @@ there is nothing to fetch from a CDN, and the pages carry a strict `Content-Secu
 (no inline scripts or styles). The New job form builds the same `/to/` request as the API and goes
 through the same validation; its preview shows that request.
 
+[![Jobs: the queue stats and the jobs by state](docs/screenshots/jobs.png)](docs/screenshots/jobs.png)
+
+<table>
+  <tr>
+    <td width="50%"><a href="docs/screenshots/job.png"><img src="docs/screenshots/job.png" alt="Job: the request, the result and the history"></a><br><sub>Job</sub></td>
+    <td width="50%"><a href="docs/screenshots/new-job.png"><img src="docs/screenshots/new-job.png" alt="New job: the form and the same request with the API"></a><br><sub>New job</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><a href="docs/screenshots/schedules.png"><img src="docs/screenshots/schedules.png" alt="Schedules: rule, next and last run"></a><br><sub>Schedules</sub></td>
+    <td width="50%"><a href="docs/screenshots/instances.png"><img src="docs/screenshots/instances.png" alt="Instances: the processes on the queue"></a><br><sub>Instances</sub></td>
+  </tr>
+</table>
+
 - **Jobs**: the queue stats and the jobs by state (scheduled, retrying, enqueued, processing,
   completed, failed, cancelled), searchable by id, external id or URL, refreshed every 2 s; a row
   opens its history in place.
