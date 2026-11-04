@@ -106,6 +106,22 @@ A missing job, result or schedule is a `404` with a `detail` (a `GET` of a job n
 no result either; a `DELETE` of a missing one stays `204`). Other errors carry only their status,
 with `trace_id`: see [docs/problems.md](docs/problems.md).
 
+### Authentication
+With `--api-token` (better `IRISQO_API_TOKEN`: a flag shows in `ps`) the API (`/to/*`, `/api/v1/*`)
+asks for `Authorization: Bearer <token>`; without it or with a wrong one the answer is a `401`
+problem with `WWW-Authenticate: Bearer`. Several tokens, comma separated, let a new one roll out
+before the old one goes; each needs at least 16 characters (`openssl rand -hex 32`).
+
+```http
+POST {{host}}/to/https://postman-echo.com/post
+Authorization: Bearer {{token}}
+```
+
+The caller's `Authorization` stays here: only `Irisqo-Forward-*` headers reach the target.
+`/live`, `/ready` and the UI need no token; the UI does not ask for one yet, so keep it internal
+or behind the proxy. Without a token the API is open, and an instance outside development says so
+in its log at start.
+
 ### Targets
 Outside development a job cannot call a non-public address: loopback, the private networks
 (`10/8`, `172.16/12`, `192.168/16`, `fc00::/7`), link-local (`169.254/16` with the cloud metadata
@@ -167,6 +183,7 @@ DATABASE_URL=postgres://user:pass@localhost/irisqo cargo run --release -- --help
 | `--retention-hours` | 168 | processed jobs older than this are deleted, `0` keeps them |
 | `--trace-url` | — | UI link to a trace, `{trace_id}` is replaced |
 | `--shutdown-timeout` | 20 | s the running jobs get to finish on shutdown; keep it under the orchestrator grace period (30 s in Kubernetes) |
+| `--api-token` | — | bearer tokens of the API, comma separated, see [Authentication](#authentication) |
 | `--allow-targets` | — | private addresses and networks a job may call anyway, see [Targets](#targets) |
 | `--env` | production | `development`, `staging` or `production`: development serves `/echo` and `/error`; also `deployment.environment.name` in the telemetry |
 

@@ -65,6 +65,7 @@ impl TargetPolicy {
     }
 
     /// Any address: for the tests of the policy itself.
+    #[cfg(test)]
     pub fn allow_all() -> Self {
         TargetPolicy {
             allow_all: true,
@@ -72,6 +73,7 @@ impl TargetPolicy {
         }
     }
 
+    #[must_use = "an unchecked address is not refused"]
     pub fn allows(&self, ip: IpAddr) -> bool {
         self.allow_all || is_public(ip) || self.allow.iter().any(|net| net.contains(&ip))
     }
@@ -99,6 +101,7 @@ impl TargetPolicy {
 /// Reachable on the public internet: not loopback, private, link-local (the cloud metadata
 /// service), shared (CGNAT), reserved, multicast, documentation or unspecified. An IPv4
 /// address inside IPv6 (`::ffff:a.b.c.d`, NAT64 `64:ff9b::a.b.c.d`) is judged as IPv4.
+#[must_use = "an unchecked address is not refused"]
 pub fn is_public(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(ip) => is_public_v4(ip),

@@ -11,12 +11,14 @@ use sqlx::{
 use std::{fmt::Display, str::FromStr, sync::Arc, time::Duration};
 use tokio_util::sync::CancellationToken;
 
-use super::{AllowTargets, Environment, TargetPolicy, targets::GuardedResolver};
+use super::{AllowTargets, ApiTokens, Environment, TargetPolicy, targets::GuardedResolver};
 
 //type DbPool = Pool<Postgres>;
 #[derive(Debug)]
 pub struct AppState {
     pub environment: Environment,
+    /// Open the API (`/to/*`, `/api/v1/*`); none: the API is open.
+    pub api_tokens: ApiTokens,
     pub port: u16,
     pub instance_id: String,
     pub pool: Pool<Postgres>,
@@ -92,6 +94,9 @@ xflags::xflags! {
         /// Private addresses and networks a job may call anyway, comma separated:
         /// 10.1.0.0/16,192.168.1.10. Default: none (development allows all)
         optional --allow-targets list: AllowTargets
+        /// Bearer tokens for /to/* and /api/v1/*, comma separated, at least 16 characters
+        /// each (better set by IRISQO_API_TOKEN: a flag shows in ps). Default: none, open
+        optional --api-token list: ApiTokens
     }
 }
 
@@ -127,7 +132,8 @@ impl Options {
                 *option = Some(
                     value
                         .parse()
-                        .map_err(|err| format!("{name}={value}: {err}"))?,
+                        // no value: it may be a secret (IRISQO_API_TOKEN)
+                        .map_err(|err| format!("{name}: {err}"))?,
                 );
             }
             Ok(())
@@ -146,6 +152,7 @@ impl Options {
             trace_url,
             env,
             allow_targets,
+            api_token,
         } = self;
         take(port, "IRISQO_PORT", &var)?;
         take(db_connections, "IRISQO_DB_CONNECTIONS", &var)?;
@@ -159,6 +166,7 @@ impl Options {
         take(trace_url, "IRISQO_TRACE_URL", &var)?;
         take(env, "IRISQO_ENV", &var)?;
         take(allow_targets, "IRISQO_ALLOW_TARGETS", &var)?;
+        take(api_token, "IRISQO_API_TOKEN", &var)?;
         Ok(())
     }
 
@@ -211,6 +219,7 @@ impl AppState {
         let https = HttpsConnector::new_with_connector(http);
         let state = AppState {
             environment: options.environment(),
+            api_tokens: options.api_token.clone().unwrap_or_default(),
             port: options.port.unwrap_or(8102),
             instance_id,
             pool,
@@ -266,5 +275,21 @@ fn options_fall_back_to_the_environment() {
     let err = bad
         .fill_from(|name| (name == "IRISQO_PORT").then(|| "port".to_owned()))
         .expect_err("not a number");
-    assert!(err.starts_with("IRISQO_PORT=port"), "{err}");
+    assert!(err.starts_with("IRISQO_PORT: "), "{err}");
+}
+
+#[test]
+fn a_bad_token_is_not_echoed() {
+    let secret = "s3cr3t-short";
+    let err = Options::from_vec(vec![])
+        .expect("options")
+        .fill_from(|name| (name == "IRISQO_API_TOKEN").then(|| secret.to_owned()))
+        .expect_err("too short");
+    assert!(
+        err.starts_with("IRISQO_API_TOKEN:") && !err.contains(secret),
+        "{err}"
+    );
+
+    let err = Options::from_vec(vec!["--api-token".into(), secret.into()]).expect_err("too short");
+    assert!(!err.to_string().contains(secret), "{err}");
 }

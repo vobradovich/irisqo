@@ -216,3 +216,96 @@ async fn allowed_targets_pass(pool: PgPool) -> anyhow::Result<()> {
     assert_eq!(completed, 1);
     Ok(())
 }
+
+const TOKEN: &str = "0123456789abcdef0123456789abcdef";
+const NEXT_TOKEN: &str = "fedcba9876543210fedcba9876543210";
+
+#[sqlx::test(migrations = "./sql/migrations")]
+async fn api_token_opens_the_api(pool: PgPool) -> anyhow::Result<()> {
+    let tokens = format!("{TOKEN},{NEXT_TOKEN}");
+    let state = common::state_with(pool.clone(), &["--api-token", &tokens]);
+    let addr = common::spawn_app(&state).await;
+    let url = |path: &str| format!("http://{addr}{path}");
+    let create = url(&format!("/to/http://{addr}/echo?_delay=600"));
+
+    // no token, a wrong one, another scheme
+    for (headers, challenge) in [
+        (vec![], "Bearer realm=\"irisqo\""),
+        (
+            vec![("authorization", "Bearer 0123456789abcdef0123456789abcdeX")],
+            "Bearer realm=\"irisqo\", error=\"invalid_token\"",
+        ),
+        (
+            vec![("authorization", "Basic dXNlcjpwYXNz")],
+            "Bearer realm=\"irisqo\"",
+        ),
+    ] {
+        let response = common::request_with(&state, Method::POST, &create, &headers).await;
+        assert_eq!(
+            common::header(&response, "www-authenticate").as_deref(),
+            Some(challenge)
+        );
+        let (status, content_type, body) = problem(response).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{headers:?}");
+        assert_eq!(content_type, "application/problem+json");
+        assert_eq!(body["title"], "Unauthorized");
+    }
+    let response = common::request(&state, Method::GET, &url("/api/v1/schedules")).await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "/api/v1 too");
+    assert_eq!(common::count(&pool, "SELECT count(*) FROM jobs").await, 0);
+
+    // either token; the caller's Authorization is not forwarded, Irisqo-Forward-* is
+    let bearer = format!("Bearer {TOKEN}");
+    let response = common::request_with(
+        &state,
+        Method::POST,
+        &create,
+        &[
+            ("authorization", bearer.as_str()),
+            ("irisqo-forward-x-api-key", "target-key"),
+        ],
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let id = common::header(&response, "job-id").expect("job-id");
+    let headers: serde_json::Value = sqlx::query_scalar("SELECT headers FROM jobs")
+        .fetch_one(&pool)
+        .await?;
+    assert_eq!(headers, serde_json::json!({ "x-api-key": "target-key" }));
+
+    let next = format!("bearer {NEXT_TOKEN}");
+    let response = common::request_with(
+        &state,
+        Method::GET,
+        &url(&format!("/api/v1/jobs/{id}")),
+        &[("authorization", next.as_str())],
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "the second token, any case of the scheme"
+    );
+
+    // the rest needs no token; an unknown path stays a 404
+    for (path, expected) in [
+        ("/live", StatusCode::OK),
+        ("/ready", StatusCode::OK),
+        ("/", StatusCode::OK),
+        ("/ui/assets/app.css", StatusCode::OK),
+        ("/api/v1/nope", StatusCode::NOT_FOUND),
+    ] {
+        let response = common::request(&state, Method::GET, &url(path)).await;
+        assert_eq!(response.status(), expected, "{path}");
+    }
+    Ok(())
+}
+
+#[sqlx::test(migrations = "./sql/migrations")]
+async fn no_token_keeps_the_api_open(pool: PgPool) -> anyhow::Result<()> {
+    let state = common::state(pool);
+    let addr = common::spawn_app(&state).await;
+    let response = common::create(&state, addr, &format!("http://{addr}/echo?_delay=600")).await;
+    assert_eq!(response.status(), StatusCode::CREATED);
+    Ok(())
+}

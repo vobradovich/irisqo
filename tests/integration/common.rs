@@ -46,11 +46,21 @@ pub async fn request(
     method: hyper::Method,
     uri: &str,
 ) -> hyper::Response<hyper::body::Incoming> {
-    let req = hyper::Request::builder()
-        .method(method)
-        .uri(uri)
-        .body(Full::new(Bytes::new()))
-        .expect("request");
+    request_with(state, method, uri, &[]).await
+}
+
+/// [`request`] with `headers`.
+pub async fn request_with(
+    state: &AppState,
+    method: hyper::Method,
+    uri: &str,
+    headers: &[(&str, &str)],
+) -> hyper::Response<hyper::body::Incoming> {
+    let mut req = hyper::Request::builder().method(method).uri(uri);
+    for (name, value) in headers {
+        req = req.header(*name, *value);
+    }
+    let req = req.body(Full::new(Bytes::new())).expect("request");
     state.client.request(req).await.expect("response")
 }
 
