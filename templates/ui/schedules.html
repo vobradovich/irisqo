@@ -1,0 +1,9 @@
+{% extends "ui/layout.html" %}
+{% block title %}Schedules{% endblock %}
+{% block content %}
+<hgroup>
+  <h1>Schedules</h1>
+  <p>Paused schedules run nothing; their pending run is cancelled. Resume schedules the next run.</p>
+</hgroup>
+{% include "ui/partials/schedules_table.html" %}
+{% endblock %}

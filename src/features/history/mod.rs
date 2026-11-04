@@ -9,7 +9,7 @@ use axum::{
 use sqlx::{Pool, Postgres};
 use std::sync::Arc;
 
-pub use jobhistory::JobHistoryRow;
+pub use jobhistory::{HistoryStatus, JobHistoryRow};
 
 use super::{Paging, PagingResult};
 

@@ -14,3 +14,4 @@ mod reliability;
 mod smoke;
 mod telemetry;
 mod ui;
+mod ui_jobs;

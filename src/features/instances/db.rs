@@ -35,3 +35,42 @@ pub struct InstanceRow {
     pub status: String,
     pub last_at: chrono::DateTime<chrono::Utc>,
 }
+
+/// An instance with its work: jobs it holds now and its results of the last 24 hours.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct InstanceView {
+    pub instance_id: String,
+    pub status: String,
+    pub last_at: chrono::DateTime<chrono::Utc>,
+    pub processing: i64,
+    pub completed_24h: i64,
+    pub failed_24h: i64,
+}
+
+/// Live instances first, then the most recently seen.
+pub async fn list_view(pool: &Pool<Postgres>, limit: i64) -> Result<Vec<InstanceView>, Error> {
+    const SQL: &str = "
+    WITH e AS (
+        SELECT instance_id, count(*) AS processing
+        FROM enqueued WHERE instance_id IS NOT NULL GROUP BY instance_id
+    ), p AS (
+        SELECT instance_id,
+            count(*) FILTER (WHERE status = 'completed') AS completed_24h,
+            count(*) FILTER (WHERE status = 'failed') AS failed_24h
+        FROM processed WHERE at > now() - interval '24 hours' GROUP BY instance_id
+    )
+    SELECT i.instance_id, i.status::text AS status, i.last_at,
+        coalesce(e.processing, 0) AS processing,
+        coalesce(p.completed_24h, 0) AS completed_24h,
+        coalesce(p.failed_24h, 0) AS failed_24h
+    FROM instances i
+    LEFT JOIN e USING (instance_id)
+    LEFT JOIN p USING (instance_id)
+    ORDER BY i.status = 'live' DESC, i.last_at DESC, i.instance_id
+    LIMIT $1";
+    let rows = sqlx::query_as::<_, InstanceView>(SQL)
+        .bind(limit)
+        .fetch_all(pool)
+        .await?;
+    Ok(rows)
+}

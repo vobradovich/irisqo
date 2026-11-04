@@ -11,6 +11,7 @@ use chrono::NaiveDateTime;
 use hyper::Method;
 use url::form_urlencoded;
 
+use super::views::mask;
 use crate::{
     handlers::http::{JobRequest, is_reserved_header, prepare_job},
     models::{JobCreate, ParamError, WorkerOptions},
@@ -98,7 +99,7 @@ fn one_of(value: String, allowed: &[&str]) -> String {
     if allowed.contains(&value.as_str()) {
         value
     } else {
-        allowed[0].to_owned()
+        allowed.first().copied().unwrap_or_default().to_owned()
     }
 }
 
@@ -292,15 +293,15 @@ impl JobForm {
             out.push_str(&format!("{key}={value}"));
         }
         let (headers, _) = self.target_headers();
-        let mut names: Vec<_> = headers.keys().collect();
-        names.sort();
-        for name in names {
+        let mut sent: Vec<_> = headers.iter().collect();
+        sent.sort();
+        for (name, value) in sent {
             let header = if name == "content-type" {
                 "Content-Type".to_owned()
             } else {
                 format!("Irisqo-Forward-{name}")
             };
-            out.push_str(&format!("\n{header}: {}", mask(name, &headers[name])));
+            out.push_str(&format!("\n{header}: {}", mask(name, value)));
         }
         if !self.body.is_empty() {
             out.push_str("\n\n");
@@ -334,18 +335,6 @@ fn field_of(param: &str) -> &'static str {
         "_timeout" => "timeout",
         "_id" => "external_id",
         _ => "url",
-    }
-}
-
-/// Secrets are not echoed in the preview.
-fn mask(name: &str, value: &str) -> String {
-    let secret = ["auth", "token", "key", "secret", "cookie", "password"]
-        .iter()
-        .any(|s| name.contains(s));
-    if secret && !value.is_empty() {
-        "••••".to_owned()
-    } else {
-        value.to_owned()
     }
 }
 

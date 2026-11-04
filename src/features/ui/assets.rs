@@ -33,9 +33,42 @@ const ASSETS: &[Asset] = &[
         bytes: include_bytes!("../../../assets/app.css"),
         immutable: false,
     },
+    Asset {
+        name: "theme.js",
+        content_type: "text/javascript; charset=utf-8",
+        bytes: include_bytes!("../../../assets/theme.js"),
+        immutable: false,
+    },
+    Asset {
+        name: "logo.svg",
+        content_type: "image/svg+xml",
+        bytes: include_bytes!("../../../assets/logo.svg"),
+        immutable: false,
+    },
+    Asset {
+        name: "favicon-32.png",
+        content_type: "image/png",
+        bytes: include_bytes!("../../../assets/favicon-32.png"),
+        immutable: false,
+    },
+    Asset {
+        name: "apple-touch-icon.png",
+        content_type: "image/png",
+        bytes: include_bytes!("../../../assets/apple-touch-icon.png"),
+        immutable: false,
+    },
 ];
 
 pub async fn asset(Path(name): Path<String>) -> Response {
+    serve(&name)
+}
+
+/// `/favicon.ico`, asked for by browsers on any page, the API's too: the PNG icon.
+pub async fn favicon() -> Response {
+    serve("favicon-32.png")
+}
+
+fn serve(name: &str) -> Response {
     let Some(asset) = ASSETS.iter().find(|a| a.name == name) else {
         return StatusCode::NOT_FOUND.into_response();
     };

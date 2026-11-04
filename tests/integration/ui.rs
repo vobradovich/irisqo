@@ -5,7 +5,7 @@ use sqlx::PgPool;
 
 use crate::common;
 
-async fn send(
+pub(crate) async fn send(
     state: &irisqo::AppState,
     method: Method,
     uri: &str,
@@ -52,7 +52,7 @@ async fn pages_use_only_embedded_assets(pool: PgPool) -> anyhow::Result<()> {
     assert_eq!(status, StatusCode::SEE_OTHER);
     assert_eq!(
         headers.get("location").map(|v| v.as_bytes()),
-        Some(&b"/ui/jobs/new"[..])
+        Some(&b"/ui/jobs"[..])
     );
 
     let (status, headers, html) = send(
@@ -78,6 +78,10 @@ async fn pages_use_only_embedded_assets(pool: PgPool) -> anyhow::Result<()> {
         "/ui/assets/htmx-4.0.1.min.js",
         "/ui/assets/pico-2.1.1.classless.min.css",
         "/ui/assets/app.css",
+        "/ui/assets/theme.js",
+        "/ui/assets/logo.svg",
+        "/ui/assets/favicon-32.png",
+        "/ui/assets/apple-touch-icon.png",
     ] {
         assert!(html.contains(asset), "{asset}");
         let (status, headers, body) = send(
@@ -101,6 +105,19 @@ async fn pages_use_only_embedded_assets(pool: PgPool) -> anyhow::Result<()> {
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, headers, _) = send(
+        &state,
+        Method::GET,
+        &format!("http://{addr}/favicon.ico"),
+        false,
+        "",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        headers.get("content-type").map(|v| v.as_bytes()),
+        Some(&b"image/png"[..])
+    );
     Ok(())
 }
 
@@ -311,5 +328,29 @@ async fn server_errors_do_not_leak_internals(pool: PgPool) -> anyhow::Result<()>
         !text.contains("history") && !text.contains("relation"),
         "{text}"
     );
+    Ok(())
+}
+
+#[sqlx::test(migrations = "./sql/migrations")]
+async fn root_sends_browsers_to_the_ui(pool: PgPool) -> anyhow::Result<()> {
+    let state = common::state(pool);
+    let addr = common::spawn_app(&state).await;
+    let get = |accept: &'static str| {
+        let request = hyper::Request::builder()
+            .uri(format!("http://{addr}/"))
+            .header("accept", accept)
+            .body(Full::new(Bytes::new()))
+            .expect("request");
+        state.client.request(request)
+    };
+
+    let browser = get("text/html,application/xhtml+xml,*/*;q=0.8").await?;
+    assert_eq!(browser.status(), StatusCode::SEE_OTHER);
+    assert_eq!(
+        browser.headers().get("location").map(|v| v.as_bytes()),
+        Some(&b"/ui/jobs"[..])
+    );
+    let curl = get("*/*").await?;
+    assert_eq!(curl.status(), StatusCode::OK);
     Ok(())
 }

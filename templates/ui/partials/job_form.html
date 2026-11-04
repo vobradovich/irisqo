@@ -3,7 +3,7 @@
 
     {% if let Some(created) = form.created %}
     <div class="alert success" role="status">
-      Job <a href="/api/v1/jobs/{{ created.id }}" class="mono">{{ created.id }}</a> queued
+      Job <a href="/ui/jobs/{{ created.id }}" class="mono">{{ created.id }}</a> queued
       {%- if let Some(schedule_id) = created.schedule_id %}, schedule <span class="mono">{{ schedule_id }}</span>{% endif %}.
     </div>
     {% endif %}

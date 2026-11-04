@@ -1,0 +1,9 @@
+{% extends "ui/layout.html" %}
+{% block title %}Not found{% endblock %}
+{% block content %}
+<hgroup>
+  <h1>Not found</h1>
+  <p>{{ what }} does not exist, or was deleted by the retention.</p>
+</hgroup>
+<p><a href="/ui/jobs">Back to the jobs</a></p>
+{% endblock %}

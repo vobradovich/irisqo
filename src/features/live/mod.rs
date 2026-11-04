@@ -1,7 +1,13 @@
 use crate::models::AppState;
 use crate::models::Error;
 use crate::models::Problem;
-use axum::{Router, extract::State, http::StatusCode, response::IntoResponse, routing::get};
+use axum::{
+    Router,
+    extract::State,
+    http::{HeaderMap, StatusCode, header},
+    response::{IntoResponse, Redirect, Response},
+    routing::get,
+};
 use sqlx::{Pool, Postgres};
 use std::sync::Arc;
 
@@ -13,8 +19,21 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .with_state(state)
 }
 
-async fn root() -> impl IntoResponse {
-    (StatusCode::OK, "Use /to/* to queue a request.")
+/// A browser goes to the UI; curl and the like get a hint on the API.
+async fn root(headers: HeaderMap) -> Response {
+    let browser = headers
+        .get(header::ACCEPT)
+        .and_then(|accept| accept.to_str().ok())
+        .is_some_and(|accept| accept.contains("text/html"));
+    if browser {
+        Redirect::to("/ui/jobs").into_response()
+    } else {
+        (
+            StatusCode::OK,
+            "Use /to/* to queue a request, /ui for the UI.",
+        )
+            .into_response()
+    }
 }
 
 async fn live() -> impl IntoResponse {

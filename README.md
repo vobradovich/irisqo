@@ -12,7 +12,7 @@
 - [x] Retries and Delays
 - [x] OpenTelemetry Tracing
 - [x] Schedules, Intervals, and Cron
-- [ ] UI (New job form so far)
+- [x] UI
 
 ## API
 
@@ -73,6 +73,19 @@ Delay a request by adding the `_delay` or `_delay_until` [Unix Time] query param
 GET {{host}}/to/https://postman-echo.com/get?_delay=5
 ```
 
+### Jobs and schedules
+```
+GET    {{host}}/api/v1/jobs/{id}                  the job
+GET    {{host}}/api/v1/jobs/{id}/result           its result
+GET    {{host}}/api/v1/jobs/{id}/history          its history
+POST   {{host}}/api/v1/jobs/{id}/cancel           a pending job ends as cancelled (409 when running or done)
+POST   {{host}}/api/v1/jobs/{id}/retry            a processed job runs once more (409 when pending or running)
+DELETE {{host}}/api/v1/jobs/{id}
+POST   {{host}}/api/v1/schedules/{id}/pause       no more runs, the pending one is cancelled
+POST   {{host}}/api/v1/schedules/{id}/resume      the next run is scheduled
+DELETE {{host}}/api/v1/schedules/{id}
+```
+
 ### Errors
 Errors are `application/problem+json` ([RFC 9457](https://www.rfc-editor.org/rfc/rfc9457)).
 Invalid job parameters are rejected with `400` and every problem at once:
@@ -92,11 +105,36 @@ Invalid job parameters are rejected with `400` and every problem at once:
 Other errors carry only their status, with `trace_id`: see [docs/problems.md](docs/problems.md).
 
 ## UI
-`/ui` serves a server-rendered UI: Askama templates, [htmx](https://htmx.org) for the partial updates and
+`/ui` serves a server-rendered UI (`/` sends a browser there): Askama templates, [htmx](https://htmx.org) for the partial updates and
 [Pico CSS](https://picocss.com) for the base styles. Both are compiled into the binary (`assets/`), so
 there is nothing to fetch from a CDN, and the pages carry a strict `Content-Security-Policy`
 (no inline scripts or styles). The New job form builds the same `/to/` request as the API and goes
 through the same validation; its preview shows that request.
+The theme follows the system setting; the switch in the header picks light or dark instead, kept in
+the browser (`assets/theme.js`, the only script besides htmx).
+
+[![Jobs: the queue stats and the jobs by state](docs/screenshots/jobs.png)](docs/screenshots/jobs.png)
+
+<table>
+  <tr>
+    <td width="50%"><a href="docs/screenshots/job.png"><img src="docs/screenshots/job.png" alt="Job: the request, the result and the history"></a><br><sub>Job</sub></td>
+    <td width="50%"><a href="docs/screenshots/new-job.png"><img src="docs/screenshots/new-job.png" alt="New job: the form and the same request with the API"></a><br><sub>New job</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><a href="docs/screenshots/schedules.png"><img src="docs/screenshots/schedules.png" alt="Schedules: rule, next and last run"></a><br><sub>Schedules</sub></td>
+    <td width="50%"><a href="docs/screenshots/instances.png"><img src="docs/screenshots/instances.png" alt="Instances: the processes on the queue"></a><br><sub>Instances</sub></td>
+  </tr>
+</table>
+
+- **Jobs**: the queue stats and the jobs by state (scheduled, retrying, enqueued, processing,
+  completed, failed, cancelled), searchable by id, external id or URL, refreshed every 2 s; a row
+  opens its history in place.
+- **Job**: the request, the result, the history; retry, cancel, delete. With `--trace-url`
+  (e.g. `http://localhost:5080/web/traces?trace_id={trace_id}`) the result links to its trace.
+- **Schedules**: rule, next and last run; pause, resume, delete.
+- **Instances**: the irisqo processes on this queue: state, last heartbeat, start, the jobs
+  each holds and its results of the last 24 hours, refreshed every 5 s.
+- **New job**: the form.
 
 ## Running
 
@@ -113,6 +151,7 @@ DATABASE_URL=postgres://user:pass@localhost/irisqo cargo run --release -- --help
 | `--prefetch` | 8 | jobs assigned per fetch: `max(prefetch, concurrency / 4)` |
 | `--timeout` / `--max-timeout` | 3000 / 300000 | default and max request timeout, ms |
 | `--retention-hours` | 168 | processed jobs older than this are deleted, `0` keeps them |
+| `--trace-url` | — | UI link to a trace, `{trace_id}` is replaced |
 | `--shutdown-timeout` | 20 | s the running jobs get to finish on shutdown; keep it under the orchestrator grace period (30 s in Kubernetes) |
 
 ### Telemetry

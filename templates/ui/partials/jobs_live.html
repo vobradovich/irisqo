@@ -1,0 +1,44 @@
+<div id="jobs-live"{% if list.live %} hx-get="{{ list.live_href }}" hx-trigger="every 2s" hx-swap="outerMorph"{% endif %}>
+  <p class="sr-only" role="status">{{ list.summary }}</p>
+  <section id="stats" class="stats" aria-label="Queue">
+    {% for s in list.stats %}
+    <article class="stat">
+      <span class="stat-label">{{ s.label }}</span>
+      <strong>{{ s.value }}</strong>
+      <small>{{ s.hint }}</small>
+    </article>
+    {% endfor %}
+  </section>
+
+  <section class="jobs" aria-label="Jobs">
+    <div class="job-cols jobs-head" aria-hidden="true">
+      <span>Job</span><span>Status</span><span>Request</span><span>Attempt</span><span>When</span><span>Instance</span><span>Schedule</span>
+    </div>
+    <ol id="jobs" class="jobs-list">
+      {% for job in list.rows %}
+      <li>
+        <details id="job-{{ job.id }}" hx-get="/ui/jobs/{{ job.id }}/history" hx-trigger="toggle once" hx-target="find .history">
+          <summary class="job-cols">
+            <span><a href="/ui/jobs/{{ job.id }}" class="mono">{{ job.id }}</a></span>
+            <span><span class="status {{ job.status }}"><span>{{ job.status.label() }}</span></span></span>
+            <span class="request"><span class="method mono">{{ job.method }}</span><span class="url mono">{{ job.url }}</span></span>
+            <span class="mono">{{ job.attempt }}</span>
+            <span class="muted" title="{{ job.due_title }}">{{ job.due }}</span>
+            <span class="mono muted" title="{{ job.instance_id|or_empty }}">{{ job.instance_id|short_instance }}</span>
+            <span class="mono muted" title="{{ job.schedule_id|or_empty }}">{{ job.schedule_id|short_id }}</span>
+          </summary>
+          <div class="history" hx-morph-skip-children><small class="hint">Loading the history…</small></div>
+        </details>
+      </li>
+      {% endfor %}
+    </ol>
+    {% if list.rows.is_empty() %}
+    <p class="empty">No jobs here. <a href="/ui/jobs/new">Queue one</a></p>
+    {% endif %}
+  </section>
+
+  <nav class="pager" aria-label="Pages">
+    {% if let Some(href) = list.newest_href %}<a href="{{ href }}" role="button" class="secondary">Newest</a>{% endif %}
+    {% if let Some(href) = list.older_href %}<a href="{{ href }}" role="button" class="secondary">Older</a>{% endif %}
+  </nav>
+</div>

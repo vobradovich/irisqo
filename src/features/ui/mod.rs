@@ -4,8 +4,16 @@
 
 mod assets;
 pub mod form;
+mod instances;
+mod jobs;
+mod schedules;
+pub mod views;
 
-use crate::{features::schedules::JobSchedule, handlers::http::create_job, models::AppState};
+use crate::{
+    features::schedules::JobSchedule,
+    handlers::http::create_job,
+    models::{AppState, Error},
+};
 use askama::Template;
 use askama_web::WebTemplate;
 use axum::{
@@ -46,12 +54,34 @@ struct JobPreviewPartial {
 
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
-        .route("/ui", get(|| async { Redirect::to("/ui/jobs/new") }))
+        .route("/ui", get(|| async { Redirect::to("/ui/jobs") }))
+        .route("/ui/jobs", get(jobs::jobs_page).post(create_job_from_form))
+        .route("/ui/jobs/live", get(jobs::jobs_live))
         .route("/ui/jobs/new", get(new_job_page))
         .route("/ui/jobs/new/form", get(new_job_form))
         .route("/ui/jobs/new/preview", get(new_job_preview))
-        .route("/ui/jobs", post(create_job_from_form))
+        .route(
+            "/ui/jobs/{id}",
+            get(jobs::job_page).delete(jobs::job_delete),
+        )
+        .route("/ui/jobs/{id}/history", get(jobs::job_history))
+        .route("/ui/jobs/{id}/retry", post(jobs::job_retry))
+        .route("/ui/jobs/{id}/cancel", post(jobs::job_cancel))
+        .route("/ui/jobs/{id}/delete", post(jobs::job_delete))
+        .route("/ui/schedules", get(schedules::schedules_page))
+        .route("/ui/instances", get(instances::instances_page))
+        .route("/ui/instances/table", get(instances::instances_table))
+        .route("/ui/schedules/{id}/pause", post(schedules::schedule_pause))
+        .route(
+            "/ui/schedules/{id}/resume",
+            post(schedules::schedule_resume),
+        )
+        .route(
+            "/ui/schedules/{id}/delete",
+            post(schedules::schedule_delete),
+        )
         .route("/ui/assets/{name}", get(assets::asset))
+        .route("/favicon.ico", get(assets::favicon))
         .layer(middleware::map_response(security_headers))
         .with_state(state)
 }
@@ -71,6 +101,21 @@ async fn security_headers(mut response: Response) -> Response {
         HeaderValue::from_static("same-origin"),
     );
     response
+}
+
+/// htmx asks for a partial, a plain browser request for a page or a redirect.
+fn is_htmx(headers: &HeaderMap) -> bool {
+    headers.contains_key("hx-request")
+}
+
+/// The details go to the log, not to the browser.
+fn server_error(err: &Error) -> Response {
+    error!("ui error {:?}", err);
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "Something went wrong, see the logs.",
+    )
+        .into_response()
 }
 
 fn page(form: JobForm) -> NewJobPage {
@@ -109,7 +154,6 @@ async fn create_job_from_form(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    let htmx = headers.contains_key("hx-request");
     let form = JobForm::from_pairs(&body).with_limits(&state.worker_options);
     let outcome = match form.prepare(&state.worker_options, JobSchedule::now_secs()) {
         Err(errors) => Err(errors),
@@ -133,7 +177,7 @@ async fn create_job_from_form(
             None,
         ),
     };
-    if htmx {
+    if is_htmx(&headers) {
         (status, trigger, JobFormPartial { form }).into_response()
     } else {
         (status, trigger, page(form)).into_response()

@@ -20,6 +20,9 @@ pub struct AppState {
     pub client: Client<HttpsConnector<HttpConnector>, Full<Bytes>>,
     pub scheduler_options: Option<SchedulerOptions>,
     pub worker_options: WorkerOptions,
+    /// Link to a trace in the UI: `{trace_id}` is replaced, e.g.
+    /// `http://localhost:5080/web/traces?trace_id={trace_id}`.
+    pub trace_url: Option<String>,
     pub shutdown_token: CancellationToken,
 }
 
@@ -76,6 +79,8 @@ xflags::xflags! {
         optional --shutdown-timeout n: u64
         /// Keep processed jobs for this many hours, 0 keeps them forever. Default: 168 (7 days)
         optional --retention-hours n: u32
+        /// UI link to a trace, `{trace_id}` is replaced. Default: none (the id is shown)
+        optional --trace-url template: String
     }
 }
 
@@ -136,6 +141,10 @@ impl AppState {
                 max_timeout,
                 shutdown_timeout: Duration::from_secs(options.shutdown_timeout.unwrap_or(20)),
             },
+            trace_url: options
+                .trace_url
+                .clone()
+                .filter(|t| t.contains("{trace_id}")),
             shutdown_token: CancellationToken::new(),
         };
         Arc::new(state)

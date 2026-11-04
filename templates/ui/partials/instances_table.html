@@ -1,0 +1,24 @@
+<div id="instances" class="table-wrap" hx-get="/ui/instances/table" hx-trigger="every 5s" hx-swap="outerMorph">
+  {% if rows.is_empty() %}
+  <p class="empty">No instances yet.</p>
+  {% else %}
+  <table>
+    <thead>
+      <tr><th scope="col">Instance</th><th scope="col">State</th><th scope="col">Last heartbeat</th><th scope="col">Started</th><th scope="col" class="num">Processing</th><th scope="col" class="num">Completed, 24 h</th><th scope="col" class="num">Failed, 24 h</th></tr>
+    </thead>
+    <tbody>
+      {% for r in rows %}
+      <tr>
+        <td title="{{ r.id }}"><strong>{{ r.host }}</strong> <span class="mono muted">{{ r.ulid }}</span>{% if r.this %} <small class="tag">this server</small>{% endif %}</td>
+        <td><span class="status {{ r.state }}"><span>{{ r.state_label }}</span></span></td>
+        <td title="{{ r.last_at|utc }}">{{ r.seen }}</td>
+        <td title="{{ r.started_at|utc }}">{{ r.started }}</td>
+        <td class="num mono">{{ r.processing }}</td>
+        <td class="num mono">{{ r.completed_24h }}</td>
+        <td class="num mono{% if r.failed_24h > 0 %} failed-count{% endif %}">{{ r.failed_24h }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+</div>

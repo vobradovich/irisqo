@@ -140,7 +140,8 @@ async fn create_with_schedule(
 }
 
 /// Clones the job as the next run of its schedule.
-/// Returns `None` when the schedule was deleted or deactivated in the meantime.
+/// Returns `None` when the schedule was deleted or deactivated in the meantime,
+/// or when the job is not its latest run.
 pub async fn clone_schedule_at<'e, E>(
     executor: E,
     job_id: i64,
@@ -155,7 +156,8 @@ where
         INSERT INTO jobs(meta, headers, body, schedule_id)
         SELECT j.meta, j.headers, j.body, j.schedule_id
         FROM jobs AS j
-        INNER JOIN schedules AS s ON s.schedule_id = j.schedule_id AND NOT s.inactive
+        -- only the latest run continues the schedule (a manually retried old run does not)
+        INNER JOIN schedules AS s ON s.schedule_id = j.schedule_id AND NOT s.inactive AND s.next_id = j.id
         WHERE j.id = $1
         RETURNING id, schedule_id
     ), b AS (
@@ -326,4 +328,91 @@ pub async fn fetch_job_with_retry(
         .fetch_all(pool)
         .await?;
     Ok(jobs)
+}
+
+/// What a user action did to a job.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActionOutcome {
+    Done,
+    /// The job is not in a state the action applies to (running, already processed...).
+    Conflict,
+    NotFound,
+}
+
+async fn outcome(
+    pool: &Pool<Postgres>,
+    affected: u64,
+    job_id: i64,
+) -> Result<ActionOutcome, Error> {
+    if affected > 0 {
+        return Ok(ActionOutcome::Done);
+    }
+    let exists: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM jobs WHERE id = $1)")
+        .bind(job_id)
+        .fetch_one(pool)
+        .await?;
+    Ok(if exists {
+        ActionOutcome::Conflict
+    } else {
+        ActionOutcome::NotFound
+    })
+}
+
+/// Cancels a pending job (scheduled, or enqueued and not running): it ends as `cancelled`.
+/// A running or processed job is a conflict.
+pub async fn cancel<'e, E>(executor: E, job_id: i64, instance_id: &str) -> Result<u64, Error>
+where
+    E: sqlx::Executor<'e, Database = Postgres>,
+{
+    const SQL: &str = "
+    WITH s AS (
+        DELETE FROM scheduled WHERE id = $1 RETURNING id, retry
+    ), e AS (
+        DELETE FROM enqueued WHERE id = $1 AND lock_at IS NULL RETURNING id, retry
+    ), c AS (
+        SELECT id, retry FROM s UNION ALL SELECT id, retry FROM e
+    ), hist AS (
+        INSERT INTO history(id, retry, instance_id, status, message)
+        SELECT id, retry, $2, 'cancelled'::history_status, 'cancelled by a user' FROM c
+    )
+    INSERT INTO processed(id, retry, instance_id, status, meta)
+    SELECT id, retry, $2, 'cancelled'::processed_status, '{\"result\": \"cancelled\"}'::jsonb FROM c";
+    let res = sqlx::query(SQL)
+        .bind(job_id)
+        .bind(instance_id)
+        .execute(executor)
+        .await?;
+    Ok(res.rows_affected())
+}
+
+pub async fn cancel_job(
+    pool: &Pool<Postgres>,
+    job_id: i64,
+    instance_id: &str,
+) -> Result<ActionOutcome, Error> {
+    let affected = cancel(pool, job_id, instance_id).await?;
+    outcome(pool, affected, job_id).await
+}
+
+/// Runs a processed job (completed, failed or cancelled) once more, now.
+/// The retry number goes on (it fences the attempts), so the retry policy is not restarted.
+pub async fn requeue_job(
+    pool: &Pool<Postgres>,
+    job_id: i64,
+    instance_id: &str,
+) -> Result<ActionOutcome, Error> {
+    const SQL: &str = "
+    WITH p AS (
+        DELETE FROM processed WHERE id = $1 RETURNING id, retry
+    ), e AS (
+        INSERT INTO enqueued(id, retry) SELECT id, retry + 1 FROM p RETURNING id, retry
+    )
+    INSERT INTO history(id, retry, instance_id, status, message)
+    SELECT id, retry, $2, 'enqueued'::history_status, 'retried by a user' FROM e";
+    let res = sqlx::query(SQL)
+        .bind(job_id)
+        .bind(instance_id)
+        .execute(pool)
+        .await?;
+    outcome(pool, res.rows_affected(), job_id).await
 }
