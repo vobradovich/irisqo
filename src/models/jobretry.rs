@@ -91,30 +91,32 @@ impl FromStr for JobRetry {
             return Ok(JobRetry::None);
         }
         let parts: Vec<&str> = s.split(['|', ',']).collect();
-        let invalid = |_| Error::invalid("retry", "must be N, N|fixed|S or N|fibonacci|S");
+        let invalid = || Error::invalid("retry", "must be N, N|fixed|S or N|fibonacci|S");
 
         match parts.as_slice() {
             [] => Ok(JobRetry::None),
             [count] | [count, _] => Ok(JobRetry::Immediate {
-                retry_count: count.parse().map_err(invalid)?,
+                retry_count: count.parse().map_err(|_| invalid())?,
             }),
             [count, kind, delay] => {
-                let retry_count: u16 = count.parse().map_err(invalid)?;
-                let retry_delay: u32 = delay.parse().map_err(invalid)?;
+                let retry_count: u16 = count.parse().map_err(|_| invalid())?;
+                let retry_delay: u32 = delay.parse().map_err(|_| invalid())?;
                 let retry = match *kind {
+                    "fixed" => JobRetry::Fixed {
+                        retry_count,
+                        retry_delay,
+                    },
                     "exponential" | "fibonacci" => JobRetry::Fibonacci {
                         retry_count,
                         retry_delay,
                     },
-                    _ => JobRetry::Fixed {
-                        retry_count,
-                        retry_delay,
-                    },
+                    // a typo must not silently become `fixed`
+                    _ => return Err(invalid()),
                 };
                 Ok(retry)
             }
             [count, ..] => {
-                count.parse::<u16>().map_err(invalid)?;
+                count.parse::<u16>().map_err(|_| invalid())?;
                 Ok(JobRetry::None)
             }
         }
@@ -251,4 +253,16 @@ fn jitter_bounds() {
         assert!((80..=120).contains(&d), "{d}");
     }
     assert!(with_jitter(u32::MAX) >= u32::MAX - u32::MAX / 5);
+}
+
+#[test]
+fn job_retry_from_str_rejects_unknown_kind() {
+    assert!("3|fibonaci|15".parse::<JobRetry>().is_err());
+    assert_eq!(
+        Ok(JobRetry::Fixed {
+            retry_count: 3,
+            retry_delay: 15
+        }),
+        "3|fixed|15".parse::<JobRetry>().map_err(|e| e.to_string())
+    );
 }

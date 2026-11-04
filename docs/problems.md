@@ -37,5 +37,6 @@ an error of a JSON request body may carry a JSON `pointer` instead of `parameter
 ## Other errors
 
 No `type` (`about:blank`): the problem is what the HTTP status says, with its reason as `title`
-(`Not Found`, `Internal Server Error`). A server error carries no details of the implementation;
+(`Not Found`, `Internal Server Error`). A `404` says what is missing in `detail`
+(`Job 42 does not exist.`). A server error carries no details of the implementation;
 the server logs it with the `trace_id` of the response.

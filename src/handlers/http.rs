@@ -156,8 +156,14 @@ pub fn prepare_job(
         ));
     }
     let uri = url.and_then(|url| Uri::try_from(url.as_str()).ok());
-    if uri.is_none() {
-        errors.push(ParamError::new("url", "is not a valid URL"));
+    match uri.as_ref() {
+        None => errors.push(ParamError::new("url", "is not a valid URL")),
+        Some(uri) => {
+            // a private IP address or localhost; a name is checked when resolved
+            if let Some(Err(detail)) = uri.host().map(|host| options.targets.check_host(host)) {
+                errors.push(ParamError::new("url", detail));
+            }
+        }
     }
     let Some(uri) = uri.filter(|_| errors.is_empty()) else {
         return Err(errors);

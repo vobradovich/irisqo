@@ -14,11 +14,18 @@ pub use models::AppState;
 
 /// HTTP API, UI and probes with the tracing layer.
 pub fn app(state: &Arc<AppState>) -> Router {
-    Router::new()
+    let router = Router::new()
         .merge(handlers::http::routes(Arc::clone(state)))
         .merge(features::live::routes(Arc::clone(state)))
-        .merge(features::echo::routes(Arc::clone(state)))
-        .merge(features::ui::routes(Arc::clone(state)))
+        .merge(features::ui::routes(Arc::clone(state)));
+    // /echo and /error answer whatever is asked (a status, a delay): for development and
+    // the tests only
+    let router = if state.environment.is_development() {
+        router.merge(features::echo::routes(Arc::clone(state)))
+    } else {
+        router
+    };
+    router
         .nest("/api/v1", handlers::jobs::routes(Arc::clone(state)))
         .nest("/api/v1", features::history::routes(Arc::clone(state)))
         .nest("/api/v1", features::results::routes(Arc::clone(state)))

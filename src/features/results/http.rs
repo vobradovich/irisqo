@@ -1,9 +1,8 @@
 use crate::models::AppState;
-use crate::models::Problem;
+use crate::models::{Error, Problem};
 use axum::{
     Json, Router,
     extract::{Path, State},
-    http::StatusCode,
     response::{IntoResponse, Response},
     routing::get,
 };
@@ -25,10 +24,8 @@ async fn result_by_id(
     let job_result = super::db::get_by_id(&state.pool, id)
         .await?
         .map(JobResult::from);
-    match job_result {
-        None => Ok(StatusCode::NO_CONTENT.into_response()),
-        Some(o) => Ok(Json(o).into_response()),
-    }
+    let job_result = job_result.ok_or(Error::ResultNotFound(id))?;
+    Ok(Json(job_result).into_response())
 }
 
 async fn result_by_id_raw(
@@ -38,8 +35,6 @@ async fn result_by_id_raw(
     let job_result = super::db::get_by_id(&state.pool, id)
         .await?
         .map(JobResult::from);
-    match job_result {
-        None => Ok(StatusCode::NO_CONTENT.into_response()),
-        Some(o) => Ok(o.into_response()),
-    }
+    let job_result = job_result.ok_or(Error::ResultNotFound(id))?;
+    Ok(job_result.into_response())
 }

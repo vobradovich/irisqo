@@ -350,6 +350,7 @@ mod tests {
             timeout: 3000,
             max_timeout: 300_000,
             shutdown_timeout: std::time::Duration::from_secs(1),
+            targets: std::sync::Arc::new(crate::models::TargetPolicy::allow_all()),
         }
     }
 

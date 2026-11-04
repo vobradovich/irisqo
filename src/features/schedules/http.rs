@@ -1,4 +1,4 @@
-use crate::models::Problem;
+use crate::models::{Error, Problem};
 use crate::{
     features::{Paging, PagingResult},
     models::AppState,
@@ -42,11 +42,10 @@ async fn get_by_id(
     State(state): State<Arc<AppState>>,
     Path(schedule_id): Path<String>,
 ) -> Result<Response, Problem> {
-    let job_result = super::db::get_by_id(&state.pool, &schedule_id).await?;
-    match job_result {
-        None => Ok(StatusCode::NO_CONTENT.into_response()),
-        Some(o) => Ok(Json(o).into_response()),
-    }
+    let schedule = super::db::get_by_id(&state.pool, &schedule_id)
+        .await?
+        .ok_or(Error::ScheduleNotFound(schedule_id))?;
+    Ok(Json(schedule).into_response())
 }
 
 /// Pauses the schedule and cancels its pending run (`PUT` is kept for compatibility).

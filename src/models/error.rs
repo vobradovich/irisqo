@@ -39,10 +39,15 @@ fn describe(errors: &[ParamError]) -> String {
 #[derive(thiserror::Error, Debug)]
 #[allow(clippy::enum_variant_names)]
 pub enum Error {
-    // #[error("Entity Not Found - {0}[{1}] ")]
-    // EntityNotFound(&'static str, String),
     #[error("Job Not Found - {0}")]
     JobNotFound(i64),
+
+    /// No such job, or it is not processed yet.
+    #[error("Result Not Found - {0}")]
+    ResultNotFound(i64),
+
+    #[error("Schedule Not Found - {0}")]
+    ScheduleNotFound(String),
 
     #[error(transparent)]
     Timeout(#[from] Elapsed),
@@ -75,6 +80,10 @@ pub enum Error {
     #[error("Response Too Large")]
     ResponseTooLarge,
 
+    /// The target address is not allowed (SSRF): never retried.
+    #[error("Blocked target: {0}")]
+    BlockedTarget(String),
+
     #[error("Retries Exceeded")]
     RetriesExceeded,
 }
@@ -83,6 +92,13 @@ impl Error {
     /// One invalid parameter.
     pub fn invalid(parameter: &'static str, detail: impl Into<String>) -> Self {
         Error::InvalidParams(vec![ParamError::new(parameter, detail)])
+    }
+}
+
+fn not_found(detail: String) -> Problem {
+    Problem {
+        detail: Some(detail),
+        ..Problem::new(StatusCode::NOT_FOUND)
     }
 }
 
@@ -104,9 +120,12 @@ impl From<Error> for Problem {
                     ..Problem::new(StatusCode::BAD_REQUEST)
                 }
             }
-            Error::JobNotFound(_) | Error::DbError(sqlx::Error::RowNotFound) => {
-                Problem::new(StatusCode::NOT_FOUND)
-            }
+            Error::JobNotFound(id) => not_found(format!("Job {id} does not exist.")),
+            Error::ResultNotFound(id) => not_found(format!(
+                "Job {id} has no result: it does not exist or is not processed yet."
+            )),
+            Error::ScheduleNotFound(id) => not_found(format!("Schedule {id} does not exist.")),
+            Error::DbError(sqlx::Error::RowNotFound) => Problem::new(StatusCode::NOT_FOUND),
             Error::Timeout(_)
             | Error::DbError(_)
             | Error::IoError(_)
@@ -116,6 +135,7 @@ impl From<Error> for Problem {
             | Error::ServerError(_)
             | Error::ClientError(_)
             | Error::ResponseTooLarge
+            | Error::BlockedTarget(_)
             | Error::RetriesExceeded => {
                 let problem = Problem {
                     detail: Some(

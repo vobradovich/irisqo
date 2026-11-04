@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use irisqo::{
     AppState, db,
+    models::Options,
     otel::{self, Telemetry},
     services,
 };
@@ -12,9 +13,11 @@ use tokio_util::sync::CancellationToken;
 
 #[tokio::main]
 async fn main() {
-    let telemetry = Telemetry::init();
+    let options = Options::load();
+    let telemetry = Telemetry::init(options.environment());
 
-    let state = AppState::new().await;
+    let state = AppState::new(&options).await;
+    tracing::info!(environment = %state.environment, "starting");
     otel::metrics::register_pool_metrics(&state.pool);
     // The heartbeat outlives the other services: it stops only once the workers are done.
     let heartbeat_stop = CancellationToken::new();

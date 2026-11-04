@@ -7,7 +7,7 @@ use crate::{
     },
     models::{
         AppState, Error, JobEntry, JobProtocol, JobRetry, JobRow, JobWithRetry, MAX_RETRY_DELAY,
-        with_jitter,
+        targets, with_jitter,
     },
     otel::{self, HeaderInjector, metrics::metrics},
 };
@@ -192,7 +192,19 @@ async fn job_run_http(app_state: &AppState, job: JobRow, retry: i32) -> Result<J
     });
     // Call: the timeout covers the whole exchange, including reading the body
     let call = async {
-        let response = app_state.client.request(req).await?;
+        // an IP address in the URL is not resolved: checked here (a name is checked when
+        // resolved, see models::targets)
+        if let Some(host) = req.uri().host()
+            && let Err(detail) = app_state.worker_options.targets.check_host(host)
+        {
+            return Err(Error::BlockedTarget(format!("{host} {detail}")));
+        }
+        let response = app_state.client.request(req).await.map_err(|err| {
+            match targets::blocked_target(&err) {
+                Some(blocked) => Error::BlockedTarget(blocked.to_string()),
+                None => Error::HyperClientError(err),
+            }
+        })?;
         debug!({ instance_id = app_state.instance_id, job_id }, "====> response={:?}", response);
         // StatusCode
         let status_code: hyper::StatusCode = response.status();
@@ -292,8 +304,11 @@ fn error_type(err: &Error) -> &'static str {
     match err {
         Error::Timeout(_) => "timeout",
         Error::ResponseTooLarge => "response_too_large",
+        Error::BlockedTarget(_) => "blocked_target",
         Error::HyperClientError(_) | Error::HyperError(_) | Error::IoError(_) => "connection",
         Error::JobNotFound(_)
+        | Error::ResultNotFound(_)
+        | Error::ScheduleNotFound(_)
         | Error::DbError(_)
         | Error::HttpError(_)
         | Error::InvalidParams(_)
@@ -363,6 +378,8 @@ async fn on_error(
             res.retry_after(JobSchedule::now_secs()),
         ),
         Error::JobNotFound(_)
+        | Error::ResultNotFound(_)
+        | Error::ScheduleNotFound(_)
         | Error::DbError(_)
         | Error::IoError(_)
         | Error::HttpError(_)
@@ -370,6 +387,10 @@ async fn on_error(
         | Error::ResponseTooLarge
         | Error::RetriesExceeded => {
             error!({ instance_id, job_id }, "====> error {:?}", err);
+            (false, None)
+        }
+        Error::BlockedTarget(target) => {
+            warn!({ instance_id, job_id }, "blocked target: {target}");
             (false, None)
         }
     };

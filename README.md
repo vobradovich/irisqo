@@ -102,7 +102,21 @@ Invalid job parameters are rejected with `400` and every problem at once:
   "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736"
 }
 ```
-Other errors carry only their status, with `trace_id`: see [docs/problems.md](docs/problems.md).
+A missing job, result or schedule is a `404` with a `detail` (a `GET` of a job not processed yet has
+no result either; a `DELETE` of a missing one stays `204`). Other errors carry only their status,
+with `trace_id`: see [docs/problems.md](docs/problems.md).
+
+### Targets
+Outside development a job cannot call a non-public address: loopback, the private networks
+(`10/8`, `172.16/12`, `192.168/16`, `fc00::/7`), link-local (`169.254/16` with the cloud metadata
+service, `fe80::/10`), CGNAT, multicast and the other reserved ranges. An IP address or `localhost`
+in the URL is refused when the job is created (`400`, `url`: `is a private address`). A host name is
+checked when it is resolved, and the connection goes only to the addresses that pass: a job whose
+name resolves only to private addresses fails without retries (`Blocked target`). Redirects are not
+followed.
+
+`--allow-targets 10.1.0.0/16,192.168.1.10` (`IRISQO_ALLOW_TARGETS`) allows these networks anyway;
+`--env development` allows every address.
 
 ## UI
 `/ui` serves a server-rendered UI (`/` sends a browser there): Askama templates, [htmx](https://htmx.org) for the partial updates and
@@ -153,6 +167,11 @@ DATABASE_URL=postgres://user:pass@localhost/irisqo cargo run --release -- --help
 | `--retention-hours` | 168 | processed jobs older than this are deleted, `0` keeps them |
 | `--trace-url` | — | UI link to a trace, `{trace_id}` is replaced |
 | `--shutdown-timeout` | 20 | s the running jobs get to finish on shutdown; keep it under the orchestrator grace period (30 s in Kubernetes) |
+| `--allow-targets` | — | private addresses and networks a job may call anyway, see [Targets](#targets) |
+| `--env` | production | `development`, `staging` or `production`: development serves `/echo` and `/error`; also `deployment.environment.name` in the telemetry |
+
+Each option can also be set by an `IRISQO_` variable, in the environment or a `.env` file:
+`--max-timeout` is `IRISQO_MAX_TIMEOUT`, `--env` is `IRISQO_ENV`. The command line wins.
 
 ### Telemetry
 Traces, metrics and logs go out over OTLP (HTTP/protobuf), configured by the standard env vars:

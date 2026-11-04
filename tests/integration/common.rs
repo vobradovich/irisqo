@@ -16,13 +16,18 @@ pub fn state(pool: PgPool) -> Arc<AppState> {
 }
 
 /// App state for tests with command line `args`, e.g. `["--shutdown-timeout", "1"]`.
+/// The environment is development (for `/echo` and the local targets) unless `args` set one.
 pub fn state_with(pool: PgPool, args: &[&str]) -> Arc<AppState> {
     crate::telemetry::telemetry();
-    let options = Options::from_vec(args.iter().map(Into::into).collect()).expect("options");
+    let mut args: Vec<_> = args.iter().map(Into::into).collect();
+    if !args.iter().any(|arg| arg == "--env") {
+        args.extend(["--env".into(), "development".into()]);
+    }
+    let options = Options::from_vec(args).expect("options");
     AppState::with_pool(pool, new_instance_id(), &options)
 }
 
-/// Serves the app (API, `/echo`, `/error`) on a random local port.
+/// Serves the app (API, UI, and `/echo`, `/error` in development) on a random local port.
 pub async fn spawn_app(state: &Arc<AppState>) -> SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("local_addr");
