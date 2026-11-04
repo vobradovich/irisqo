@@ -484,3 +484,54 @@ async fn ui_without_token_is_open(pool: PgPool) -> anyhow::Result<()> {
     );
     Ok(())
 }
+
+#[sqlx::test(migrations = "./sql/migrations")]
+async fn ui_refuses_cross_site_posts(pool: PgPool) -> anyhow::Result<()> {
+    let state = common::state(pool.clone());
+    let addr = common::spawn_app(&state).await;
+    let response = common::create(&state, addr, &format!("http://{addr}/echo?_delay=600")).await;
+    let id = common::header(&response, "job-id").expect("job-id");
+    let cancel = format!("http://{addr}/ui/jobs/{id}/cancel");
+    let pending = || common::count(&pool, "SELECT count(*) FROM scheduled");
+
+    let evil_origin = "https://evil.example";
+    for headers in [
+        vec![("sec-fetch-site", "cross-site")],
+        vec![("sec-fetch-site", "same-site")],
+        vec![("origin", evil_origin)],
+        vec![("origin", "null")],
+    ] {
+        let response = common::request_with(&state, Method::POST, &cancel, &headers).await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN, "{headers:?}");
+        assert_eq!(pending().await, 1, "{headers:?}: not cancelled");
+    }
+    let delete = format!("http://{addr}/ui/jobs/{id}");
+    let response =
+        common::request_with(&state, Method::DELETE, &delete, &[("origin", evil_origin)]).await;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+    // the UI's own form (the browser says same-origin, or sends its own origin)
+    let own_origin = format!("http://{addr}");
+    let response = common::request_with(
+        &state,
+        Method::POST,
+        &cancel,
+        &[("origin", own_origin.as_str())],
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert_eq!(pending().await, 0, "cancelled");
+    let response = common::request_with(
+        &state,
+        Method::GET,
+        &format!("http://{addr}/ui/jobs/{id}"),
+        &[("sec-fetch-site", "cross-site")],
+    )
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "a link from elsewhere still opens a page"
+    );
+    Ok(())
+}
