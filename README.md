@@ -146,6 +146,9 @@ there is nothing to fetch from a CDN, and the pages carry a strict `Content-Secu
 through the same validation; its preview shows that request.
 The theme follows the system setting; the switch in the header picks light or dark instead, kept in
 the browser (`assets/theme.js`, the only script besides htmx).
+A request of the UI that changes something (a form, cancel, delete, pause) must come from the UI
+itself: the browser's `Sec-Fetch-Site`, or else its `Origin` against the host (`X-Forwarded-Host`
+behind a proxy). A page of another site cannot make a user's browser post to it (`403`).
 
 [![Jobs: the queue stats and the jobs by state](docs/screenshots/jobs.png)](docs/screenshots/jobs.png)
 

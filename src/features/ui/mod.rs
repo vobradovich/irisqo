@@ -3,6 +3,7 @@
 //! and endpoints would serve another hypermedia library (Datastar) as well.
 
 mod assets;
+mod csrf;
 pub mod form;
 mod instances;
 mod jobs;
@@ -108,6 +109,8 @@ pub fn routes(state: Arc<AppState>) -> Router {
             Arc::clone(&state),
             login::require_login,
         ))
+        // outermost: a cross-site post is refused before anything else
+        .route_layer(middleware::from_fn(csrf::same_origin))
         .layer(middleware::map_response(security_headers))
         .with_state(state)
 }
