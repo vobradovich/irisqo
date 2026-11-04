@@ -237,26 +237,35 @@ const OPEN_HEADERS: [&str; 8] = [
 pub const HIDDEN: &str = "••••";
 
 /// The value of a forwarded header as shown: itself for an [open](OPEN_HEADERS) one.
-pub fn shown_value(name: &str, value: &str) -> String {
-    let open = OPEN_HEADERS
-        .iter()
-        .any(|open| name.eq_ignore_ascii_case(open));
-    if open || value.is_empty() {
-        value.to_owned()
+pub fn shown_value<'a>(name: &str, value: &'a str) -> &'a str {
+    if is_hidden(name, value) {
+        HIDDEN
     } else {
-        HIDDEN.to_owned()
+        value
     }
 }
 
-/// The forwarded headers as shown.
-pub fn shown_headers(headers: HashMap<String, String>) -> HashMap<String, String> {
-    headers
-        .into_iter()
-        .map(|(name, value)| {
-            let value = shown_value(&name, &value);
-            (name, value)
-        })
-        .collect()
+/// Serializes the forwarded headers as shown (`#[serde(serialize_with)]` on the job): a job
+/// cannot be given back with the values meant for the target.
+pub fn serialize_shown<S: serde::Serializer>(
+    headers: &Option<HashMap<String, String>>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    match headers {
+        Some(headers) => serializer.collect_map(
+            headers
+                .iter()
+                .map(|(name, value)| (name, shown_value(name, value))),
+        ),
+        None => serializer.serialize_none(),
+    }
+}
+
+fn is_hidden(name: &str, value: &str) -> bool {
+    !value.is_empty()
+        && !OPEN_HEADERS
+            .iter()
+            .any(|open| name.eq_ignore_ascii_case(open))
 }
 
 /// The headers forwarded to the target: the body ones (`content-type`, `content-encoding`,

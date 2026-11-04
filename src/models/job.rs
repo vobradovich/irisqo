@@ -18,6 +18,7 @@ pub struct JobRow {
     #[sqlx(json)]
     pub meta: JobMeta,
     #[sqlx(json(nullable))]
+    #[serde(serialize_with = "crate::handlers::http::serialize_shown")]
     pub headers: Option<HashMap<String, String>>,
     pub body: Option<Vec<u8>>,
     pub schedule_id: Option<String>,

@@ -18,14 +18,15 @@ use crate::{
 /// A header of the target's answer: the value is hidden when the name looks like a
 /// credential (`set-cookie`, `x-auth-token`...). Our own forwarded headers go through
 /// [`shown_value`] instead: only the open ones are shown.
-pub fn mask(name: &str, value: &str) -> String {
+pub fn mask<'a>(name: &str, value: &'a str) -> &'a str {
+    let name = name.to_ascii_lowercase();
     let secret = ["auth", "token", "key", "secret", "cookie", "password"]
         .iter()
-        .any(|s| name.to_ascii_lowercase().contains(s));
+        .any(|s| name.contains(s));
     if secret && !value.is_empty() {
-        HIDDEN.to_owned()
+        HIDDEN
     } else {
-        value.to_owned()
+        value
     }
 }
 
@@ -194,12 +195,12 @@ fn body_text(body: &[u8]) -> String {
 /// `shown`: the value as the page shows it.
 fn sorted_headers(
     headers: Option<&HashMap<String, String>>,
-    shown: fn(&str, &str) -> String,
+    shown: for<'a> fn(&str, &'a str) -> &'a str,
 ) -> Vec<(String, String)> {
     let mut list: Vec<_> = headers
         .into_iter()
         .flatten()
-        .map(|(k, v)| (k.clone(), shown(k, v)))
+        .map(|(k, v)| (k.clone(), shown(k, v).to_owned()))
         .collect();
     list.sort();
     list
