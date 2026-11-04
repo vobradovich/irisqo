@@ -18,6 +18,11 @@ async fn main() {
 
     let state = AppState::new(&options).await;
     tracing::info!(environment = %state.environment, "starting");
+    if state.api_tokens.is_empty() && !state.environment.is_development() {
+        tracing::warn!(
+            "no --api-token (IRISQO_API_TOKEN): the API is open to anyone who reaches it"
+        );
+    }
     otel::metrics::register_pool_metrics(&state.pool);
     // The heartbeat outlives the other services: it stops only once the workers are done.
     let heartbeat_stop = CancellationToken::new();
