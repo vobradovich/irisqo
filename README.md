@@ -105,7 +105,7 @@ Invalid job parameters are rejected with `400` and every problem at once:
 Other errors carry only their status, with `trace_id`: see [docs/problems.md](docs/problems.md).
 
 ## UI
-`/ui` serves a server-rendered UI: Askama templates, [htmx](https://htmx.org) for the partial updates and
+`/ui` serves a server-rendered UI (`/` sends a browser there): Askama templates, [htmx](https://htmx.org) for the partial updates and
 [Pico CSS](https://picocss.com) for the base styles. Both are compiled into the binary (`assets/`), so
 there is nothing to fetch from a CDN, and the pages carry a strict `Content-Security-Policy`
 (no inline scripts or styles). The New job form builds the same `/to/` request as the API and goes

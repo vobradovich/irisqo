@@ -330,3 +330,27 @@ async fn server_errors_do_not_leak_internals(pool: PgPool) -> anyhow::Result<()>
     );
     Ok(())
 }
+
+#[sqlx::test(migrations = "./sql/migrations")]
+async fn root_sends_browsers_to_the_ui(pool: PgPool) -> anyhow::Result<()> {
+    let state = common::state(pool);
+    let addr = common::spawn_app(&state).await;
+    let get = |accept: &'static str| {
+        let request = hyper::Request::builder()
+            .uri(format!("http://{addr}/"))
+            .header("accept", accept)
+            .body(Full::new(Bytes::new()))
+            .expect("request");
+        state.client.request(request)
+    };
+
+    let browser = get("text/html,application/xhtml+xml,*/*;q=0.8").await?;
+    assert_eq!(browser.status(), StatusCode::SEE_OTHER);
+    assert_eq!(
+        browser.headers().get("location").map(|v| v.as_bytes()),
+        Some(&b"/ui/jobs"[..])
+    );
+    let curl = get("*/*").await?;
+    assert_eq!(curl.status(), StatusCode::OK);
+    Ok(())
+}
