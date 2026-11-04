@@ -163,7 +163,7 @@ async fn load_list(state: &AppState, params: &ListParams) -> Result<JobsList, Er
     let query = JobQuery {
         status: params.status,
         schedule: params.schedule,
-        search: Some(params.q.clone()).filter(|q| !q.is_empty()),
+        search: (!params.q.is_empty()).then(|| params.q.clone()),
         before: params.before,
         limit: PAGE_SIZE,
     };

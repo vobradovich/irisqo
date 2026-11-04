@@ -11,7 +11,7 @@ use std::{
     error::Error as StdError,
     fmt,
     future::Future,
-    io,
+    io, iter,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     pin::Pin,
     str::FromStr,
@@ -163,14 +163,7 @@ impl StdError for BlockedTarget {}
 
 /// The [`BlockedTarget`] in the causes of a client error, if that is why it failed.
 pub fn blocked_target<'a>(err: &'a (dyn StdError + 'static)) -> Option<&'a BlockedTarget> {
-    let mut cause = Some(err);
-    while let Some(err) = cause {
-        if let Some(blocked) = err.downcast_ref::<BlockedTarget>() {
-            return Some(blocked);
-        }
-        cause = err.source();
-    }
-    None
+    iter::successors(Some(err), |&err| err.source()).find_map(|err| err.downcast_ref())
 }
 
 /// The system resolver, keeping only the addresses the policy allows.

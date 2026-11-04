@@ -58,7 +58,7 @@ impl ScheduleRowView {
     fn new(view: &ScheduleView, now: DateTime<Utc>) -> Self {
         let (method, url) = match view.meta.as_ref().map(|m| &m.protocol) {
             Some(JobProtocol::Http(http)) => (http.method.to_string(), http.url.to_string()),
-            _ => ("—".into(), "no protocol".into()),
+            Some(JobProtocol::None) | None => ("—".into(), "no protocol".into()),
         };
         let next_at = view
             .next_at
