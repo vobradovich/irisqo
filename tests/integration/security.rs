@@ -309,3 +309,196 @@ async fn no_token_keeps_the_api_open(pool: PgPool) -> anyhow::Result<()> {
     assert_eq!(response.status(), StatusCode::CREATED);
     Ok(())
 }
+
+/// A request with `headers` and a form `body`.
+async fn send_form(
+    state: &irisqo::AppState,
+    uri: &str,
+    headers: &[(&str, &str)],
+    body: &str,
+) -> hyper::Response<hyper::body::Incoming> {
+    let mut request = hyper::Request::builder()
+        .method(Method::POST)
+        .uri(uri)
+        .header("content-type", "application/x-www-form-urlencoded");
+    for (name, value) in headers {
+        request = request.header(*name, *value);
+    }
+    let request = request
+        .body(http_body_util::Full::new(bytes::Bytes::from(
+            body.to_owned(),
+        )))
+        .expect("request");
+    state.client.request(request).await.expect("response")
+}
+
+async fn text(response: hyper::Response<hyper::body::Incoming>) -> String {
+    let bytes = response
+        .into_body()
+        .collect()
+        .await
+        .expect("body")
+        .to_bytes();
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+#[sqlx::test(migrations = "./sql/migrations")]
+async fn ui_asks_for_the_token(pool: PgPool) -> anyhow::Result<()> {
+    let tokens = format!("{TOKEN},{NEXT_TOKEN}");
+    let state = common::state_with(pool.clone(), &["--api-token", &tokens]);
+    let addr = common::spawn_app(&state).await;
+    let url = |path: &str| format!("http://{addr}{path}");
+
+    // no pass: a page goes to the login, back to where it was; htmx gets HX-Redirect
+    let response = common::request_with(&state, Method::GET, &url("/ui/jobs"), &[]).await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert_eq!(
+        common::header(&response, "location").as_deref(),
+        Some("/ui/login")
+    );
+    let response = common::request_with(&state, Method::GET, &url("/ui/jobs/5?tab=1"), &[]).await;
+    assert_eq!(
+        common::header(&response, "location").as_deref(),
+        Some("/ui/login?next=%2Fui%2Fjobs%2F5%3Ftab%3D1")
+    );
+    let current = url("/ui/schedules");
+    let response = common::request_with(
+        &state,
+        Method::GET,
+        &url("/ui/instances/table"),
+        &[("hx-request", "true"), ("hx-current-url", current.as_str())],
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        common::header(&response, "hx-redirect").as_deref(),
+        Some("/ui/login?next=%2Fui%2Fschedules")
+    );
+    let response = send_form(&state, &url("/ui/jobs"), &[], "url=https://example.com").await;
+    assert_eq!(
+        response.status(),
+        StatusCode::SEE_OTHER,
+        "no job without a pass"
+    );
+    assert_eq!(common::count(&pool, "SELECT count(*) FROM jobs").await, 0);
+    for open in ["/ui/login", "/ui/assets/app.css", "/favicon.ico"] {
+        let response = common::request_with(&state, Method::GET, &url(open), &[]).await;
+        assert_eq!(response.status(), StatusCode::OK, "{open}");
+    }
+
+    // a wrong token, then a good one; next cannot lead out of the UI
+    let response = send_form(
+        &state,
+        &url("/ui/login"),
+        &[],
+        "token=nope&next=%2Fui%2Fschedules",
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let page = text(response).await;
+    assert!(page.contains("The token is not valid.") && page.contains("value=\"/ui/schedules\""));
+    let response = send_form(
+        &state,
+        &url("/ui/login"),
+        &[],
+        &format!("token={TOKEN}&next=%2Fui%2Fschedules"),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert_eq!(
+        common::header(&response, "location").as_deref(),
+        Some("/ui/schedules")
+    );
+    let set_cookie = common::header(&response, "set-cookie").expect("set-cookie");
+    assert!(set_cookie.starts_with("irisqo_ui="), "{set_cookie}");
+    for attribute in ["Path=/ui", "Max-Age=604800", "HttpOnly", "SameSite=Lax"] {
+        assert!(set_cookie.contains(attribute), "{attribute}: {set_cookie}");
+    }
+    assert!(!set_cookie.contains("Secure"), "plain HTTP: {set_cookie}");
+    assert!(!set_cookie.contains(TOKEN), "a pass, not the token");
+    let pass = set_cookie
+        .split(';')
+        .next()
+        .and_then(|pair| pair.split_once('='))
+        .map(|(_, value)| value.to_owned())
+        .expect("pass");
+    let cookie = format!("irisqo_ui={pass}");
+
+    let response = send_form(
+        &state,
+        &url("/ui/login"),
+        &[("x-forwarded-proto", "https")],
+        &format!("token={NEXT_TOKEN}&next=https%3A%2F%2Fevil.example%2F"),
+    )
+    .await;
+    assert_eq!(
+        common::header(&response, "location").as_deref(),
+        Some("/ui/jobs")
+    );
+    assert!(common::header(&response, "set-cookie").is_some_and(|c| c.contains("; Secure")));
+
+    // with the pass: the UI, and the logout
+    let response = common::request_with(
+        &state,
+        Method::GET,
+        &url("/ui/jobs"),
+        &[("cookie", cookie.as_str())],
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(text(response).await.contains("action=\"/ui/logout\""));
+    let response = send_form(
+        &state,
+        &url("/ui/logout"),
+        &[("cookie", cookie.as_str())],
+        "",
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::SEE_OTHER);
+    assert!(
+        common::header(&response, "set-cookie")
+            .is_some_and(|c| c.contains("irisqo_ui=;") && c.contains("Max-Age=0"))
+    );
+
+    // a pass of a token no longer listed, an expired one, a forged one
+    let other = common::state_with(pool.clone(), &["--api-token", NEXT_TOKEN]);
+    let other_addr = common::spawn_app(&other).await;
+    let (expires, tag) = pass.split_once('.').expect("expires.tag");
+    for (instance, candidate) in [
+        (other_addr, cookie.clone()),
+        (addr, format!("irisqo_ui=1.{tag}")),
+        (addr, format!("irisqo_ui={expires}.{}", "0".repeat(64))),
+    ] {
+        let response = common::request_with(
+            &state,
+            Method::GET,
+            &format!("http://{instance}/ui/jobs"),
+            &[("cookie", candidate.as_str())],
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::SEE_OTHER, "{candidate}");
+    }
+    Ok(())
+}
+
+#[sqlx::test(migrations = "./sql/migrations")]
+async fn ui_without_token_is_open(pool: PgPool) -> anyhow::Result<()> {
+    let state = common::state(pool);
+    let addr = common::spawn_app(&state).await;
+    let response =
+        common::request_with(&state, Method::GET, &format!("http://{addr}/ui/jobs"), &[]).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(!text(response).await.contains("/ui/logout"));
+    let response = common::request_with(
+        &state,
+        Method::GET,
+        &format!("http://{addr}/ui/login?next=%2Fui%2Fschedules"),
+        &[],
+    )
+    .await;
+    assert_eq!(
+        common::header(&response, "location").as_deref(),
+        Some("/ui/schedules")
+    );
+    Ok(())
+}

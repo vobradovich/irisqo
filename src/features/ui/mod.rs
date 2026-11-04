@@ -6,6 +6,7 @@ mod assets;
 pub mod form;
 mod instances;
 mod jobs;
+mod login;
 mod schedules;
 pub mod views;
 
@@ -33,10 +34,26 @@ use tracing::error;
 const CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; \
     connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'";
 
+/// The header of a page: the current section, and the logout when the UI asks for a token.
+#[derive(Debug, Clone, Copy)]
+pub struct Nav {
+    pub current: &'static str,
+    pub logout: bool,
+}
+
+impl Nav {
+    pub fn new(state: &AppState, current: &'static str) -> Self {
+        Nav {
+            current,
+            logout: !state.api_tokens.is_empty(),
+        }
+    }
+}
+
 #[derive(Template, WebTemplate)]
 #[template(path = "ui/new_job.html")]
 struct NewJobPage {
-    nav: &'static str,
+    nav: Nav,
     form: JobForm,
 }
 
@@ -80,8 +97,17 @@ pub fn routes(state: Arc<AppState>) -> Router {
             "/ui/schedules/{id}/delete",
             post(schedules::schedule_delete),
         )
+        .route(
+            "/ui/login",
+            get(login::login_page).post(login::login_submit),
+        )
+        .route("/ui/logout", post(login::logout))
         .route("/ui/assets/{name}", get(assets::asset))
         .route("/favicon.ico", get(assets::favicon))
+        .route_layer(middleware::from_fn_with_state(
+            Arc::clone(&state),
+            login::require_login,
+        ))
         .layer(middleware::map_response(security_headers))
         .with_state(state)
 }
@@ -118,12 +144,18 @@ fn server_error(err: &Error) -> Response {
         .into_response()
 }
 
-fn page(form: JobForm) -> NewJobPage {
-    NewJobPage { nav: "new", form }
+fn page(state: &AppState, form: JobForm) -> NewJobPage {
+    NewJobPage {
+        nav: Nav::new(state, "new"),
+        form,
+    }
 }
 
 async fn new_job_page(State(state): State<Arc<AppState>>) -> NewJobPage {
-    page(JobForm::default().with_limits(&state.worker_options))
+    page(
+        &state,
+        JobForm::default().with_limits(&state.worker_options),
+    )
 }
 
 /// The whole form again, for a choice that shows other fields (`hx-get` on change).
@@ -180,6 +212,6 @@ async fn create_job_from_form(
     if is_htmx(&headers) {
         (status, trigger, JobFormPartial { form }).into_response()
     } else {
-        (status, trigger, page(form)).into_response()
+        (status, trigger, page(&state, form)).into_response()
     }
 }

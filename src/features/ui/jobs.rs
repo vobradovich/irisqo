@@ -13,7 +13,7 @@ use chrono::Utc;
 use url::form_urlencoded;
 
 use super::{
-    is_htmx, server_error,
+    Nav, is_htmx, server_error,
     views::{JobDetailView, JobRowView, filters, relative},
 };
 use crate::{
@@ -118,7 +118,7 @@ impl ListParams {
 #[derive(Template, WebTemplate)]
 #[template(path = "ui/jobs.html")]
 pub struct JobsPage {
-    nav: &'static str,
+    nav: Nav,
     list: JobsList,
 }
 
@@ -138,7 +138,7 @@ pub struct JobHistoryPartial {
 #[derive(Template, WebTemplate)]
 #[template(path = "ui/job.html")]
 pub struct JobPage {
-    nav: &'static str,
+    nav: Nav,
     job: JobDetailView,
 }
 
@@ -151,12 +151,13 @@ pub struct JobDetailPartial {
 #[derive(Template, WebTemplate)]
 #[template(path = "ui/not_found.html")]
 pub struct NotFoundPage {
-    nav: &'static str,
+    nav: Nav,
     what: String,
 }
 
-fn not_found(what: String) -> Response {
-    (StatusCode::NOT_FOUND, NotFoundPage { nav: "", what }).into_response()
+fn not_found(state: &AppState, what: String) -> Response {
+    let nav = Nav::new(state, "");
+    (StatusCode::NOT_FOUND, NotFoundPage { nav, what }).into_response()
 }
 
 async fn load_list(state: &AppState, params: &ListParams) -> Result<JobsList, Error> {
@@ -258,7 +259,11 @@ async fn load_list(state: &AppState, params: &ListParams) -> Result<JobsList, Er
 pub async fn jobs_page(State(state): State<Arc<AppState>>, RawQuery(query): RawQuery) -> Response {
     let params = ListParams::parse(query.as_deref());
     match load_list(&state, &params).await {
-        Ok(list) => JobsPage { nav: "jobs", list }.into_response(),
+        Ok(list) => JobsPage {
+            nav: Nav::new(&state, "jobs"),
+            list,
+        }
+        .into_response(),
         Err(err) => server_error(&err),
     }
 }
@@ -302,8 +307,12 @@ async fn load_job(state: &AppState, id: i64) -> Result<Option<JobDetailView>, Er
 
 pub async fn job_page(State(state): State<Arc<AppState>>, Path(id): Path<i64>) -> Response {
     match load_job(&state, id).await {
-        Ok(Some(job)) => JobPage { nav: "jobs", job }.into_response(),
-        Ok(None) => not_found(format!("Job {id}")),
+        Ok(Some(job)) => JobPage {
+            nav: Nav::new(&state, "jobs"),
+            job,
+        }
+        .into_response(),
+        Ok(None) => not_found(&state, format!("Job {id}")),
         Err(err) => server_error(&err),
     }
 }
@@ -328,7 +337,7 @@ async fn act(state: &AppState, id: i64, headers: &HeaderMap, action: Action) -> 
     }
     let job = match load_job(state, id).await {
         Ok(Some(job)) => job,
-        Ok(None) => return not_found(format!("Job {id}")),
+        Ok(None) => return not_found(state, format!("Job {id}")),
         Err(err) => return server_error(&err),
     };
     let notice = match (action, outcome) {

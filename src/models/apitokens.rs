@@ -21,6 +21,15 @@ impl ApiTokens {
             found | constant_time_eq(token.as_bytes(), candidate.as_bytes())
         })
     }
+
+    /// Like [`ApiTokens::accepts`], for a value made from a token by `derive` (the UI login
+    /// pass, signed with the token): the tokens themselves never leave this type.
+    #[must_use = "an unchecked value lets every request in"]
+    pub fn accepts_derived(&self, candidate: &str, derive: impl Fn(&str) -> String) -> bool {
+        self.0.iter().fold(false, |found, token| {
+            found | constant_time_eq(derive(token).as_bytes(), candidate.as_bytes())
+        })
+    }
 }
 
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {

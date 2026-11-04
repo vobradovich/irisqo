@@ -11,7 +11,7 @@ use axum::{
 use chrono::{DateTime, Utc};
 
 use super::{
-    server_error,
+    Nav, server_error,
     views::{filters, relative},
 };
 use crate::{
@@ -76,7 +76,7 @@ impl InstanceRowView {
 #[derive(Template, WebTemplate)]
 #[template(path = "ui/instances.html")]
 pub struct InstancesPage {
-    nav: &'static str,
+    nav: Nav,
     rows: Vec<InstanceRowView>,
     heartbeat_secs: u64,
     expire_secs: u64,
@@ -100,7 +100,7 @@ async fn load(state: &AppState) -> Result<Vec<InstanceRowView>, Error> {
 pub async fn instances_page(State(state): State<Arc<AppState>>) -> Response {
     match load(&state).await {
         Ok(rows) => InstancesPage {
-            nav: "instances",
+            nav: Nav::new(&state, "instances"),
             rows,
             heartbeat_secs: HEARTBEAT_INTERVAL.as_secs(),
             expire_secs: INSTANCE_EXPIRE.as_secs(),
