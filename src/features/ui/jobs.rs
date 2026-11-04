@@ -10,10 +10,12 @@ use axum::{
     response::{IntoResponse, Redirect, Response},
 };
 use chrono::Utc;
-use tracing::error;
 use url::form_urlencoded;
 
-use super::views::{HistoryView, JobDetailView, JobRowView, relative};
+use super::{
+    is_htmx, server_error,
+    views::{HistoryView, JobDetailView, JobRowView, relative, status_label},
+};
 use crate::{
     db::{
         self,
@@ -33,7 +35,7 @@ pub struct StatCard {
 }
 
 pub struct FilterLink {
-    pub label: &'static str,
+    pub label: String,
     pub href: String,
     pub current: bool,
 }
@@ -57,7 +59,7 @@ pub struct JobsList {
     pub summary: String,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 struct ListParams {
     status: StatusFilter,
     schedule: ScheduleFilter,
@@ -66,12 +68,21 @@ struct ListParams {
     live: bool,
 }
 
+impl Default for ListParams {
+    fn default() -> Self {
+        ListParams {
+            status: StatusFilter::default(),
+            schedule: ScheduleFilter::default(),
+            q: String::new(),
+            before: None,
+            live: true,
+        }
+    }
+}
+
 impl ListParams {
     fn parse(query: Option<&str>) -> Self {
-        let mut params = ListParams {
-            live: true,
-            ..ListParams::default()
-        };
+        let mut params = ListParams::default();
         for (key, value) in form_urlencoded::parse(query.unwrap_or_default().as_bytes()) {
             match key.as_ref() {
                 "status" => params.status = StatusFilter::parse(&value),
@@ -148,15 +159,6 @@ fn not_found(what: String) -> Response {
     (StatusCode::NOT_FOUND, NotFoundPage { nav: "", what }).into_response()
 }
 
-fn server_error(err: &Error) -> Response {
-    error!("ui error {:?}", err);
-    (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "Something went wrong, see the logs.",
-    )
-        .into_response()
-}
-
 async fn load_list(state: &AppState, params: &ListParams) -> Result<JobsList, Error> {
     let query = JobQuery {
         status: params.status,
@@ -183,24 +185,14 @@ async fn load_list(state: &AppState, params: &ListParams) -> Result<JobsList, Er
                 params.query(params.status, Some(id), params.live)
             )
         });
-    let filters = [
-        (StatusFilter::Active, "Active"),
-        (StatusFilter::Scheduled, "Scheduled"),
-        (StatusFilter::Retrying, "Retrying"),
-        (StatusFilter::Enqueued, "Enqueued"),
-        (StatusFilter::Processing, "Processing"),
-        (StatusFilter::Completed, "Completed"),
-        (StatusFilter::Failed, "Failed"),
-        (StatusFilter::Cancelled, "Cancelled"),
-        (StatusFilter::All, "All"),
-    ]
-    .into_iter()
-    .map(|(filter, label)| FilterLink {
-        label,
-        href: format!("/ui/jobs?{}", params.query(filter, None, params.live)),
-        current: filter == params.status,
-    })
-    .collect();
+    let filters = StatusFilter::ALL
+        .into_iter()
+        .map(|filter| FilterLink {
+            label: status_label(filter.as_str()),
+            href: format!("/ui/jobs?{}", params.query(filter, None, params.live)),
+            current: filter == params.status,
+        })
+        .collect();
     let stats = vec![
         StatCard {
             label: "Scheduled",
@@ -227,7 +219,7 @@ async fn load_list(state: &AppState, params: &ListParams) -> Result<JobsList, Er
             value: if queue.lag < 10.0 {
                 format!("{:.1} s", queue.lag)
             } else {
-                relative(-(queue.lag as i64))
+                relative(-(queue.lag.max(0.0) as i64))
                     .trim_end_matches(" ago")
                     .to_owned()
             },
@@ -236,7 +228,7 @@ async fn load_list(state: &AppState, params: &ListParams) -> Result<JobsList, Er
     ];
     let status_word = match params.status {
         StatusFilter::All => String::new(),
-        other => format!("{} ", other.as_str()),
+        filter @ (StatusFilter::Active | StatusFilter::Only(_)) => format!("{} ", filter.as_str()),
     };
     Ok(JobsList {
         status: params.status.as_str(),
@@ -335,7 +327,7 @@ async fn act(state: &AppState, id: i64, headers: &HeaderMap, action: Action) -> 
         Ok(outcome) => outcome,
         Err(err) => return server_error(&err),
     };
-    if !headers.contains_key("hx-request") {
+    if !is_htmx(headers) {
         return Redirect::to(&format!("/ui/jobs/{id}")).into_response();
     }
     let job = match load_job(state, id).await {
@@ -388,7 +380,7 @@ pub async fn job_delete(
     if let Err(err) = db::jobqueue::delete(&state.pool, id).await {
         return server_error(&err);
     }
-    if headers.contains_key("hx-request") {
+    if is_htmx(&headers) {
         // 200, not 204: htmx skips 204 responses
         let mut response = StatusCode::OK.into_response();
         response

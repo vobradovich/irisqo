@@ -6,13 +6,15 @@ use askama::Template;
 use askama_web::WebTemplate;
 use axum::{
     extract::{Path, State},
-    http::{HeaderMap, StatusCode},
+    http::HeaderMap,
     response::{IntoResponse, Redirect, Response},
 };
 use chrono::{DateTime, TimeZone, Utc};
-use tracing::error;
 
-use super::views::{relative, short_id, status_label, utc};
+use super::{
+    is_htmx, server_error,
+    views::{relative, short_id, status_label, utc},
+};
 use crate::{
     features::schedules::{self, JobSchedule, ScheduleView},
     models::{AppState, Error, JobProtocol},
@@ -128,15 +130,6 @@ async fn load(state: &AppState) -> Result<Vec<ScheduleRowView>, Error> {
         .collect())
 }
 
-fn server_error(err: &Error) -> Response {
-    error!("ui error {:?}", err);
-    (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "Something went wrong, see the logs.",
-    )
-        .into_response()
-}
-
 pub async fn schedules_page(State(state): State<Arc<AppState>>) -> Response {
     match load(&state).await {
         Ok(rows) => SchedulesPage {
@@ -157,16 +150,20 @@ enum Action {
 
 async fn act(state: &AppState, id: &str, headers: &HeaderMap, action: Action) -> Response {
     let done = match action {
-        Action::Pause => schedules::pause(&state.pool, id, &state.instance_id).await,
+        Action::Pause => schedules::pause(&state.pool, id, &state.instance_id)
+            .await
+            .map(drop),
         Action::Resume => {
-            schedules::resume(&state.pool, id, JobSchedule::now_secs(), &state.instance_id).await
+            schedules::resume(&state.pool, id, JobSchedule::now_secs(), &state.instance_id)
+                .await
+                .map(drop)
         }
-        Action::Delete => schedules::db::delete(&state.pool, id).await,
+        Action::Delete => schedules::db::delete(&state.pool, id).await.map(drop),
     };
     if let Err(err) = done {
         return server_error(&err);
     }
-    if !headers.contains_key("hx-request") {
+    if !is_htmx(headers) {
         return Redirect::to("/ui/schedules").into_response();
     }
     match load(state).await {

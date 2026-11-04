@@ -6,12 +6,12 @@
     <span class="status {{ job.row.status }}"><span>{{ job.row.status_label }}</span></span>
     <span class="muted" title="{{ job.row.due_title }}">attempt {{ job.row.attempt }}{% if !job.row.due.is_empty() %} · {{ job.row.due }}{% endif %}</span>
     <div class="actions push">
-      {% if job.row.is_processed() %}
+      {% if job.row.status.is_processed() %}
       <form method="post" action="/ui/jobs/{{ job.row.id }}/retry" hx-post="/ui/jobs/{{ job.row.id }}/retry">
         <button type="submit">Retry now</button>
       </form>
       {% endif %}
-      {% if job.row.is_pending() %}
+      {% if job.row.status.is_pending() %}
       <form method="post" action="/ui/jobs/{{ job.row.id }}/cancel" hx-post="/ui/jobs/{{ job.row.id }}/cancel" hx-confirm="Cancel job {{ job.row.id }}? It will not run.">
         <button type="submit" class="secondary">Cancel</button>
       </form>
@@ -25,7 +25,7 @@
   {% if let Some((kind, text)) = job.notice %}
   <div class="alert {{ kind }}" role="status">{{ text }}</div>
   {% endif %}
-  {% if job.row.status == "processing" %}
+  {% if job.row.status.as_str() == "processing" %}
   <p class="hint">Running on <span class="mono" title="{{ job.row.instance_full }}">{{ job.row.instance }}</span>: it cannot be cancelled now.</p>
   {% endif %}
 

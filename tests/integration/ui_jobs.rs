@@ -1,39 +1,17 @@
-use bytes::Bytes;
-use http_body_util::{BodyExt, Full};
 use hyper::{Method, StatusCode};
-use irisqo::db::jobview::{self, JobQuery, ScheduleFilter, StatusFilter};
+use irisqo::db::jobview::{self, JobQuery, JobStatus, ScheduleFilter, StatusFilter};
 use sqlx::PgPool;
 
 use crate::common;
 
+/// A request without a body.
 async fn send(
     state: &irisqo::AppState,
     method: Method,
     uri: &str,
     htmx: bool,
 ) -> (StatusCode, hyper::HeaderMap, String) {
-    let mut req = hyper::Request::builder().method(method).uri(uri);
-    if htmx {
-        req = req.header("hx-request", "true");
-    }
-    let response = state
-        .client
-        .request(req.body(Full::new(Bytes::new())).expect("request"))
-        .await
-        .expect("response");
-    let status = response.status();
-    let headers = response.headers().clone();
-    let bytes = response
-        .into_body()
-        .collect()
-        .await
-        .expect("body")
-        .to_bytes();
-    (
-        status,
-        headers,
-        String::from_utf8_lossy(&bytes).into_owned(),
-    )
+    crate::ui::send(state, method, uri, htmx, "").await
 }
 
 async fn job_id(state: &irisqo::AppState, addr: std::net::SocketAddr, target: &str) -> i64 {
@@ -52,7 +30,7 @@ fn query(status: StatusFilter) -> JobQuery {
     }
 }
 
-async fn statuses(pool: &PgPool, q: &JobQuery) -> Vec<(i64, String)> {
+async fn statuses(pool: &PgPool, q: &JobQuery) -> Vec<(i64, JobStatus)> {
     jobview::list(pool, q)
         .await
         .expect("list")
@@ -82,18 +60,14 @@ async fn list_shows_every_state(pool: PgPool) -> anyhow::Result<()> {
 
     let all = statuses(&pool, &query(StatusFilter::All)).await;
     let expected = [
-        (enqueued, "enqueued"),
-        (processing, "processing"),
-        (scheduled, "scheduled"),
-        (retrying, "retrying"),
-        (failed, "failed"),
-        (completed, "completed"),
+        (enqueued, JobStatus::Enqueued),
+        (processing, JobStatus::Processing),
+        (scheduled, JobStatus::Scheduled),
+        (retrying, JobStatus::Retrying),
+        (failed, JobStatus::Failed),
+        (completed, JobStatus::Completed),
     ];
-    assert_eq!(
-        all,
-        expected.map(|(id, s)| (id, s.to_owned())).to_vec(),
-        "newest first, one state each"
-    );
+    assert_eq!(all, expected, "newest first, one state each");
     let active: Vec<i64> = statuses(&pool, &query(StatusFilter::Active))
         .await
         .into_iter()
@@ -101,8 +75,8 @@ async fn list_shows_every_state(pool: PgPool) -> anyhow::Result<()> {
         .collect();
     assert_eq!(active, [enqueued, processing, scheduled, retrying]);
     assert_eq!(
-        statuses(&pool, &query(StatusFilter::Failed)).await,
-        [(failed, "failed".into())]
+        statuses(&pool, &query(StatusFilter::Only(JobStatus::Failed))).await,
+        [(failed, JobStatus::Failed)]
     );
 
     // search: external id, id, a part of the URL

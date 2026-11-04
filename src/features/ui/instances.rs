@@ -6,13 +6,14 @@ use askama::Template;
 use askama_web::WebTemplate;
 use axum::{
     extract::State,
-    http::StatusCode,
     response::{IntoResponse, Response},
 };
 use chrono::{DateTime, Utc};
-use tracing::error;
 
-use super::views::{relative, utc};
+use super::{
+    server_error,
+    views::{relative, utc},
+};
 use crate::{
     features::instances::{self, InstanceView},
     models::{AppState, Error},
@@ -94,15 +95,6 @@ async fn load(state: &AppState) -> Result<Vec<InstanceRowView>, Error> {
         .iter()
         .map(|row| InstanceRowView::new(row, now, &state.instance_id))
         .collect())
-}
-
-fn server_error(err: &Error) -> Response {
-    error!("ui error {:?}", err);
-    (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        "Something went wrong, see the logs.",
-    )
-        .into_response()
 }
 
 pub async fn instances_page(State(state): State<Arc<AppState>>) -> Response {

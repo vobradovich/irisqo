@@ -99,7 +99,7 @@ fn one_of(value: String, allowed: &[&str]) -> String {
     if allowed.contains(&value.as_str()) {
         value
     } else {
-        allowed[0].to_owned()
+        allowed.first().copied().unwrap_or_default().to_owned()
     }
 }
 
@@ -293,15 +293,15 @@ impl JobForm {
             out.push_str(&format!("{key}={value}"));
         }
         let (headers, _) = self.target_headers();
-        let mut names: Vec<_> = headers.keys().collect();
-        names.sort();
-        for name in names {
+        let mut sent: Vec<_> = headers.iter().collect();
+        sent.sort();
+        for (name, value) in sent {
             let header = if name == "content-type" {
                 "Content-Type".to_owned()
             } else {
                 format!("Irisqo-Forward-{name}")
             };
-            out.push_str(&format!("\n{header}: {}", mask(name, &headers[name])));
+            out.push_str(&format!("\n{header}: {}", mask(name, value)));
         }
         if !self.body.is_empty() {
             out.push_str("\n\n");

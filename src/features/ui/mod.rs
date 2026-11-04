@@ -9,7 +9,11 @@ mod jobs;
 mod schedules;
 pub mod views;
 
-use crate::{features::schedules::JobSchedule, handlers::http::create_job, models::AppState};
+use crate::{
+    features::schedules::JobSchedule,
+    handlers::http::create_job,
+    models::{AppState, Error},
+};
 use askama::Template;
 use askama_web::WebTemplate;
 use axum::{
@@ -98,6 +102,21 @@ async fn security_headers(mut response: Response) -> Response {
     response
 }
 
+/// htmx asks for a partial, a plain browser request for a page or a redirect.
+fn is_htmx(headers: &HeaderMap) -> bool {
+    headers.contains_key("hx-request")
+}
+
+/// The details go to the log, not to the browser.
+fn server_error(err: &Error) -> Response {
+    error!("ui error {:?}", err);
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "Something went wrong, see the logs.",
+    )
+        .into_response()
+}
+
 fn page(form: JobForm) -> NewJobPage {
     NewJobPage { nav: "new", form }
 }
@@ -134,7 +153,6 @@ async fn create_job_from_form(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    let htmx = headers.contains_key("hx-request");
     let form = JobForm::from_pairs(&body).with_limits(&state.worker_options);
     let outcome = match form.prepare(&state.worker_options, JobSchedule::now_secs()) {
         Err(errors) => Err(errors),
@@ -158,7 +176,7 @@ async fn create_job_from_form(
             None,
         ),
     };
-    if htmx {
+    if is_htmx(&headers) {
         (status, trigger, JobFormPartial { form }).into_response()
     } else {
         (status, trigger, page(form)).into_response()

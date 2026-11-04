@@ -34,12 +34,12 @@ pub async fn get_all(
 }
 
 /// Pauses a schedule: no more runs, and its pending run (if it is not running) is
-/// cancelled. Returns 0 when there is no such schedule.
+/// cancelled. Returns `false` when there is no such schedule.
 pub async fn pause(
     pool: &Pool<Postgres>,
     schedule_id: &str,
     instance_id: &str,
-) -> Result<u64, Error> {
+) -> Result<bool, Error> {
     const SQL: &str =
         "UPDATE schedules SET inactive = true WHERE schedule_id = $1 RETURNING next_id";
     let mut tx = pool.begin().await?;
@@ -48,37 +48,48 @@ pub async fn pause(
         .fetch_optional(&mut *tx)
         .await?
     else {
-        return Ok(0);
+        return Ok(false);
     };
     if let Some(next_id) = next_id {
         db::jobqueue::cancel(&mut *tx, next_id, instance_id).await?;
     }
     tx.commit().await?;
-    Ok(1)
+    Ok(true)
 }
 
 /// Resumes a schedule: when it has no pending run, the next one is scheduled
-/// (unless its `until` has passed). Returns 0 when there is no such schedule.
+/// (unless its `until` has passed). Returns `false` when there is no such schedule.
 pub async fn resume(
     pool: &Pool<Postgres>,
     schedule_id: &str,
     now_secs: i64,
     instance_id: &str,
-) -> Result<u64, Error> {
+) -> Result<bool, Error> {
     const SQL: &str = "
     UPDATE schedules AS s SET inactive = false
     WHERE schedule_id = $1
     RETURNING s.schedule, s.until, s.next_id,
         EXISTS (SELECT 1 FROM scheduled WHERE id = s.next_id)
             OR EXISTS (SELECT 1 FROM enqueued WHERE id = s.next_id) AS pending";
+    #[derive(sqlx::FromRow)]
+    struct Resumed {
+        schedule: String,
+        until: Option<i64>,
+        next_id: Option<i64>,
+        pending: bool,
+    }
     let mut tx = pool.begin().await?;
-    let Some((schedule, until, next_id, pending)) =
-        sqlx::query_as::<_, (String, Option<i64>, Option<i64>, bool)>(SQL)
-            .bind(schedule_id)
-            .fetch_optional(&mut *tx)
-            .await?
+    let Some(Resumed {
+        schedule,
+        until,
+        next_id,
+        pending,
+    }) = sqlx::query_as::<_, Resumed>(SQL)
+        .bind(schedule_id)
+        .fetch_optional(&mut *tx)
+        .await?
     else {
-        return Ok(0);
+        return Ok(false);
     };
     if !pending
         && let Some(next_id) = next_id
@@ -90,7 +101,7 @@ pub async fn resume(
         db::jobqueue::clone_schedule_at(&mut *tx, next_id, at, instance_id).await?;
     }
     tx.commit().await?;
-    Ok(1)
+    Ok(true)
 }
 
 /// A schedule with its request and its last processed run.

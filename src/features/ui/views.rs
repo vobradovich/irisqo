@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use chrono::{DateTime, TimeZone, Utc};
 
 use crate::{
-    db::jobview::JobView,
+    db::jobview::{JobStatus, JobView},
     features::{
         history::JobHistoryRow,
         results::{JobResult, JobResultType},
@@ -55,20 +55,23 @@ fn utc_secs(secs: i64) -> String {
 
 /// `host·K7QX`: the host and the end of the instance ULID.
 pub fn short_instance(instance_id: &str) -> String {
-    match instance_id.rsplit_once(':') {
-        Some((host, ulid)) if ulid.len() > 4 => format!("{host}·{}", &ulid[ulid.len() - 4..]),
-        _ => instance_id.to_owned(),
-    }
+    instance_id
+        .rsplit_once(':')
+        .and_then(|(host, ulid)| Some((host, ulid.get(ulid.len().checked_sub(4)?..)?)))
+        .map_or_else(
+            || instance_id.to_owned(),
+            |(host, end)| format!("{host}·{end}"),
+        )
 }
 
 /// `01JC…K7Q` for a ULID.
 pub fn short_id(id: &str) -> String {
-    let chars: Vec<char> = id.chars().collect();
-    if chars.len() <= 8 {
+    let count = id.chars().count();
+    if count <= 8 {
         return id.to_owned();
     }
-    let head: String = chars[..4].iter().collect();
-    let tail: String = chars[chars.len() - 3..].iter().collect();
+    let head: String = id.chars().take(4).collect();
+    let tail: String = id.chars().skip(count - 3).collect();
     format!("{head}…{tail}")
 }
 
@@ -109,7 +112,7 @@ pub fn status_label(status: &str) -> String {
 #[derive(Debug, Clone)]
 pub struct JobRowView {
     pub id: i64,
-    pub status: String,
+    pub status: JobStatus,
     pub status_label: String,
     pub method: String,
     pub url: String,
@@ -131,17 +134,19 @@ impl JobRowView {
             JobProtocol::None => ("—".to_owned(), "no protocol".to_owned()),
         };
         let since = |at: DateTime<Utc>| relative((at - now).num_seconds());
-        let (due, due_title) = match job.status.as_str() {
-            "scheduled" | "retrying" => job.due_secs.map_or_else(Default::default, |secs| {
-                let delta = secs - now.timestamp();
-                let due = if delta <= 0 {
-                    "due".to_owned()
-                } else {
-                    relative(delta)
-                };
-                (due, utc_secs(secs))
-            }),
-            "enqueued" => job.due_at.map_or_else(Default::default, |at| {
+        let (due, due_title) = match job.status {
+            JobStatus::Scheduled | JobStatus::Retrying => {
+                job.due_secs.map_or_else(Default::default, |secs| {
+                    let delta = secs - now.timestamp();
+                    let due = if delta <= 0 {
+                        "due".to_owned()
+                    } else {
+                        relative(delta)
+                    };
+                    (due, utc_secs(secs))
+                })
+            }
+            JobStatus::Enqueued => job.due_at.map_or_else(Default::default, |at| {
                 (
                     format!(
                         "waiting {}",
@@ -150,10 +155,13 @@ impl JobRowView {
                     utc(at),
                 )
             }),
-            "processing" => job.lock_at.map_or_else(Default::default, |at| {
+            JobStatus::Processing => job.lock_at.map_or_else(Default::default, |at| {
                 (format!("started {}", since(at)), utc(at))
             }),
-            _ => job
+            JobStatus::Completed
+            | JobStatus::Failed
+            | JobStatus::Cancelled
+            | JobStatus::Unknown => job
                 .processed_at
                 .map_or_else(Default::default, |at| (since(at), utc(at))),
         };
@@ -167,8 +175,8 @@ impl JobRowView {
         };
         JobRowView {
             id: job.id,
-            status_label: status_label(&job.status),
-            status: job.status.clone(),
+            status_label: status_label(job.status.as_str()),
+            status: job.status,
             method,
             url,
             attempt,
@@ -185,14 +193,6 @@ impl JobRowView {
                 .map_or_else(|| "—".to_owned(), short_id),
             schedule_full: job.schedule_id.clone().unwrap_or_default(),
         }
-    }
-
-    pub fn is_pending(&self) -> bool {
-        matches!(self.status.as_str(), "scheduled" | "retrying" | "enqueued")
-    }
-
-    pub fn is_processed(&self) -> bool {
-        matches!(self.status.as_str(), "completed" | "failed" | "cancelled")
     }
 }
 
@@ -226,7 +226,7 @@ impl From<&JobHistoryRow> for HistoryView {
 /// Up to 16 KiB of a body, as text.
 fn body_text(body: &[u8]) -> String {
     const MAX: usize = 16 * 1024;
-    let shown = &body[..body.len().min(MAX)];
+    let shown = body.get(..MAX).unwrap_or(body);
     let mut text = String::from_utf8_lossy(shown).into_owned();
     if body.len() > MAX {
         text.push_str("\n…");

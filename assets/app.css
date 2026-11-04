@@ -128,12 +128,14 @@ body > main {
   padding-inline: 1.5rem;
 }
 body > header > nav { min-height: 3.75rem; }
+nav a {
+  font-weight: 600;
+  border-radius: var(--pico-border-radius);
+}
 nav a.cta {
   white-space: nowrap;
   background: var(--accent);
   color: var(--accent-ink);
-  font-weight: 600;
-  border-radius: var(--pico-border-radius);
 }
 nav a.cta:hover,
 nav a.cta[aria-current="page"] { background: var(--accent-hover); color: var(--accent-ink); }
@@ -150,8 +152,6 @@ nav a.cta[aria-current="page"] { background: var(--accent-hover); color: var(--a
 nav a[aria-current="page"] {
   color: var(--text);
   background: var(--surface-2);
-  border-radius: var(--pico-border-radius);
-  font-weight: 600;
 }
 body > main { padding-top: 1.75rem; }
 /* phones: the icon alone for the brand, tighter links, a 16px gutter */

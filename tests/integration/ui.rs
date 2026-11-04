@@ -5,7 +5,7 @@ use sqlx::PgPool;
 
 use crate::common;
 
-async fn send(
+pub(crate) async fn send(
     state: &irisqo::AppState,
     method: Method,
     uri: &str,

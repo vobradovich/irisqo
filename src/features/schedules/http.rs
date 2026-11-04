@@ -54,10 +54,15 @@ async fn pause(
     State(state): State<Arc<AppState>>,
     Path(schedule_id): Path<String>,
 ) -> Result<Response, Problem> {
-    let rows = super::db::pause(&state.pool, &schedule_id, &state.instance_id).await?;
-    match rows {
-        0 => Ok(StatusCode::NOT_FOUND.into_response()),
-        _ => Ok(StatusCode::NO_CONTENT.into_response()),
+    let found = super::db::pause(&state.pool, &schedule_id, &state.instance_id).await?;
+    Ok(found_status(found).into_response())
+}
+
+fn found_status(found: bool) -> StatusCode {
+    if found {
+        StatusCode::NO_CONTENT
+    } else {
+        StatusCode::NOT_FOUND
     }
 }
 
@@ -66,17 +71,14 @@ async fn resume(
     State(state): State<Arc<AppState>>,
     Path(schedule_id): Path<String>,
 ) -> Result<Response, Problem> {
-    let rows = super::db::resume(
+    let found = super::db::resume(
         &state.pool,
         &schedule_id,
         super::JobSchedule::now_secs(),
         &state.instance_id,
     )
     .await?;
-    match rows {
-        0 => Ok(StatusCode::NOT_FOUND.into_response()),
-        _ => Ok(StatusCode::NO_CONTENT.into_response()),
-    }
+    Ok(found_status(found).into_response())
 }
 
 async fn delete(

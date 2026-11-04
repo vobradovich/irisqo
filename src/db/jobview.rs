@@ -6,12 +6,9 @@ use sqlx::{Pool, Postgres};
 
 use crate::models::{Error, JobMeta};
 
-/// Which jobs a list shows.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum StatusFilter {
-    /// scheduled, retrying, enqueued or processing
-    #[default]
-    Active,
+/// The state of a job.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JobStatus {
     Scheduled,
     Retrying,
     Enqueued,
@@ -19,32 +16,93 @@ pub enum StatusFilter {
     Completed,
     Failed,
     Cancelled,
+    /// In none of the tables.
+    Unknown,
+}
+
+impl JobStatus {
+    /// Every state a job can be shown in.
+    pub const KNOWN: [JobStatus; 7] = [
+        JobStatus::Scheduled,
+        JobStatus::Retrying,
+        JobStatus::Enqueued,
+        JobStatus::Processing,
+        JobStatus::Completed,
+        JobStatus::Failed,
+        JobStatus::Cancelled,
+    ];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            JobStatus::Scheduled => "scheduled",
+            JobStatus::Retrying => "retrying",
+            JobStatus::Enqueued => "enqueued",
+            JobStatus::Processing => "processing",
+            JobStatus::Completed => "completed",
+            JobStatus::Failed => "failed",
+            JobStatus::Cancelled => "cancelled",
+            JobStatus::Unknown => "unknown",
+        }
+    }
+
+    /// Waiting for its turn: not started yet.
+    pub const fn is_pending(self) -> bool {
+        matches!(
+            self,
+            JobStatus::Scheduled | JobStatus::Retrying | JobStatus::Enqueued
+        )
+    }
+
+    pub const fn is_processed(self) -> bool {
+        matches!(
+            self,
+            JobStatus::Completed | JobStatus::Failed | JobStatus::Cancelled
+        )
+    }
+}
+
+impl From<String> for JobStatus {
+    fn from(value: String) -> Self {
+        Self::KNOWN
+            .into_iter()
+            .find(|s| s.as_str() == value)
+            .unwrap_or(JobStatus::Unknown)
+    }
+}
+
+impl std::fmt::Display for JobStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Which jobs a list shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum StatusFilter {
+    /// scheduled, retrying, enqueued or processing
+    #[default]
+    Active,
+    Only(JobStatus),
     All,
 }
 
 impl StatusFilter {
     pub const ALL: [StatusFilter; 9] = [
         StatusFilter::Active,
-        StatusFilter::Scheduled,
-        StatusFilter::Retrying,
-        StatusFilter::Enqueued,
-        StatusFilter::Processing,
-        StatusFilter::Completed,
-        StatusFilter::Failed,
-        StatusFilter::Cancelled,
+        StatusFilter::Only(JobStatus::Scheduled),
+        StatusFilter::Only(JobStatus::Retrying),
+        StatusFilter::Only(JobStatus::Enqueued),
+        StatusFilter::Only(JobStatus::Processing),
+        StatusFilter::Only(JobStatus::Completed),
+        StatusFilter::Only(JobStatus::Failed),
+        StatusFilter::Only(JobStatus::Cancelled),
         StatusFilter::All,
     ];
 
     pub const fn as_str(self) -> &'static str {
         match self {
             StatusFilter::Active => "active",
-            StatusFilter::Scheduled => "scheduled",
-            StatusFilter::Retrying => "retrying",
-            StatusFilter::Enqueued => "enqueued",
-            StatusFilter::Processing => "processing",
-            StatusFilter::Completed => "completed",
-            StatusFilter::Failed => "failed",
-            StatusFilter::Cancelled => "cancelled",
+            StatusFilter::Only(status) => status.as_str(),
             StatusFilter::All => "all",
         }
     }
@@ -67,6 +125,12 @@ pub enum ScheduleFilter {
 }
 
 impl ScheduleFilter {
+    pub const ALL: [ScheduleFilter; 3] = [
+        ScheduleFilter::Any,
+        ScheduleFilter::Scheduled,
+        ScheduleFilter::None,
+    ];
+
     pub const fn as_str(self) -> &'static str {
         match self {
             ScheduleFilter::Any => "any",
@@ -76,14 +140,10 @@ impl ScheduleFilter {
     }
 
     pub fn parse(value: &str) -> Self {
-        [
-            ScheduleFilter::Any,
-            ScheduleFilter::Scheduled,
-            ScheduleFilter::None,
-        ]
-        .into_iter()
-        .find(|f| f.as_str() == value)
-        .unwrap_or_default()
+        Self::ALL
+            .into_iter()
+            .find(|f| f.as_str() == value)
+            .unwrap_or_default()
     }
 }
 
@@ -107,8 +167,8 @@ pub struct JobView {
     pub schedule_id: Option<String>,
     pub external_id: Option<String>,
     pub created_at: DateTime<Utc>,
-    /// scheduled | retrying | enqueued | processing | completed | failed | cancelled | unknown
-    pub status: String,
+    #[sqlx(try_from = "String")]
+    pub status: JobStatus,
     pub retry: i32,
     /// When a scheduled job is due, unix seconds.
     pub due_secs: Option<i64>,
