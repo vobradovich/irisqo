@@ -18,16 +18,16 @@ pub async fn require_api_token(
     request: Request,
     next: Next,
 ) -> Response {
-    if state.api_tokens.is_empty() {
+    let Some(tokens) = &state.api_tokens else {
         return next.run(request).await;
-    }
+    };
     let token = request
         .headers()
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
         .and_then(bearer);
     match token {
-        Some(token) if state.api_tokens.accepts(token) => next.run(request).await,
+        Some(token) if tokens.accepts(token) => next.run(request).await,
         // RFC 6750: no credentials, or wrong ones
         Some(_) => unauthorized("Bearer realm=\"irisqo\", error=\"invalid_token\""),
         None => unauthorized("Bearer realm=\"irisqo\""),

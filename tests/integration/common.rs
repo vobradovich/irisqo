@@ -1,7 +1,7 @@
 use std::{net::SocketAddr, sync::Arc};
 
 use bytes::Bytes;
-use http_body_util::Full;
+use http_body_util::{BodyExt, Full};
 use irisqo::{
     AppState, db,
     models::{JobWithRetry, Options, new_instance_id},
@@ -56,12 +56,39 @@ pub async fn request_with(
     uri: &str,
     headers: &[(&str, &str)],
 ) -> hyper::Response<hyper::body::Incoming> {
+    send(state, method, uri, headers, "").await
+}
+
+/// [`request_with`] and a form `body` (sent as `application/x-www-form-urlencoded`).
+pub async fn send(
+    state: &AppState,
+    method: hyper::Method,
+    uri: &str,
+    headers: &[(&str, &str)],
+    body: &str,
+) -> hyper::Response<hyper::body::Incoming> {
     let mut req = hyper::Request::builder().method(method).uri(uri);
+    if !body.is_empty() {
+        req = req.header("content-type", "application/x-www-form-urlencoded");
+    }
     for (name, value) in headers {
         req = req.header(*name, *value);
     }
-    let req = req.body(Full::new(Bytes::new())).expect("request");
+    let req = req
+        .body(Full::new(Bytes::copy_from_slice(body.as_bytes())))
+        .expect("request");
     state.client.request(req).await.expect("response")
+}
+
+/// The body of a response as text.
+pub async fn text(response: hyper::Response<hyper::body::Incoming>) -> String {
+    let bytes = response
+        .into_body()
+        .collect()
+        .await
+        .expect("body")
+        .to_bytes();
+    String::from_utf8_lossy(&bytes).into_owned()
 }
 
 /// Assigns up to `limit` enqueued jobs to this instance.

@@ -1,18 +1,15 @@
 use std::{fmt, str::FromStr};
 
 /// `--api-token`: the tokens that open the API, comma separated, so a new one can be rolled
-/// out before the old one is removed. None: the API is open.
-#[derive(Clone, PartialEq, Eq, Default)]
+/// out before the old one is removed. Never empty (only [`FromStr`] makes one): an open API
+/// is `None` in [`crate::AppState`], not an empty list.
+#[derive(Clone, PartialEq, Eq)]
 pub struct ApiTokens(Vec<String>);
 
 /// Shorter tokens are refused: they could be guessed.
 pub const MIN_TOKEN_LEN: usize = 16;
 
 impl ApiTokens {
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
     /// One of the tokens, compared in constant time (no early exit on the first byte that
     /// differs, which would tell an attacker how much of a guess is right).
     #[must_use = "an unchecked token lets every request in"]
@@ -79,5 +76,4 @@ fn tokens() {
     assert_eq!(format!("{tokens:?}"), "ApiTokens(2 tokens)");
     assert!("short".parse::<ApiTokens>().is_err());
     assert!("".parse::<ApiTokens>().is_err() && " , ".parse::<ApiTokens>().is_err());
-    assert!(ApiTokens::default().is_empty() && !ApiTokens::default().accepts(""));
 }

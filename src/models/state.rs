@@ -17,8 +17,8 @@ use super::{AllowTargets, ApiTokens, Environment, TargetPolicy, targets::Guarded
 #[derive(Debug)]
 pub struct AppState {
     pub environment: Environment,
-    /// Open the API (`/to/*`, `/api/v1/*`); none: the API is open.
-    pub api_tokens: ApiTokens,
+    /// Open the API (`/to/*`, `/api/v1/*`) and the UI; `None`: both are open.
+    pub api_tokens: Option<ApiTokens>,
     pub port: u16,
     pub instance_id: String,
     pub pool: Pool<Postgres>,
@@ -219,7 +219,7 @@ impl AppState {
         let https = HttpsConnector::new_with_connector(http);
         let state = AppState {
             environment: options.environment(),
-            api_tokens: options.api_token.clone().unwrap_or_default(),
+            api_tokens: options.api_token.clone(),
             port: options.port.unwrap_or(8102),
             instance_id,
             pool,

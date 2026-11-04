@@ -310,38 +310,6 @@ async fn no_token_keeps_the_api_open(pool: PgPool) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// A request with `headers` and a form `body`.
-async fn send_form(
-    state: &irisqo::AppState,
-    uri: &str,
-    headers: &[(&str, &str)],
-    body: &str,
-) -> hyper::Response<hyper::body::Incoming> {
-    let mut request = hyper::Request::builder()
-        .method(Method::POST)
-        .uri(uri)
-        .header("content-type", "application/x-www-form-urlencoded");
-    for (name, value) in headers {
-        request = request.header(*name, *value);
-    }
-    let request = request
-        .body(http_body_util::Full::new(bytes::Bytes::from(
-            body.to_owned(),
-        )))
-        .expect("request");
-    state.client.request(request).await.expect("response")
-}
-
-async fn text(response: hyper::Response<hyper::body::Incoming>) -> String {
-    let bytes = response
-        .into_body()
-        .collect()
-        .await
-        .expect("body")
-        .to_bytes();
-    String::from_utf8_lossy(&bytes).into_owned()
-}
-
 #[sqlx::test(migrations = "./sql/migrations")]
 async fn ui_asks_for_the_token(pool: PgPool) -> anyhow::Result<()> {
     let tokens = format!("{TOKEN},{NEXT_TOKEN}");
@@ -350,13 +318,13 @@ async fn ui_asks_for_the_token(pool: PgPool) -> anyhow::Result<()> {
     let url = |path: &str| format!("http://{addr}{path}");
 
     // no pass: a page goes to the login, back to where it was; htmx gets HX-Redirect
-    let response = common::request_with(&state, Method::GET, &url("/ui/jobs"), &[]).await;
+    let response = common::request(&state, Method::GET, &url("/ui/jobs")).await;
     assert_eq!(response.status(), StatusCode::SEE_OTHER);
     assert_eq!(
         common::header(&response, "location").as_deref(),
         Some("/ui/login")
     );
-    let response = common::request_with(&state, Method::GET, &url("/ui/jobs/5?tab=1"), &[]).await;
+    let response = common::request(&state, Method::GET, &url("/ui/jobs/5?tab=1")).await;
     assert_eq!(
         common::header(&response, "location").as_deref(),
         Some("/ui/login?next=%2Fui%2Fjobs%2F5%3Ftab%3D1")
@@ -374,7 +342,14 @@ async fn ui_asks_for_the_token(pool: PgPool) -> anyhow::Result<()> {
         common::header(&response, "hx-redirect").as_deref(),
         Some("/ui/login?next=%2Fui%2Fschedules")
     );
-    let response = send_form(&state, &url("/ui/jobs"), &[], "url=https://example.com").await;
+    let response = common::send(
+        &state,
+        Method::POST,
+        &url("/ui/jobs"),
+        &[],
+        "url=https://example.com",
+    )
+    .await;
     assert_eq!(
         response.status(),
         StatusCode::SEE_OTHER,
@@ -382,23 +357,25 @@ async fn ui_asks_for_the_token(pool: PgPool) -> anyhow::Result<()> {
     );
     assert_eq!(common::count(&pool, "SELECT count(*) FROM jobs").await, 0);
     for open in ["/ui/login", "/ui/assets/app.css", "/favicon.ico"] {
-        let response = common::request_with(&state, Method::GET, &url(open), &[]).await;
+        let response = common::request(&state, Method::GET, &url(open)).await;
         assert_eq!(response.status(), StatusCode::OK, "{open}");
     }
 
     // a wrong token, then a good one; next cannot lead out of the UI
-    let response = send_form(
+    let response = common::send(
         &state,
+        Method::POST,
         &url("/ui/login"),
         &[],
         "token=nope&next=%2Fui%2Fschedules",
     )
     .await;
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-    let page = text(response).await;
+    let page = common::text(response).await;
     assert!(page.contains("The token is not valid.") && page.contains("value=\"/ui/schedules\""));
-    let response = send_form(
+    let response = common::send(
         &state,
+        Method::POST,
         &url("/ui/login"),
         &[],
         &format!("token={TOKEN}&next=%2Fui%2Fschedules"),
@@ -424,8 +401,9 @@ async fn ui_asks_for_the_token(pool: PgPool) -> anyhow::Result<()> {
         .expect("pass");
     let cookie = format!("irisqo_ui={pass}");
 
-    let response = send_form(
+    let response = common::send(
         &state,
+        Method::POST,
         &url("/ui/login"),
         &[("x-forwarded-proto", "https")],
         &format!("token={NEXT_TOKEN}&next=https%3A%2F%2Fevil.example%2F"),
@@ -446,9 +424,14 @@ async fn ui_asks_for_the_token(pool: PgPool) -> anyhow::Result<()> {
     )
     .await;
     assert_eq!(response.status(), StatusCode::OK);
-    assert!(text(response).await.contains("action=\"/ui/logout\""));
-    let response = send_form(
+    assert!(
+        common::text(response)
+            .await
+            .contains("action=\"/ui/logout\"")
+    );
+    let response = common::send(
         &state,
+        Method::POST,
         &url("/ui/logout"),
         &[("cookie", cookie.as_str())],
         "",
@@ -485,10 +468,9 @@ async fn ui_asks_for_the_token(pool: PgPool) -> anyhow::Result<()> {
 async fn ui_without_token_is_open(pool: PgPool) -> anyhow::Result<()> {
     let state = common::state(pool);
     let addr = common::spawn_app(&state).await;
-    let response =
-        common::request_with(&state, Method::GET, &format!("http://{addr}/ui/jobs"), &[]).await;
+    let response = common::request(&state, Method::GET, &format!("http://{addr}/ui/jobs")).await;
     assert_eq!(response.status(), StatusCode::OK);
-    assert!(!text(response).await.contains("/ui/logout"));
+    assert!(!common::text(response).await.contains("/ui/logout"));
     let response = common::request_with(
         &state,
         Method::GET,

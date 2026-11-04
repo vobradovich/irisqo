@@ -6,7 +6,7 @@
 //! valid while its token is one of `--api-token` and it has not expired, so removing a token
 //! logs out everyone who logged in with it.
 
-use std::{sync::Arc, time::Duration};
+use std::{fmt, sync::Arc, time::Duration};
 
 use askama::Template;
 use askama_web::WebTemplate;
@@ -24,7 +24,7 @@ use sha2::Sha256;
 use url::form_urlencoded;
 
 use super::{Nav, is_htmx};
-use crate::models::AppState;
+use crate::models::{ApiTokens, AppState};
 
 const COOKIE: &str = "irisqo_ui";
 /// A pass lasts a week.
@@ -32,33 +32,32 @@ const PASS_SECS: i64 = 7 * 24 * 3600;
 /// Where a login goes when it is not told where to go back to.
 const HOME: &str = "/ui/jobs";
 
-/// `<expires>.<hex of HMAC-SHA256(key = token, "irisqo-ui|<expires>")>`
+/// `<expires>.<hex of HMAC-SHA256(key = token, "irisqo-ui|" + expires as 8 big-endian bytes)>`
 fn pass(token: &str, expires: i64) -> String {
-    let Ok(mut mac) = Hmac::<Sha256>::new_from_slice(token.as_bytes()) else {
-        // HMAC takes a key of any length
-        return String::new();
-    };
-    mac.update(format!("irisqo-ui|{expires}").as_bytes());
-    let tag: String = mac
-        .finalize()
-        .into_bytes()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect();
-    format!("{expires}.{tag}")
+    let mut mac =
+        Hmac::<Sha256>::new_from_slice(token.as_bytes()).expect("HMAC takes a key of any length");
+    mac.update(b"irisqo-ui|");
+    mac.update(&expires.to_be_bytes());
+    format!("{expires}.{}", Hex(&mac.finalize().into_bytes()))
 }
 
-fn valid_pass(state: &AppState, candidate: &str, now: i64) -> bool {
+/// Bytes as lowercase hex, written straight into the formatter (no string per byte).
+struct Hex<'a>(&'a [u8]);
+
+impl fmt::Display for Hex<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.iter().try_for_each(|byte| write!(f, "{byte:02x}"))
+    }
+}
+
+fn valid_pass(tokens: &ApiTokens, candidate: &str, now: i64) -> bool {
     let Some(expires) = candidate
         .split_once('.')
         .and_then(|(expires, _)| expires.parse::<i64>().ok())
     else {
         return false;
     };
-    expires > now
-        && state
-            .api_tokens
-            .accepts_derived(candidate, |token| pass(token, expires))
+    expires > now && tokens.accepts_derived(candidate, |token| pass(token, expires))
 }
 
 /// A cookie of the `Cookie` headers.
@@ -126,10 +125,14 @@ pub async fn require_login(
     request: Request,
     next: Next,
 ) -> Response {
-    let now = Utc::now().timestamp();
-    let open = state.api_tokens.is_empty()
-        || is_open(request.uri().path())
-        || cookie(request.headers(), COOKIE).is_some_and(|pass| valid_pass(&state, pass, now));
+    let open = match &state.api_tokens {
+        None => true,
+        Some(tokens) => {
+            is_open(request.uri().path())
+                || cookie(request.headers(), COOKIE)
+                    .is_some_and(|pass| valid_pass(tokens, pass, Utc::now().timestamp()))
+        }
+    };
     if open {
         return next.run(request).await;
     }
@@ -140,22 +143,16 @@ pub async fn require_login(
             .get("hx-current-url")
             .and_then(|value| value.to_str().ok())
             .and_then(|url| url::Url::parse(url).ok())
-            .map(|url| match url.query() {
-                Some(query) => format!("{}?{query}", url.path()),
-                None => url.path().to_owned(),
-            });
+            .map(|url| url[url::Position::BeforePath..url::Position::AfterQuery].to_owned());
         let location = login_location(back.as_deref());
         return (StatusCode::UNAUTHORIZED, [("hx-redirect", location)]).into_response();
     }
-    let back = (request.method() == Method::GET)
-        .then(|| {
-            request
-                .uri()
-                .path_and_query()
-                .map(|pq| pq.as_str().to_owned())
-        })
-        .flatten();
-    Redirect::to(&login_location(back.as_deref())).into_response()
+    let back = request
+        .uri()
+        .path_and_query()
+        .filter(|_| request.method() == Method::GET)
+        .map(|pq| pq.as_str());
+    Redirect::to(&login_location(back)).into_response()
 }
 
 #[derive(Template, WebTemplate)]
@@ -189,7 +186,7 @@ pub async fn login_page(
     Query(query): Query<LoginQuery>,
 ) -> Response {
     let next = safe_next(query.next.as_deref());
-    if state.api_tokens.is_empty() {
+    if state.api_tokens.is_none() {
         return Redirect::to(next).into_response();
     }
     LoginPage::new(next, false).into_response()
@@ -208,34 +205,29 @@ pub async fn login_submit(
 ) -> Response {
     let next = safe_next(form.next.as_deref());
     let token = form.token.trim();
-    if state.api_tokens.is_empty() {
+    let Some(tokens) = &state.api_tokens else {
         return Redirect::to(next).into_response();
-    }
-    if !state.api_tokens.accepts(token) {
+    };
+    if !tokens.accepts(token) {
         // a second per wrong guess
         tokio::time::sleep(Duration::from_secs(1)).await;
         return (StatusCode::UNAUTHORIZED, LoginPage::new(next, true)).into_response();
     }
     let value = pass(token, Utc::now().timestamp() + PASS_SECS);
-    (
-        StatusCode::SEE_OTHER,
-        [
-            (header::LOCATION, next.to_owned()),
-            (header::SET_COOKIE, set_cookie(&value, PASS_SECS, &headers)),
-        ],
-    )
-        .into_response()
+    see_other(next, set_cookie(&value, PASS_SECS, &headers))
 }
 
 pub async fn logout(headers: HeaderMap) -> Response {
-    (
-        StatusCode::SEE_OTHER,
-        [
-            (header::LOCATION, "/ui/login".to_owned()),
-            (header::SET_COOKIE, set_cookie("", 0, &headers)),
-        ],
-    )
-        .into_response()
+    see_other("/ui/login", set_cookie("", 0, &headers))
+}
+
+/// A `303` to `location` that sets the pass cookie.
+fn see_other(location: &str, cookie: String) -> Response {
+    let headers = [
+        (header::LOCATION, location.to_owned()),
+        (header::SET_COOKIE, cookie),
+    ];
+    (StatusCode::SEE_OTHER, headers).into_response()
 }
 
 #[cfg(test)]

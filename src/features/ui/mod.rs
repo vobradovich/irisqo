@@ -45,7 +45,7 @@ impl Nav {
     pub fn new(state: &AppState, current: &'static str) -> Self {
         Nav {
             current,
-            logout: !state.api_tokens.is_empty(),
+            logout: state.api_tokens.is_some(),
         }
     }
 }
