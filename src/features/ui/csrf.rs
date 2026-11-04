@@ -25,6 +25,7 @@ pub async fn same_origin(request: Request, next: Next) -> Response {
     (StatusCode::FORBIDDEN, "Cross-site request refused.").into_response()
 }
 
+#[must_use = "an unchecked request is let through"]
 fn from_this_site(headers: &HeaderMap) -> bool {
     let text = |name| headers.get(name).and_then(|value| value.to_str().ok());
     if let Some(site) = text(header::HeaderName::from_static("sec-fetch-site")) {
@@ -34,67 +35,69 @@ fn from_this_site(headers: &HeaderMap) -> bool {
         return true;
     };
     // behind a proxy the browser's host is in X-Forwarded-Host
-    let host = text(header::HeaderName::from_static("x-forwarded-host")).or(text(header::HOST));
+    let host =
+        text(header::HeaderName::from_static("x-forwarded-host")).or_else(|| text(header::HOST));
     let origin_host = origin
         .split_once("://")
         .map(|(_, authority)| authority.trim_end_matches('/'));
     origin_host
-        .is_some_and(|origin_host| host.is_some_and(|host| origin_host.eq_ignore_ascii_case(host)))
+        .zip(host)
+        .is_some_and(|(origin_host, host)| origin_host.eq_ignore_ascii_case(host))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn headers(pairs: &[(&'static str, &'static str)]) -> HeaderMap {
-        let mut headers = HeaderMap::new();
-        for (name, value) in pairs {
-            headers.insert(*name, value.parse().expect("value"));
-        }
-        headers
-    }
+    type Headers = &'static [(&'static str, &'static str)];
 
     #[test]
     fn sites() {
-        assert!(from_this_site(&headers(&[(
-            "sec-fetch-site",
-            "same-origin"
-        )])));
-        assert!(from_this_site(&headers(&[("sec-fetch-site", "none")])));
-        assert!(!from_this_site(&headers(&[(
-            "sec-fetch-site",
-            "cross-site"
-        )])));
-        assert!(!from_this_site(&headers(&[(
-            "sec-fetch-site",
-            "same-site"
-        )])));
-        // Sec-Fetch-Site wins over a matching Origin
-        assert!(!from_this_site(&headers(&[
-            ("sec-fetch-site", "cross-site"),
-            ("origin", "http://irisqo:8102"),
-            ("host", "irisqo:8102"),
-        ])));
-        assert!(from_this_site(&headers(&[
-            ("origin", "http://irisqo:8102"),
-            ("host", "irisqo:8102")
-        ])));
-        assert!(from_this_site(&headers(&[
-            ("origin", "https://queue.example.com"),
-            ("host", "10.0.0.5:8102"),
-            ("x-forwarded-host", "queue.example.com"),
-        ])));
-        assert!(!from_this_site(&headers(&[
-            ("origin", "https://evil.example"),
-            ("host", "irisqo:8102")
-        ])));
-        assert!(!from_this_site(&headers(&[
-            ("origin", "null"),
-            ("host", "irisqo:8102")
-        ])));
-        assert!(
-            from_this_site(&headers(&[("host", "irisqo:8102")])),
-            "not a browser"
-        );
+        let cases: [(Headers, bool); 10] = [
+            (&[("sec-fetch-site", "same-origin")], true),
+            (&[("sec-fetch-site", "none")], true),
+            (&[("sec-fetch-site", "cross-site")], false),
+            (&[("sec-fetch-site", "same-site")], false),
+            // Sec-Fetch-Site wins over a matching Origin
+            (
+                &[
+                    ("sec-fetch-site", "cross-site"),
+                    ("origin", "http://irisqo:8102"),
+                    ("host", "irisqo:8102"),
+                ],
+                false,
+            ),
+            (
+                &[("origin", "http://irisqo:8102"), ("host", "irisqo:8102")],
+                true,
+            ),
+            (
+                &[
+                    ("origin", "https://queue.example.com"),
+                    ("host", "10.0.0.5:8102"),
+                    ("x-forwarded-host", "queue.example.com"),
+                ],
+                true,
+            ),
+            (
+                &[("origin", "https://evil.example"), ("host", "irisqo:8102")],
+                false,
+            ),
+            (&[("origin", "null"), ("host", "irisqo:8102")], false),
+            // not a browser
+            (&[("host", "irisqo:8102")], true),
+        ];
+        for (pairs, expected) in cases {
+            let headers: HeaderMap = pairs
+                .iter()
+                .map(|&(name, value)| {
+                    (
+                        header::HeaderName::from_static(name),
+                        header::HeaderValue::from_static(value),
+                    )
+                })
+                .collect();
+            assert_eq!(from_this_site(&headers), expected, "{pairs:?}");
+        }
     }
 }

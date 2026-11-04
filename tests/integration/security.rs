@@ -494,12 +494,11 @@ async fn ui_refuses_cross_site_posts(pool: PgPool) -> anyhow::Result<()> {
     let cancel = format!("http://{addr}/ui/jobs/{id}/cancel");
     let pending = || common::count(&pool, "SELECT count(*) FROM scheduled");
 
+    // the cases of the headers are in csrf::tests; here: the layer is on and nothing changes
     let evil_origin = "https://evil.example";
     for headers in [
-        vec![("sec-fetch-site", "cross-site")],
-        vec![("sec-fetch-site", "same-site")],
-        vec![("origin", evil_origin)],
-        vec![("origin", "null")],
+        [("sec-fetch-site", "cross-site")],
+        [("origin", evil_origin)],
     ] {
         let response = common::request_with(&state, Method::POST, &cancel, &headers).await;
         assert_eq!(response.status(), StatusCode::FORBIDDEN, "{headers:?}");

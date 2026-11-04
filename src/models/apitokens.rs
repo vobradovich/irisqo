@@ -1,4 +1,5 @@
 use std::{fmt, str::FromStr};
+use subtle::{Choice, ConstantTimeEq};
 
 /// `--api-token`: the tokens that open the API, comma separated, so a new one can be rolled
 /// out before the old one is removed. Never empty (only [`FromStr`] makes one): an open API
@@ -14,23 +15,25 @@ impl ApiTokens {
     /// differs, which would tell an attacker how much of a guess is right).
     #[must_use = "an unchecked token lets every request in"]
     pub fn accepts(&self, candidate: &str) -> bool {
-        self.0.iter().fold(false, |found, token| {
-            found | constant_time_eq(token.as_bytes(), candidate.as_bytes())
-        })
+        self.0
+            .iter()
+            .fold(Choice::from(0), |found, token| {
+                found | token.as_bytes().ct_eq(candidate.as_bytes())
+            })
+            .into()
     }
 
     /// Like [`ApiTokens::accepts`], for a value made from a token by `derive` (the UI login
     /// pass, signed with the token): the tokens themselves never leave this type.
     #[must_use = "an unchecked value lets every request in"]
     pub fn accepts_derived(&self, candidate: &str, derive: impl Fn(&str) -> String) -> bool {
-        self.0.iter().fold(false, |found, token| {
-            found | constant_time_eq(derive(token).as_bytes(), candidate.as_bytes())
-        })
+        self.0
+            .iter()
+            .fold(Choice::from(0), |found, token| {
+                found | derive(token).as_bytes().ct_eq(candidate.as_bytes())
+            })
+            .into()
     }
-}
-
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    a.len() == b.len() && a.iter().zip(b).fold(0u8, |diff, (x, y)| diff | (x ^ y)) == 0
 }
 
 impl FromStr for ApiTokens {
