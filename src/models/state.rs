@@ -8,12 +8,15 @@ use sqlx::{
     Pool, Postgres,
     postgres::{PgConnectOptions, PgPoolOptions},
 };
-use std::{str::FromStr, sync::Arc, time::Duration};
+use std::{fmt::Display, str::FromStr, sync::Arc, time::Duration};
 use tokio_util::sync::CancellationToken;
+
+use super::Environment;
 
 //type DbPool = Pool<Postgres>;
 #[derive(Debug)]
 pub struct AppState {
+    pub environment: Environment,
     pub port: u16,
     pub instance_id: String,
     pub pool: Pool<Postgres>,
@@ -81,16 +84,86 @@ xflags::xflags! {
         optional --retention-hours n: u32
         /// UI link to a trace, `{trace_id}` is replaced. Default: none (the id is shown)
         optional --trace-url template: String
+        /// development, staging or production: development serves /echo and /error and
+        /// allows private targets. Default: production
+        optional --env name: Environment
+    }
+}
+
+impl Options {
+    /// The command line, then the `IRISQO_*` variables (the environment or a `.env` file)
+    /// for the options it does not give: `--max-timeout` falls back to `IRISQO_MAX_TIMEOUT`.
+    /// Exits with a message on a bad value, like a bad flag.
+    #[must_use]
+    pub fn load() -> Options {
+        dotenv().ok();
+        let mut options = Options::from_env_or_exit();
+        if let Err(err) = options.fill_from(|name| std::env::var(name).ok()) {
+            eprintln!("error: {err}");
+            std::process::exit(2);
+        }
+        options
+    }
+
+    /// Fills the options not given on the command line from `var("IRISQO_<OPTION>")`.
+    pub fn fill_from(&mut self, var: impl Fn(&str) -> Option<String>) -> Result<(), String> {
+        fn take<T>(
+            option: &mut Option<T>,
+            name: &str,
+            var: &impl Fn(&str) -> Option<String>,
+        ) -> Result<(), String>
+        where
+            T: FromStr,
+            T::Err: Display,
+        {
+            if option.is_none()
+                && let Some(value) = var(name)
+            {
+                *option = Some(
+                    value
+                        .parse()
+                        .map_err(|err| format!("{name}={value}: {err}"))?,
+                );
+            }
+            Ok(())
+        }
+        // every option, so that a new one cannot miss its variable
+        let Options {
+            port,
+            db_connections,
+            concurrency,
+            interval,
+            prefetch,
+            timeout,
+            max_timeout,
+            shutdown_timeout,
+            retention_hours,
+            trace_url,
+            env,
+        } = self;
+        take(port, "IRISQO_PORT", &var)?;
+        take(db_connections, "IRISQO_DB_CONNECTIONS", &var)?;
+        take(concurrency, "IRISQO_CONCURRENCY", &var)?;
+        take(interval, "IRISQO_INTERVAL", &var)?;
+        take(prefetch, "IRISQO_PREFETCH", &var)?;
+        take(timeout, "IRISQO_TIMEOUT", &var)?;
+        take(max_timeout, "IRISQO_MAX_TIMEOUT", &var)?;
+        take(shutdown_timeout, "IRISQO_SHUTDOWN_TIMEOUT", &var)?;
+        take(retention_hours, "IRISQO_RETENTION_HOURS", &var)?;
+        take(trace_url, "IRISQO_TRACE_URL", &var)?;
+        take(env, "IRISQO_ENV", &var)?;
+        Ok(())
+    }
+
+    pub fn environment(&self) -> Environment {
+        self.env.unwrap_or_default()
     }
 }
 
 impl AppState {
-    /// Parses the command line, connects to `DATABASE_URL` and runs the migrations.
+    /// Connects to `DATABASE_URL` and runs the migrations.
     #[must_use]
-    pub async fn new() -> Arc<AppState> {
-        let options = Options::from_env_or_exit();
-
-        dotenv().ok();
+    pub async fn new(options: &Options) -> Arc<AppState> {
         let instance_id = new_instance_id();
         let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
         let conn = PgConnectOptions::from_str(&db_url)
@@ -110,7 +183,7 @@ impl AppState {
             .await
             .expect("Unable to run migrations");
 
-        Self::with_pool(pool, instance_id, &options)
+        Self::with_pool(pool, instance_id, options)
     }
 
     /// Builds the state on top of an already connected (and migrated) pool.
@@ -123,6 +196,7 @@ impl AppState {
         let max_timeout = options.max_timeout.unwrap_or(300_000);
         let https = hyper_tls::HttpsConnector::new();
         let state = AppState {
+            environment: options.environment(),
             port: options.port.unwrap_or(8102),
             instance_id,
             pool,
@@ -156,4 +230,26 @@ impl AppState {
 pub fn new_instance_id() -> String {
     let hostname = whoami::hostname().unwrap_or_else(|_| "unknown".into());
     format!("{}:{}", hostname, ulid::Ulid::generate())
+}
+
+#[test]
+fn options_fall_back_to_the_environment() {
+    let vars = |name: &str| match name {
+        "IRISQO_PORT" => Some("9000".to_owned()),
+        "IRISQO_MAX_TIMEOUT" => Some("1000".to_owned()),
+        "IRISQO_ENV" => Some("dev".to_owned()),
+        _ => None,
+    };
+    let mut options = Options::from_vec(vec!["--port".into(), "8000".into()]).expect("options");
+    options.fill_from(vars).expect("valid");
+    assert_eq!(options.port, Some(8000), "the command line wins");
+    assert_eq!(options.max_timeout, Some(1000));
+    assert_eq!(options.environment(), Environment::Development);
+    assert_eq!(options.concurrency, None);
+
+    let mut bad = Options::from_vec(vec![]).expect("options");
+    let err = bad
+        .fill_from(|name| (name == "IRISQO_PORT").then(|| "port".to_owned()))
+        .expect_err("not a number");
+    assert!(err.starts_with("IRISQO_PORT=port"), "{err}");
 }

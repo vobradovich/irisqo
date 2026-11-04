@@ -153,6 +153,10 @@ DATABASE_URL=postgres://user:pass@localhost/irisqo cargo run --release -- --help
 | `--retention-hours` | 168 | processed jobs older than this are deleted, `0` keeps them |
 | `--trace-url` | — | UI link to a trace, `{trace_id}` is replaced |
 | `--shutdown-timeout` | 20 | s the running jobs get to finish on shutdown; keep it under the orchestrator grace period (30 s in Kubernetes) |
+| `--env` | production | `development`, `staging` or `production`: development serves `/echo` and `/error`; also `deployment.environment.name` in the telemetry |
+
+Each option can also be set by an `IRISQO_` variable, in the environment or a `.env` file:
+`--max-timeout` is `IRISQO_MAX_TIMEOUT`, `--env` is `IRISQO_ENV`. The command line wins.
 
 ### Telemetry
 Traces, metrics and logs go out over OTLP (HTTP/protobuf), configured by the standard env vars:

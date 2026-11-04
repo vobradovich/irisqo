@@ -1,4 +1,4 @@
-use opentelemetry::trace::TracerProvider as _;
+use opentelemetry::{KeyValue, trace::TracerProvider as _};
 use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
 use opentelemetry_sdk::{
     Resource,
@@ -13,6 +13,7 @@ use tracing_subscriber::{
 };
 
 use super::TRACING_TARGET;
+use crate::models::Environment;
 
 /// Logs of these crates are never exported as OTel logs: the exporter itself uses them,
 /// exporting them would feed back into the exporter.
@@ -50,10 +51,16 @@ impl Telemetry {
     /// OTLP is HTTP/protobuf, configured by the `OTEL_EXPORTER_OTLP_*` vars;
     /// `OTEL_SERVICE_NAME` overrides the service name, `OTEL_METRIC_EXPORT_INTERVAL` the
     /// metrics export interval (ms).
-    pub fn init() -> Telemetry {
+    pub fn init(environment: Environment) -> Telemetry {
         let service_name =
             std::env::var("OTEL_SERVICE_NAME").unwrap_or_else(|_| env!("CARGO_PKG_NAME").into());
-        let resource = Resource::builder().with_service_name(service_name).build();
+        let resource = Resource::builder()
+            .with_service_name(service_name)
+            .with_attribute(KeyValue::new(
+                "deployment.environment.name",
+                environment.as_str(),
+            ))
+            .build();
 
         let mut traces = SdkTracerProvider::builder().with_resource(resource.clone());
         match exporter_kind("TRACES").as_str() {
