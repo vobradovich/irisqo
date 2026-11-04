@@ -81,6 +81,7 @@ pub fn routes(state: Arc<AppState>) -> Router {
             post(schedules::schedule_delete),
         )
         .route("/ui/assets/{name}", get(assets::asset))
+        .route("/favicon.ico", get(assets::favicon))
         .layer(middleware::map_response(security_headers))
         .with_state(state)
 }

@@ -78,6 +78,9 @@ async fn pages_use_only_embedded_assets(pool: PgPool) -> anyhow::Result<()> {
         "/ui/assets/htmx-4.0.1.min.js",
         "/ui/assets/pico-2.1.1.classless.min.css",
         "/ui/assets/app.css",
+        "/ui/assets/logo.svg",
+        "/ui/assets/favicon-32.png",
+        "/ui/assets/apple-touch-icon.png",
     ] {
         assert!(html.contains(asset), "{asset}");
         let (status, headers, body) = send(
@@ -101,6 +104,19 @@ async fn pages_use_only_embedded_assets(pool: PgPool) -> anyhow::Result<()> {
     )
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, headers, _) = send(
+        &state,
+        Method::GET,
+        &format!("http://{addr}/favicon.ico"),
+        false,
+        "",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        headers.get("content-type").map(|v| v.as_bytes()),
+        Some(&b"image/png"[..])
+    );
     Ok(())
 }
 

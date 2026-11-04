@@ -148,7 +148,7 @@ nav a.cta[aria-current="page"] { background: var(--accent-hover); color: var(--a
   font-size: 1.15rem;
   text-decoration: none;
 }
-.brand svg { color: var(--accent); }
+.brand img { display: block; }
 nav a[aria-current="page"] {
   color: var(--text);
   background: var(--surface-2);
