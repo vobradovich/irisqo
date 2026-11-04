@@ -1,4 +1,5 @@
-//! What the templates show: plain strings, formatted on the server.
+//! What the templates show: values computed on the server; plain formatting of a
+//! single field is left to the template filters in [`filters`].
 
 use std::collections::HashMap;
 
@@ -100,20 +101,11 @@ pub fn retry_policy(retry: &JobRetry) -> String {
     }
 }
 
-pub fn status_label(status: &str) -> String {
-    let mut chars = status.chars();
-    chars
-        .next()
-        .map(|c| c.to_uppercase().chain(chars).collect())
-        .unwrap_or_default()
-}
-
 /// A job in a list.
 #[derive(Debug, Clone)]
 pub struct JobRowView {
     pub id: i64,
     pub status: JobStatus,
-    pub status_label: String,
     pub method: String,
     pub url: String,
     /// `2 / 4`
@@ -121,10 +113,8 @@ pub struct JobRowView {
     /// `in 4 min`, `waiting 3 s`, `started 2 s ago`...
     pub due: String,
     pub due_title: String,
-    pub instance: String,
-    pub instance_full: String,
-    pub schedule: String,
-    pub schedule_full: String,
+    pub instance_id: Option<String>,
+    pub schedule_id: Option<String>,
 }
 
 impl JobRowView {
@@ -175,50 +165,14 @@ impl JobRowView {
         };
         JobRowView {
             id: job.id,
-            status_label: status_label(job.status.as_str()),
             status: job.status,
             method,
             url,
             attempt,
             due,
             due_title,
-            instance: job
-                .instance_id
-                .as_deref()
-                .map_or_else(|| "—".to_owned(), short_instance),
-            instance_full: job.instance_id.clone().unwrap_or_default(),
-            schedule: job
-                .schedule_id
-                .as_deref()
-                .map_or_else(|| "—".to_owned(), short_id),
-            schedule_full: job.schedule_id.clone().unwrap_or_default(),
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct HistoryView {
-    pub at: String,
-    pub at_title: String,
-    pub status: String,
-    pub label: String,
-    pub retry: i32,
-    pub instance: String,
-    pub instance_full: String,
-    pub message: String,
-}
-
-impl From<&JobHistoryRow> for HistoryView {
-    fn from(row: &JobHistoryRow) -> Self {
-        HistoryView {
-            at: row.at.format("%H:%M:%S").to_string(),
-            at_title: utc(row.at),
-            status: row.status.clone(),
-            label: status_label(&row.status),
-            retry: row.retry,
-            instance: short_instance(&row.instance_id),
-            instance_full: row.instance_id.clone(),
-            message: row.message.clone().unwrap_or_default(),
+            instance_id: job.instance_id.clone(),
+            schedule_id: job.schedule_id.clone(),
         }
     }
 }
@@ -299,7 +253,7 @@ pub struct JobDetailView {
     pub result: Option<ResultView>,
     /// The link to the trace of the last attempt, when `--trace-url` is set.
     pub trace_href: Option<String>,
-    pub history: Vec<HistoryView>,
+    pub history: Vec<JobHistoryRow>,
     /// `(kind, text)`: `success` or `error`, after an action.
     pub notice: Option<(&'static str, String)>,
 }
@@ -309,7 +263,7 @@ impl JobDetailView {
         view: &JobView,
         job: &JobRow,
         result: Option<&JobResult>,
-        history: &[JobHistoryRow],
+        history: Vec<JobHistoryRow>,
         trace_url: Option<&str>,
         now: DateTime<Utc>,
     ) -> Self {
@@ -331,9 +285,87 @@ impl JobDetailView {
             body_size: body.len(),
             result,
             trace_href,
-            history: history.iter().map(HistoryView::from).collect(),
+            history,
             notice: None,
         }
+    }
+}
+
+/// Template filters for one field: `{{ at|utc }}`, `{{ id|short_id }}`. An absent
+/// value (`None`) is rendered empty, or `—` for the short ids.
+pub mod filters {
+    use askama::{Result, Values};
+    use chrono::{DateTime, Utc};
+
+    /// A time, or none.
+    pub trait Time {
+        fn time(&self) -> Option<DateTime<Utc>>;
+    }
+    impl Time for DateTime<Utc> {
+        fn time(&self) -> Option<DateTime<Utc>> {
+            Some(*self)
+        }
+    }
+    impl Time for Option<DateTime<Utc>> {
+        fn time(&self) -> Option<DateTime<Utc>> {
+            *self
+        }
+    }
+    impl<T: Time + ?Sized> Time for &T {
+        fn time(&self) -> Option<DateTime<Utc>> {
+            (**self).time()
+        }
+    }
+
+    /// A string, or none.
+    pub trait Text {
+        fn text(&self) -> Option<&str>;
+    }
+    impl Text for str {
+        fn text(&self) -> Option<&str> {
+            Some(self)
+        }
+    }
+    impl Text for String {
+        fn text(&self) -> Option<&str> {
+            Some(self)
+        }
+    }
+    impl Text for Option<String> {
+        fn text(&self) -> Option<&str> {
+            self.as_deref()
+        }
+    }
+    impl<T: Text + ?Sized> Text for &T {
+        fn text(&self) -> Option<&str> {
+            (**self).text()
+        }
+    }
+
+    /// `2026-11-04 10:46:46 UTC`
+    #[askama::filter_fn]
+    pub fn utc(at: impl Time, _: &dyn Values) -> Result<String> {
+        Ok(at.time().map(super::utc).unwrap_or_default())
+    }
+
+    /// `host·K7QX`, `—` for none.
+    #[askama::filter_fn]
+    pub fn short_instance(id: impl Text, _: &dyn Values) -> Result<String> {
+        Ok(id
+            .text()
+            .map_or_else(|| "—".to_owned(), super::short_instance))
+    }
+
+    /// `01JC…K7Q`, `—` for none.
+    #[askama::filter_fn]
+    pub fn short_id(id: impl Text, _: &dyn Values) -> Result<String> {
+        Ok(id.text().map_or_else(|| "—".to_owned(), super::short_id))
+    }
+
+    /// The text, empty for none: for `title` attributes.
+    #[askama::filter_fn]
+    pub fn or_empty(value: impl Text, _: &dyn Values) -> Result<String> {
+        Ok(value.text().unwrap_or_default().to_owned())
     }
 }
 

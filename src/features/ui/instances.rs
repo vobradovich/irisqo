@@ -12,7 +12,7 @@ use chrono::{DateTime, Utc};
 
 use super::{
     server_error,
-    views::{relative, utc},
+    views::{filters, relative},
 };
 use crate::{
     features::instances::{self, InstanceView},
@@ -28,9 +28,9 @@ pub struct InstanceRowView {
     pub state: &'static str,
     pub state_label: &'static str,
     pub seen: String,
-    pub seen_title: String,
+    pub last_at: DateTime<Utc>,
     pub started: String,
-    pub started_title: String,
+    pub started_at: Option<DateTime<Utc>>,
     pub processing: i64,
     pub completed_24h: i64,
     pub failed_24h: i64,
@@ -60,11 +60,11 @@ impl InstanceRowView {
             state,
             state_label,
             seen: relative(-quiet),
-            seen_title: utc(view.last_at),
+            last_at: view.last_at,
             started: started_at
                 .map(|at| relative((at - now).num_seconds()))
                 .unwrap_or_default(),
-            started_title: started_at.map(utc).unwrap_or_default(),
+            started_at,
             processing: view.processing,
             completed_24h: view.completed_24h,
             failed_24h: view.failed_24h,

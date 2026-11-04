@@ -1,11 +1,11 @@
 <ol class="timeline">
   {% for h in history %}
   <li>
-    <span class="mono muted" title="{{ h.at_title }}">{{ h.at }}</span>
-    <span class="status {{ h.status }}"><span>{{ h.label }}</span></span>
+    <span class="mono muted" title="{{ h.at|utc }}">{{ h.at.format("%H:%M:%S") }}</span>
+    <span class="status {{ h.status }}"><span>{{ h.status.label() }}</span></span>
     <span class="mono muted">retry {{ h.retry }}</span>
-    <span class="mono muted" title="{{ h.instance_full }}">{{ h.instance }}</span>
-    <span>{{ h.message }}</span>
+    <span class="mono muted" title="{{ h.instance_id }}">{{ h.instance_id|short_instance }}</span>
+    <span>{{ h.message|or_empty }}</span>
   </li>
   {% endfor %}
 </ol>

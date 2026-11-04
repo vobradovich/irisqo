@@ -3,7 +3,7 @@
 
   <div class="page-head">
     <h1>Job <span class="mono">{{ job.row.id }}</span></h1>
-    <span class="status {{ job.row.status }}"><span>{{ job.row.status_label }}</span></span>
+    <span class="status {{ job.row.status }}"><span>{{ job.row.status.label() }}</span></span>
     <span class="muted" title="{{ job.row.due_title }}">attempt {{ job.row.attempt }}{% if !job.row.due.is_empty() %} · {{ job.row.due }}{% endif %}</span>
     <div class="actions push">
       {% if job.row.status.is_processed() %}
@@ -25,8 +25,8 @@
   {% if let Some((kind, text)) = job.notice %}
   <div class="alert {{ kind }}" role="status">{{ text }}</div>
   {% endif %}
-  {% if job.row.status.as_str() == "processing" %}
-  <p class="hint">Running on <span class="mono" title="{{ job.row.instance_full }}">{{ job.row.instance }}</span>: it cannot be cancelled now.</p>
+  {% if job.row.status == JobStatus::Processing %}
+  <p class="hint">Running on <span class="mono" title="{{ job.row.instance_id|or_empty }}">{{ job.row.instance_id|short_instance }}</span>: it cannot be cancelled now.</p>
   {% endif %}
 
   <dl class="facts">
@@ -34,7 +34,7 @@
     <div><dt>Retry policy</dt><dd>{{ job.retry_policy }}</dd></div>
     <div><dt>Timeout</dt><dd>{{ job.timeout }}</dd></div>
     <div><dt>External id</dt><dd class="mono">{{ job.external_id }}</dd></div>
-    <div><dt>Schedule</dt><dd class="mono" title="{{ job.row.schedule_full }}">{% if job.row.schedule_full.is_empty() %}—{% else %}<a href="/ui/schedules">{{ job.row.schedule }}</a>{% endif %}</dd></div>
+    <div><dt>Schedule</dt><dd class="mono" title="{{ job.row.schedule_id|or_empty }}">{% if job.row.schedule_id.is_some() %}<a href="/ui/schedules">{{ job.row.schedule_id|short_id }}</a>{% else %}—{% endif %}</dd></div>
     <div><dt>Trace</dt><dd class="mono">
       {%- if let Some(href) = job.trace_href %}<a href="{{ href }}" rel="noreferrer" target="_blank">open ↗</a>
       {%- else if let Some(r) = job.result %}{% if let Some(t) = r.trace_id %}{{ t }}{% else %}—{% endif %}
@@ -78,11 +78,11 @@
     <ol class="timeline">
       {% for h in job.history %}
       <li>
-        <span class="mono muted" title="{{ h.at_title }}">{{ h.at }}</span>
-        <span class="status {{ h.status }}"><span>{{ h.label }}</span></span>
+        <span class="mono muted" title="{{ h.at|utc }}">{{ h.at.format("%H:%M:%S") }}</span>
+        <span class="status {{ h.status }}"><span>{{ h.status.label() }}</span></span>
         <span class="mono muted">retry {{ h.retry }}</span>
-        <span class="mono muted" title="{{ h.instance_full }}">{{ h.instance }}</span>
-        <span>{{ h.message }}</span>
+        <span class="mono muted" title="{{ h.instance_id }}">{{ h.instance_id|short_instance }}</span>
+        <span>{{ h.message|or_empty }}</span>
       </li>
       {% endfor %}
     </ol>

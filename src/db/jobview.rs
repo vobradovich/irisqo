@@ -45,6 +45,20 @@ impl JobStatus {
         }
     }
 
+    /// What the UI shows.
+    pub const fn label(self) -> &'static str {
+        match self {
+            JobStatus::Scheduled => "Scheduled",
+            JobStatus::Retrying => "Retrying",
+            JobStatus::Enqueued => "Enqueued",
+            JobStatus::Processing => "Processing",
+            JobStatus::Completed => "Completed",
+            JobStatus::Failed => "Failed",
+            JobStatus::Cancelled => "Cancelled",
+            JobStatus::Unknown => "Unknown",
+        }
+    }
+
     /// Waiting for its turn: not started yet.
     pub const fn is_pending(self) -> bool {
         matches!(
@@ -104,6 +118,15 @@ impl StatusFilter {
             StatusFilter::Active => "active",
             StatusFilter::Only(status) => status.as_str(),
             StatusFilter::All => "all",
+        }
+    }
+
+    /// What the UI shows.
+    pub const fn label(self) -> &'static str {
+        match self {
+            StatusFilter::Active => "Active",
+            StatusFilter::Only(status) => status.label(),
+            StatusFilter::All => "All",
         }
     }
 

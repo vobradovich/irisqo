@@ -13,24 +13,25 @@ use chrono::{DateTime, TimeZone, Utc};
 
 use super::{
     is_htmx, server_error,
-    views::{relative, short_id, status_label, utc},
+    views::{filters, relative, utc},
 };
 use crate::{
+    db::jobview::JobStatus,
     features::schedules::{self, JobSchedule, ScheduleView},
     models::{AppState, Error, JobProtocol},
 };
 
 pub struct ScheduleRowView {
     pub id: String,
-    pub id_short: String,
     pub method: String,
     pub url: String,
     pub rule: String,
     pub rule_hint: String,
     pub next: String,
     pub next_title: String,
-    pub last_status: String,
-    pub last_label: String,
+    /// The status class of the last run.
+    pub last_status: &'static str,
+    pub last_label: &'static str,
     pub last_at: String,
     pub last_id: Option<i64>,
     pub active: bool,
@@ -78,26 +79,20 @@ impl ScheduleRowView {
             (false, _) if view.inactive => ("—".into(), "paused".into()),
             (false, _) => ("—".into(), "no next run".into()),
         };
-        let last_status = view.last_status.clone().unwrap_or_default();
+        let (last_status, last_label) = match view.last_status.clone().map(JobStatus::from) {
+            Some(status) => (status.as_str(), status.label()),
+            None => (JobStatus::Cancelled.as_str(), "Not yet"),
+        };
         ScheduleRowView {
             id: view.schedule_id.clone(),
-            id_short: short_id(&view.schedule_id),
             method,
             url,
             rule: view.schedule.clone(),
             rule_hint: rule_hint(&view.schedule, view.until),
             next,
             next_title,
-            last_label: if last_status.is_empty() {
-                "Not yet".into()
-            } else {
-                status_label(&last_status)
-            },
-            last_status: if last_status.is_empty() {
-                "cancelled".into()
-            } else {
-                last_status
-            },
+            last_status,
+            last_label,
             last_at: view
                 .last_at
                 .map(|at| relative((at - now).num_seconds()))

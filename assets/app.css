@@ -128,7 +128,7 @@ body > main {
   padding-inline: 1.5rem;
 }
 body > header > nav { min-height: 3.75rem; }
-nav a {
+body > header nav a {
   font-weight: 600;
   border-radius: var(--pico-border-radius);
 }

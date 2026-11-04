@@ -14,13 +14,13 @@ use url::form_urlencoded;
 
 use super::{
     is_htmx, server_error,
-    views::{HistoryView, JobDetailView, JobRowView, relative, status_label},
+    views::{JobDetailView, JobRowView, filters, relative},
 };
 use crate::{
     db::{
         self,
         jobqueue::ActionOutcome,
-        jobview::{JobQuery, ScheduleFilter, StatusFilter},
+        jobview::{JobQuery, JobStatus, ScheduleFilter, StatusFilter},
     },
     features::{history, results},
     models::{AppState, Error},
@@ -35,7 +35,7 @@ pub struct StatCard {
 }
 
 pub struct FilterLink {
-    pub label: String,
+    pub label: &'static str,
     pub href: String,
     pub current: bool,
 }
@@ -132,7 +132,7 @@ pub struct JobsLivePartial {
 #[template(path = "ui/partials/job_history.html")]
 pub struct JobHistoryPartial {
     id: i64,
-    history: Vec<HistoryView>,
+    history: Vec<history::JobHistoryRow>,
 }
 
 #[derive(Template, WebTemplate)]
@@ -188,7 +188,7 @@ async fn load_list(state: &AppState, params: &ListParams) -> Result<JobsList, Er
     let filters = StatusFilter::ALL
         .into_iter()
         .map(|filter| FilterLink {
-            label: status_label(filter.as_str()),
+            label: filter.label(),
             href: format!("/ui/jobs?{}", params.query(filter, None, params.live)),
             current: filter == params.status,
         })
@@ -274,11 +274,7 @@ pub async fn jobs_live(State(state): State<Arc<AppState>>, RawQuery(query): RawQ
 
 pub async fn job_history(State(state): State<Arc<AppState>>, Path(id): Path<i64>) -> Response {
     match history::get_by_id(&state.pool, id, 200, 0).await {
-        Ok(rows) => JobHistoryPartial {
-            id,
-            history: rows.iter().map(HistoryView::from).collect(),
-        }
-        .into_response(),
+        Ok(history) => JobHistoryPartial { id, history }.into_response(),
         Err(err) => server_error(&err),
     }
 }
@@ -298,7 +294,7 @@ async fn load_job(state: &AppState, id: i64) -> Result<Option<JobDetailView>, Er
         &view,
         &job,
         result.as_ref(),
-        &history,
+        history,
         state.trace_url.as_deref(),
         Utc::now(),
     )))

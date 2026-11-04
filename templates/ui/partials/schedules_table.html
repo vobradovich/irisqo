@@ -9,7 +9,7 @@
     <tbody>
       {% for r in rows %}
       <tr>
-        <td class="mono" title="{{ r.id }}">{{ r.id_short }}</td>
+        <td class="mono" title="{{ r.id }}">{{ r.id|short_id }}</td>
         <td class="request-cell"><span class="request"><span class="method mono">{{ r.method }}</span> <span class="url mono" title="{{ r.url }}">{{ r.url }}</span></span></td>
         <td><span class="mono">{{ r.rule }}</span><br><small class="muted">{{ r.rule_hint }}</small></td>
         <td title="{{ r.next_title }}">{{ r.next }}</td>
@@ -24,8 +24,8 @@
           {% else %}
           <form method="post" action="/ui/schedules/{{ r.id }}/resume" hx-post="/ui/schedules/{{ r.id }}/resume"><button type="submit" class="secondary">Resume</button></form>
           {% endif %}
-          <form method="post" action="/ui/schedules/{{ r.id }}/delete" hx-post="/ui/schedules/{{ r.id }}/delete" hx-confirm="Delete schedule {{ r.id_short }} and its pending run?">
-            <button type="submit" class="secondary danger" aria-label="Delete schedule {{ r.id_short }}">Delete</button>
+          <form method="post" action="/ui/schedules/{{ r.id }}/delete" hx-post="/ui/schedules/{{ r.id }}/delete" hx-confirm="Delete schedule {{ r.id|short_id }} and its pending run?">
+            <button type="submit" class="secondary danger" aria-label="Delete schedule {{ r.id|short_id }}">Delete</button>
           </form>
         </div></td>
       </tr>
