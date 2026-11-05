@@ -14,6 +14,8 @@
 - [x] Schedules, Intervals, and Cron
 - [x] UI
 
+Where it goes next: [docs/ROADMAP.md](docs/ROADMAP.md).
+
 ## API
 
 ### Queue
