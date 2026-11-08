@@ -28,7 +28,7 @@ GET {{host}}/to/https://postman-echo.com/get
 Response Headers
 - `job-id` - this is the ID of the request job
 - `schedule-id` - ID of the new schedule
-- `external-id` - optional external ID of the request from `_id` query parameter.
+- `key` - optional idempotency key of the request from `_key` query parameter.
 
 ### Headers
 The target gets only the body headers (`Content-Type`, `Content-Encoding`, `Content-Language`) and the
@@ -169,7 +169,7 @@ behind a proxy). A page of another site cannot make a user's browser post to it 
 </table>
 
 - **Jobs**: the queue stats and the jobs by state (scheduled, retrying, enqueued, processing,
-  completed, failed, cancelled), searchable by id, external id or URL, refreshed every 2 s; a row
+  completed, failed, cancelled), searchable by id, key or URL, refreshed every 2 s; a row
   opens its history in place.
 - **Job**: the request, the result, the history; retry, cancel, delete. With `--trace-url`
   (e.g. `http://localhost:5080/web/traces?trace_id={trace_id}`) the result links to its trace.
@@ -189,8 +189,9 @@ DATABASE_URL=postgres://user:pass@localhost/irisqo cargo run --release -- --help
 | `--port` | 8102 | API port |
 | `--concurrency` | 64 | jobs in flight across all cores |
 | `--db-connections` | 32 | pool size per instance, keep the sum over instances below Postgres `max_connections` |
+| `--db-schema` | irisqo | Postgres schema of the tables and functions, created when missing; `IRISQO_DB_SCHEMA` |
 | `--interval` | 1000 | ms between queue polls when the queue is empty |
-| `--prefetch` | 8 | jobs assigned per fetch: `max(prefetch, concurrency / 4)` |
+| `--prefetch` | 8 | jobs claimed per fetch: `max(prefetch, concurrency / 4)` |
 | `--timeout` / `--max-timeout` | 3000 / 300000 | default and max request timeout, ms |
 | `--retention-hours` | 168 | processed jobs older than this are deleted, `0` keeps them |
 | `--trace-url` | — | UI link to a trace, `{trace_id}` is replaced |

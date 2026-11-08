@@ -9,7 +9,7 @@ use axum::{
     http::HeaderMap,
     response::{IntoResponse, Redirect, Response},
 };
-use chrono::{DateTime, TimeZone, Utc};
+use chrono::{DateTime, Utc};
 
 use super::{
     Nav, is_htmx, server_error,
@@ -18,7 +18,7 @@ use super::{
 use crate::{
     db::jobview::JobStatus,
     features::schedules::{self, JobSchedule, ScheduleView},
-    models::{AppState, Error, JobProtocol},
+    models::{AppState, Error, JobSink},
 };
 
 pub struct ScheduleRowView {
@@ -32,12 +32,12 @@ pub struct ScheduleRowView {
     /// The status class of the last run.
     pub last_status: &'static str,
     pub last_label: &'static str,
-    pub last_at: String,
+    pub last_run_at: String,
     pub last_id: Option<i64>,
     pub active: bool,
 }
 
-fn rule_hint(schedule: &str, until: Option<i64>) -> String {
+fn rule_hint(schedule: &str, until: Option<DateTime<Utc>>) -> String {
     let base = match schedule.parse::<JobSchedule>() {
         Ok(JobSchedule::Interval { interval }) => match interval {
             i if i % 86_400 == 0 => format!("every {} d", i / 86_400),
@@ -48,7 +48,7 @@ fn rule_hint(schedule: &str, until: Option<i64>) -> String {
         Ok(JobSchedule::Cron { .. }) => "cron, UTC".into(),
         Err(_) => "invalid".into(),
     };
-    match until.and_then(|u| Utc.timestamp_opt(u, 0).single()) {
+    match until {
         Some(until) => format!("{base}, until {}", until.format("%Y-%m-%d %H:%M")),
         None => base,
     }
@@ -56,28 +56,16 @@ fn rule_hint(schedule: &str, until: Option<i64>) -> String {
 
 impl ScheduleRowView {
     fn new(view: &ScheduleView, now: DateTime<Utc>) -> Self {
-        let (method, url) = match view.meta.as_ref().map(|m| &m.protocol) {
-            Some(JobProtocol::Http(http)) => (http.method.to_string(), http.url.to_string()),
-            Some(JobProtocol::None) | None => ("—".into(), "no protocol".into()),
+        let (method, url) = match view.meta.as_ref().map(|m| &m.sink) {
+            Some(JobSink::Http(http)) => (http.method.to_string(), http.url.to_string()),
+            Some(JobSink::None) | None => ("-".into(), "no sink".into()),
         };
-        let next_at = view
-            .next_at
-            .and_then(|secs| Utc.timestamp_opt(secs, 0).single());
-        let (next, next_title) = match (view.pending, next_at) {
-            (true, Some(at)) => {
-                let delta = (at - now).num_seconds();
-                (
-                    if delta <= 0 {
-                        "due".into()
-                    } else {
-                        relative(delta)
-                    },
-                    utc(at),
-                )
-            }
+        let (next, next_title) = match (view.pending, view.next_at) {
+            // overdue: how long ago it was due, until the scheduler picks it up
+            (true, Some(at)) => (relative((at - now).num_seconds()), utc(at)),
             (true, None) => ("pending".into(), String::new()),
-            (false, _) if view.inactive => ("—".into(), "paused".into()),
-            (false, _) => ("—".into(), "no next run".into()),
+            (false, _) if view.paused => ("-".into(), "paused".into()),
+            (false, _) => ("-".into(), "no next run".into()),
         };
         let (last_status, last_label) = match view.last_status.clone().map(JobStatus::from) {
             Some(status) => (status.as_str(), status.label()),
@@ -93,12 +81,12 @@ impl ScheduleRowView {
             next_title,
             last_status,
             last_label,
-            last_at: view
-                .last_at
+            last_run_at: view
+                .last_run_at
                 .map(|at| relative((at - now).num_seconds()))
                 .unwrap_or_default(),
             last_id: view.last_id,
-            active: !view.inactive,
+            active: !view.paused,
         }
     }
 }
@@ -148,11 +136,9 @@ async fn act(state: &AppState, id: &str, headers: &HeaderMap, action: Action) ->
         Action::Pause => schedules::pause(&state.pool, id, &state.instance_id)
             .await
             .map(drop),
-        Action::Resume => {
-            schedules::resume(&state.pool, id, JobSchedule::now_secs(), &state.instance_id)
-                .await
-                .map(drop)
-        }
+        Action::Resume => schedules::resume(&state.pool, id, Utc::now(), &state.instance_id)
+            .await
+            .map(drop),
         Action::Delete => schedules::db::delete(&state.pool, id).await.map(drop),
     };
     if let Err(err) = done {

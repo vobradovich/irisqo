@@ -9,7 +9,7 @@ use axum::{
 use sqlx::{Pool, Postgres};
 use std::sync::Arc;
 
-pub use jobhistory::{HistoryStatus, JobHistoryRow};
+pub use jobhistory::{HistoryKind, JobHistoryRow};
 
 use super::{Paging, PagingResult};
 
@@ -42,7 +42,7 @@ pub async fn get_by_id(
     limit: i32,
     offset: i32,
 ) -> Result<Vec<JobHistoryRow>, Error> {
-    const SQL: &str = "SELECT id, retry, instance_id, status::text, at, message FROM history WHERE id = $1 ORDER BY at LIMIT $2 OFFSET $3";
+    const SQL: &str = "SELECT id, retry, coalesce(instance_id, '')::text AS instance_id, kind, at, message FROM history WHERE id = $1 ORDER BY seq LIMIT $2 OFFSET $3";
     let history = sqlx::query_as::<_, JobHistoryRow>(SQL)
         .bind(job_id)
         .bind(limit)

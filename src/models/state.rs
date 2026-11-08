@@ -62,6 +62,7 @@ pub struct WorkerOptions {
 /// Extra time on top of `max_timeout` before a lock counts as stuck.
 const LOCK_GRACE: Duration = Duration::from_secs(60);
 const DEFAULT_DB_CONNECTIONS: u32 = 32;
+const DEFAULT_SCHEMA: &str = "irisqo";
 
 // Generates `pub struct Options`; `Options::from_vec(vec![])` gives the defaults (tests).
 xflags::xflags! {
@@ -71,6 +72,8 @@ xflags::xflags! {
         optional -p,--port n: u16
         /// Max db connections (keep below the Postgres max_connections). Default: 32
         optional --db-connections n: u32
+        /// Postgres schema of the tables and functions, created when missing. Default: irisqo
+        optional --db-schema name: String
         /// Jobs in flight across all cores. Default: 64
         optional --concurrency n: usize
         /// Worker Poll Interval in milliseconds. Default: 1000
@@ -142,6 +145,7 @@ impl Options {
         let Options {
             port,
             db_connections,
+            db_schema,
             concurrency,
             interval,
             prefetch,
@@ -156,6 +160,7 @@ impl Options {
         } = self;
         take(port, "IRISQO_PORT", &var)?;
         take(db_connections, "IRISQO_DB_CONNECTIONS", &var)?;
+        take(db_schema, "IRISQO_DB_SCHEMA", &var)?;
         take(concurrency, "IRISQO_CONCURRENCY", &var)?;
         take(interval, "IRISQO_INTERVAL", &var)?;
         take(prefetch, "IRISQO_PREFETCH", &var)?;
@@ -167,6 +172,9 @@ impl Options {
         take(env, "IRISQO_ENV", &var)?;
         take(allow_targets, "IRISQO_ALLOW_TARGETS", &var)?;
         take(api_token, "IRISQO_API_TOKEN", &var)?;
+        if let Some(schema) = db_schema {
+            check_schema(schema)?;
+        }
         Ok(())
     }
 
@@ -176,14 +184,19 @@ impl Options {
 }
 
 impl AppState {
-    /// Connects to `DATABASE_URL` and runs the migrations.
+    /// Connects to `DATABASE_URL`, creates the schema (`--schema`, `irisqo` by default) and
+    /// runs the migrations in it.
     #[must_use]
     pub async fn new(options: &Options) -> Arc<AppState> {
         let instance_id = new_instance_id();
+        let schema = options.db_schema.as_deref().unwrap_or(DEFAULT_SCHEMA);
+        check_schema(schema).expect("invalid schema");
         let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
         let conn = PgConnectOptions::from_str(&db_url)
             .expect("Unable to parse DATABASE_URL")
-            .application_name(&instance_id);
+            .application_name(&instance_id)
+            // every statement and every function sees the tables of the schema
+            .options([("search_path", schema)]);
 
         let db_connections = options.db_connections.unwrap_or(DEFAULT_DB_CONNECTIONS);
         let pool = PgPoolOptions::new()
@@ -193,10 +206,18 @@ impl AppState {
             .await
             .expect("Unable to connect to Postgres");
 
+        // the migrations and their table `_sqlx_migrations` go to the first schema of the path
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "CREATE SCHEMA IF NOT EXISTS \"{schema}\""
+        )))
+        .execute(&pool)
+        .await
+        .expect("Unable to create the schema");
         sqlx::migrate!("./sql/migrations")
             .run(&pool)
             .await
             .expect("Unable to run migrations");
+        warn_on_clock_skew(&pool).await;
 
         Self::with_pool(pool, instance_id, options)
     }
@@ -249,11 +270,84 @@ impl AppState {
     }
 }
 
+/// A schema name that is safe to quote into SQL: lower case letters, digits and `_`.
+fn check_schema(name: &str) -> Result<(), String> {
+    let mut chars = name.chars();
+    let valid = name.len() <= 63
+        && chars
+            .next()
+            .is_some_and(|c| c.is_ascii_lowercase() || c == '_')
+        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+    if valid && !name.starts_with("pg_") {
+        Ok(())
+    } else {
+        Err(format!(
+            "--db-schema {name:?}: use up to 63 characters of a-z, 0-9 and _, starting with a letter or _, not pg_*"
+        ))
+    }
+}
+
+#[test]
+fn schema_names() {
+    for ok in ["irisqo", "_q", "queue_2", "a"] {
+        assert!(check_schema(ok).is_ok(), "{ok}");
+    }
+    for bad in [
+        "",
+        "Irisqo",
+        "2q",
+        "a-b",
+        "a\"b",
+        "pg_catalog",
+        "public;drop",
+    ] {
+        assert!(check_schema(bad).is_err(), "{bad}");
+    }
+}
+
+/// The times of jobs are set by the clock of the service and compared with `now()` of the
+/// database, so the two clocks must agree: warns once at the start when they do not.
+async fn warn_on_clock_skew(pool: &Pool<Postgres>) {
+    const MAX_SKEW: chrono::TimeDelta = chrono::TimeDelta::seconds(1);
+    let before = chrono::Utc::now();
+    let Ok(db_now) = sqlx::query_scalar::<_, chrono::DateTime<chrono::Utc>>("SELECT now()")
+        .fetch_one(pool)
+        .await
+    else {
+        return;
+    };
+    let after = chrono::Utc::now();
+    // the database answered somewhere between the two readings: take the middle
+    let skew = db_now - (before + (after - before) / 2);
+    if skew.abs() > MAX_SKEW {
+        tracing::warn!(
+            "the clock of the database differs from this host by {} s: delays and schedules are off by that much",
+            skew.num_seconds()
+        );
+    }
+}
+
 /// `hostname:ulid`, also used as the Postgres `application_name`.
 #[must_use]
 pub fn new_instance_id() -> String {
-    let hostname = whoami::hostname().unwrap_or_else(|_| "unknown".into());
-    format!("{}:{}", hostname, ulid::Ulid::generate())
+    // the database keeps it as `ident`: lower case, a-z 0-9 . _ : -
+    let hostname: String = whoami::hostname()
+        .unwrap_or_else(|_| "unknown".into())
+        .to_lowercase()
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    format!(
+        "{}:{}",
+        hostname.trim_start_matches(['.', '_', '-']),
+        ulid::Ulid::generate().to_string().to_lowercase()
+    )
 }
 
 #[test]

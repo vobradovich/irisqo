@@ -7,7 +7,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use axum::body::Bytes;
-use chrono::NaiveDateTime;
+use chrono::{DateTime, NaiveDateTime, Utc};
 use hyper::Method;
 use url::form_urlencoded;
 
@@ -59,7 +59,7 @@ pub struct JobForm {
     pub retry_count: String,
     pub retry_delay: String,
     pub timeout: String,
-    pub external_id: String,
+    pub key: String,
     /// Field id -> message; `form` for errors of the whole form.
     pub errors: BTreeMap<&'static str, String>,
     pub created: Option<Created>,
@@ -87,7 +87,7 @@ impl Default for JobForm {
             retry_count: String::new(),
             retry_delay: String::new(),
             timeout: String::new(),
-            external_id: String::new(),
+            key: String::new(),
             errors: BTreeMap::new(),
             created: None,
             default_timeout: 3000,
@@ -139,7 +139,7 @@ impl JobForm {
                 "retry_count" => form.retry_count = value,
                 "retry_delay" => form.retry_delay = value,
                 "timeout" => form.timeout = value,
-                "external_id" => form.external_id = value,
+                "key" => form.key = value,
                 "op" => op = value,
                 "index" => index = value,
                 _ => {}
@@ -214,8 +214,8 @@ impl JobForm {
         if let Some(timeout) = filled(&self.timeout) {
             params.push(("_timeout", timeout));
         }
-        if let Some(id) = filled(&self.external_id) {
-            params.push(("_id", id));
+        if let Some(id) = filled(&self.key) {
+            params.push(("_key", id));
         }
         (params, errors)
     }
@@ -249,7 +249,7 @@ impl JobForm {
     pub fn prepare(
         &self,
         options: &WorkerOptions,
-        now_secs: i64,
+        now: DateTime<Utc>,
     ) -> Result<JobCreate, BTreeMap<&'static str, String>> {
         let (params, mut errors) = self.job_params();
         let (headers, header_error) = self.target_headers();
@@ -269,7 +269,7 @@ impl JobForm {
             headers,
             body: Bytes::from(self.body.clone()),
         };
-        match prepare_job(options, request, now_secs) {
+        match prepare_job(options, request, now) {
             Ok(job) if errors.is_empty() => Ok(job),
             Ok(_) => Err(errors),
             Err(param_errors) => {
@@ -335,7 +335,7 @@ fn field_of(param: &str) -> &'static str {
         "_until" => "until",
         "_retry" => "retry_count",
         "_timeout" => "timeout",
-        "_id" => "external_id",
+        "_key" => "key",
         _ => "url",
     }
 }
@@ -391,7 +391,10 @@ mod tests {
             b"url=&when=delay&delay=soon&repeat=cron&cron=*/15+*+*+*&retry=fixed&retry_count=3&retry_delay=x&timeout=0&header_name=host&header_value=evil",
         );
         let errors = form
-            .prepare(&options(), 1_700_000_000)
+            .prepare(
+                &options(),
+                DateTime::from_timestamp(1_700_000_000, 0).unwrap(),
+            )
             .expect_err("invalid");
         let fields: Vec<_> = errors.keys().copied().collect();
         assert_eq!(
@@ -404,12 +407,17 @@ mod tests {
     #[test]
     fn valid_form_builds_the_job() {
         let form = JobForm::from_pairs(
-            b"method=PUT&url=https%3A%2F%2Fexample.com%2Fhook%3Fa%3D1&when=at&at=2030-01-02T03%3A04&repeat=interval&interval=60&retry=fibonacci&retry_count=3&retry_delay=5&timeout=2000&external_id=order-1&header_name=Authorization&header_value=Bearer+x",
+            b"method=PUT&url=https%3A%2F%2Fexample.com%2Fhook%3Fa%3D1&when=at&at=2030-01-02T03%3A04&repeat=interval&interval=60&retry=fibonacci&retry_count=3&retry_delay=5&timeout=2000&key=order-1&header_name=Authorization&header_value=Bearer+x",
         );
-        let job = form.prepare(&options(), 1_700_000_000).expect("valid");
-        assert_eq!(job.at, Some(1_893_553_440));
+        let job = form
+            .prepare(
+                &options(),
+                DateTime::from_timestamp(1_700_000_000, 0).unwrap(),
+            )
+            .expect("valid");
+        assert_eq!(job.at, DateTime::from_timestamp(1_893_553_440, 0));
         assert_eq!(job.meta.timeout, 2000);
-        assert_eq!(job.external_id.as_deref(), Some("order-1"));
+        assert_eq!(job.key.as_deref(), Some("order-1"));
         let headers = job.headers.expect("headers");
         assert_eq!(
             headers.get("authorization").map(String::as_str),

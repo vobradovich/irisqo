@@ -104,11 +104,12 @@ async fn job_continues_the_request_trace(pool: PgPool) -> anyhow::Result<()> {
     );
 
     // the result links to the attempt
-    let (result_trace, result_span): (Option<String>, Option<String>) =
-        sqlx::query_as("SELECT meta->>'trace_id', meta->>'span_id' FROM processed WHERE id = $1")
-            .bind(job_id)
-            .fetch_one(&pool)
-            .await?;
+    let (result_trace, result_span): (Option<String>, Option<String>) = sqlx::query_as(
+        "SELECT outcome->>'trace_id', outcome->>'span_id' FROM results WHERE id = $1",
+    )
+    .bind(job_id)
+    .fetch_one(&pool)
+    .await?;
     assert_eq!(result_trace.as_deref(), Some(trace_id.as_str()));
     assert_eq!(result_span, Some(run.span_context.span_id().to_string()));
     Ok(())

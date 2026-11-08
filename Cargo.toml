@@ -1,6 +1,6 @@
 [package]
 name = "irisqo"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 license = "MIT"
 
@@ -55,6 +55,7 @@ bytes = { version = "1", features = ["serde"] }
 ulid = { version = "3" }
 cron = { version = "0.17" }
 fastrand = "2"
+petname = { version = "3", default-features = false, features = ["default-rng", "default-words"] }
 
 [features]
 # Integration tests need a Postgres server: DATABASE_URL=postgres://... cargo test --features integration-tests

@@ -133,7 +133,7 @@ async fn form_creates_the_job(pool: PgPool) -> anyhow::Result<()> {
         true,
         "method=PUT&url=https%3A%2F%2Fexample.com%2Fhook&content_type=application%2Fjson&body=%7B%7D\
          &header_name=Authorization&header_value=Bearer+x&when=delay&delay=60&repeat=once\
-         &retry=fixed&retry_count=3&retry_delay=5&timeout=2000&external_id=order-1",
+         &retry=fixed&retry_count=3&retry_delay=5&timeout=2000&key=order-1",
     )
     .await;
     assert_eq!(status, StatusCode::OK);
@@ -147,8 +147,8 @@ async fn form_creates_the_job(pool: PgPool) -> anyhow::Result<()> {
         "a partial for htmx"
     );
 
-    let (method, retry, timeout, auth, external_id): (String, String, i64, String, String) = sqlx::query_as(
-        "SELECT meta->>'method', meta->>'retry', (meta->>'timeout')::bigint, headers->>'authorization', external_id FROM jobs",
+    let (method, retry, timeout, auth, key): (String, String, i64, String, String) = sqlx::query_as(
+        "SELECT meta->>'method', meta->>'retry', (meta->>'timeout')::bigint, headers->>'authorization', key FROM jobs",
     )
     .fetch_one(&pool)
     .await?;
@@ -156,10 +156,7 @@ async fn form_creates_the_job(pool: PgPool) -> anyhow::Result<()> {
         (method.as_str(), retry.as_str(), timeout),
         ("PUT", "fixed", 2000)
     );
-    assert_eq!(
-        (auth.as_str(), external_id.as_str()),
-        ("Bearer x", "order-1")
-    );
+    assert_eq!((auth.as_str(), key.as_str()), ("Bearer x", "order-1"));
     assert_eq!(
         common::count(&pool, "SELECT count(*) FROM scheduled").await,
         1
@@ -278,9 +275,9 @@ async fn api_reports_every_invalid_parameter(pool: PgPool) -> anyhow::Result<()>
             serde_json::from_slice::<serde_json::Value>(&bytes).expect("json")
         }
     };
-    let long_id = "x".repeat(65);
+    let long_id = "x".repeat(129);
     let body = problem(format!(
-        "http://{addr}/echo?_delay=soon&_timeout=0&_interval=0&_id={long_id}"
+        "http://{addr}/echo?_delay=soon&_timeout=0&_interval=0&_key={long_id}"
     ))
     .await;
     // RFC 9457: a problem type of its own, a stable title, the errors as an extension
@@ -293,7 +290,7 @@ async fn api_reports_every_invalid_parameter(pool: PgPool) -> anyhow::Result<()>
         .iter()
         .filter_map(|e| e["parameter"].as_str())
         .collect();
-    assert_eq!(params, ["_delay", "_timeout", "_interval", "_id"]);
+    assert_eq!(params, ["_delay", "_timeout", "_interval", "_key"]);
     assert_eq!(errors[0]["detail"], "must be a number of seconds");
 
     // a schedule that would never run

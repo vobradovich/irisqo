@@ -12,7 +12,6 @@ mod schedules;
 pub mod views;
 
 use crate::{
-    features::schedules::JobSchedule,
     handlers::http::create_job,
     models::{AppState, Error},
 };
@@ -27,6 +26,7 @@ use axum::{
     response::{IntoResponse, Redirect, Response},
     routing::{get, post},
 };
+use chrono::Utc;
 use form::{Created, JobForm};
 use std::{collections::BTreeMap, sync::Arc};
 use tracing::error;
@@ -190,7 +190,7 @@ async fn create_job_from_form(
     body: Bytes,
 ) -> Response {
     let form = JobForm::from_pairs(&body).with_limits(&state.worker_options);
-    let outcome = match form.prepare(&state.worker_options, JobSchedule::now_secs()) {
+    let outcome = match form.prepare(&state.worker_options, Utc::now()) {
         Err(errors) => Err(errors),
         Ok(job) => create_job(&state, job).await.map_err(|err| {
             error!("ui create_job error {:?}", err);

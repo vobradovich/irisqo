@@ -3,8 +3,8 @@ use crate::{
     db,
     features::schedules::JobSchedule,
     models::{
-        AppState, Error, HttpMeta, JobCreate, JobCreateRow, JobMeta, JobProtocol, JobRetry,
-        ParamError, WorkerOptions, headers::forwarded_headers,
+        AppState, Error, HttpMeta, JobCreate, JobCreateRow, JobMeta, JobRetry, JobSink, ParamError,
+        WorkerOptions, headers::forwarded_headers,
     },
     otel::{self, metrics::metrics},
 };
@@ -16,6 +16,7 @@ use axum::{
     response::IntoResponse,
     routing::get,
 };
+use chrono::{DateTime, Utc};
 use hyper::{Method, Uri};
 use opentelemetry::KeyValue;
 
@@ -52,11 +53,11 @@ async fn job_create(
         headers: forwarded_headers(&headers),
         body,
     };
-    let job = prepare_job(&state.worker_options, request, JobSchedule::now_secs())
-        .map_err(Error::InvalidParams)?;
+    let job =
+        prepare_job(&state.worker_options, request, Utc::now()).map_err(Error::InvalidParams)?;
     let job = create_job(&state, job).await?;
     let mut headers = HeaderMap::new();
-    // schedule-id and external-id (user-provided) may not be valid header values
+    // schedule-id and key (user-provided) may not be valid header values
     let mut put = |name: &'static str, value: Option<&str>| {
         if let Some(value) = value
             && let Ok(value) = HeaderValue::from_str(value)
@@ -67,7 +68,7 @@ async fn job_create(
     put("location", Some(&format!("/api/v1/jobs/{}", job.id)));
     put("job-id", Some(&job.id.to_string()));
     put("schedule-id", job.schedule_id.as_deref());
-    put("external-id", job.external_id.as_deref());
+    put("key", job.key.as_deref());
     Ok((StatusCode::CREATED, headers))
 }
 
@@ -88,28 +89,28 @@ pub struct JobRequest<'a> {
 pub fn prepare_job(
     options: &WorkerOptions,
     request: JobRequest<'_>,
-    now_secs: i64,
+    now: DateTime<Utc>,
 ) -> Result<JobCreate, Vec<ParamError>> {
     let mut errors = Vec::new();
-    let mut at: Option<i64> = None;
+    let mut at: Option<DateTime<Utc>> = None;
     let mut timeout: u32 = options.timeout;
     let mut retry = JobRetry::None;
     let mut schedule: Option<(JobSchedule, &'static str)> = None;
-    let mut until: Option<i64> = None;
-    let mut external_id: Option<String> = None;
+    let mut until: Option<DateTime<Utc>> = None;
+    let mut key: Option<String> = None;
     let mut url = Url::parse(request.url).ok();
 
     let mut bad = |parameter, detail: &str| errors.push(ParamError::new(parameter, detail));
-    for (key, value) in form_urlencoded::parse(request.query.unwrap_or_default().as_bytes()) {
-        match key.as_ref() {
+    for (name, value) in form_urlencoded::parse(request.query.unwrap_or_default().as_bytes()) {
+        match name.as_ref() {
             "_delay" => match value.parse::<u32>() {
-                Ok(secs) => at = Some(now_secs + i64::from(secs)),
+                Ok(secs) => at = Some(now + chrono::Duration::seconds(i64::from(secs))),
                 Err(_) => bad("_delay", "must be a number of seconds"),
             },
             // a time in the past runs the job now
-            "_delay_until" => match value.parse::<i64>() {
-                Ok(t) if JobSchedule::is_valid_unix_secs(t) => at = (t > now_secs).then_some(t),
-                _ => bad("_delay_until", "must be a unix time in seconds"),
+            "_delay_until" => match value.parse().ok().and_then(JobSchedule::from_unix_secs) {
+                Some(t) => at = (t > now).then_some(t),
+                None => bad("_delay_until", "must be a unix time in seconds"),
             },
             "_timeout" => match value.parse::<u32>() {
                 Ok(ms) if ms > 0 => timeout = ms.min(options.max_timeout),
@@ -128,18 +129,21 @@ pub fn prepare_job(
                 Ok(JobSchedule::Interval { .. }) => bad("_cron", "is not a cron expression"),
                 Err(err) => bad("_cron", &err.detail),
             },
-            "_until" => match value.parse::<i64>() {
-                Ok(t) if JobSchedule::is_valid_unix_secs(t) => until = Some(t),
-                _ => bad("_until", "must be a unix time in seconds"),
+            "_until" => match value.parse().ok().and_then(JobSchedule::from_unix_secs) {
+                Some(t) => until = Some(t),
+                None => bad("_until", "must be a unix time in seconds"),
             },
-            "_id" if value.chars().count() > 64 => bad("_id", "must be at most 64 characters"),
-            "_id" => external_id = (!value.is_empty()).then(|| value.into_owned()),
+            "_key" if !value.is_empty() && !is_ident(&value) => bad(
+                "_key",
+                "must be 1 to 128 characters of a-z, 0-9, . _ : - and start with a letter or a digit",
+            ),
+            "_key" => key = (!value.is_empty()).then(|| value.into_owned()),
             _ => {
                 if let Some(url) = url.as_mut() {
                     if value.is_empty() {
-                        url.query_pairs_mut().append_key_only(&key);
+                        url.query_pairs_mut().append_key_only(&name);
                     } else {
-                        url.query_pairs_mut().append_pair(&key, &value);
+                        url.query_pairs_mut().append_pair(&name, &value);
                     }
                 }
             }
@@ -147,7 +151,7 @@ pub fn prepare_job(
     }
     // a schedule runs at least once
     if let Some((schedule, parameter)) = &schedule
-        && schedule.next(at.unwrap_or(now_secs), until).is_none()
+        && schedule.next(at.unwrap_or(now), until).is_none()
     {
         let parameter = if until.is_some() { "_until" } else { parameter };
         errors.push(ParamError::new(
@@ -168,20 +172,20 @@ pub fn prepare_job(
     let Some(uri) = uri.filter(|_| errors.is_empty()) else {
         return Err(errors);
     };
-    let protocol = match uri.scheme_str() {
-        Some("http" | "https") => JobProtocol::Http(HttpMeta {
+    let sink = match uri.scheme_str() {
+        Some("http" | "https") => JobSink::Http(HttpMeta {
             method: request.method,
             url: uri,
         }),
-        _ => JobProtocol::None,
+        _ => JobSink::None,
     };
     // Trace context of this request: the parent of every attempt
     let (traceparent, tracestate) = otel::current_trace_headers();
     Ok(JobCreate {
         meta: JobMeta {
-            protocol,
+            sink,
             retry,
-            delay: at.and_then(|t| u32::try_from(t - now_secs).ok()),
+            delay: at.and_then(|t| u32::try_from((t - now).num_seconds()).ok()),
             timeout,
             traceparent,
             tracestate,
@@ -191,11 +195,11 @@ pub fn prepare_job(
         at,
         schedule: schedule.map(|(schedule, _)| schedule),
         until,
-        external_id,
+        key,
     })
 }
 
-/// Stores a prepared job (or returns the existing one with the same external id).
+/// Stores a prepared job (or returns the existing one with the same key).
 pub async fn create_job(state: &AppState, job: JobCreate) -> Result<JobCreateRow, Error> {
     debug!(meta = ?job.meta, "create job");
     let job_type = if job.schedule.is_some() {
@@ -211,5 +215,17 @@ pub async fn create_job(state: &AppState, job: JobCreate) -> Result<JobCreateRow
             metrics()
                 .jobs_created
                 .add(1, &[KeyValue::new("job.type", job_type)]);
+        })
+}
+
+/// A name the database accepts (`ident`): lower case letters, digits, `.`, `_`, `:` and `-`.
+fn is_ident(value: &str) -> bool {
+    let mut chars = value.chars();
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        && value.chars().count() <= 128
+        && chars.all(|c| {
+            c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | ':' | '-')
         })
 }

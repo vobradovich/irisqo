@@ -3,7 +3,7 @@
 
 use std::collections::HashMap;
 
-use chrono::{DateTime, TimeZone, Utc};
+use chrono::{DateTime, Utc};
 
 use crate::{
     db::jobview::{JobStatus, JobView},
@@ -12,7 +12,7 @@ use crate::{
         results::{JobResult, JobResultType},
     },
     models::headers::{HIDDEN, shown_value},
-    models::{JobProtocol, JobRetry, JobRow},
+    models::{JobRetry, JobRow, JobSink},
 };
 
 /// A header of the target's answer: the value is hidden when the name looks like a
@@ -49,13 +49,6 @@ pub fn relative(delta_secs: i64) -> String {
 
 pub fn utc(at: DateTime<Utc>) -> String {
     at.format("%Y-%m-%d %H:%M:%S UTC").to_string()
-}
-
-fn utc_secs(secs: i64) -> String {
-    Utc.timestamp_opt(secs, 0)
-        .single()
-        .map(utc)
-        .unwrap_or_default()
 }
 
 /// `host·K7QX`: the host and the end of the instance ULID.
@@ -123,24 +116,16 @@ pub struct JobRowView {
 
 impl JobRowView {
     pub fn new(job: &JobView, now: DateTime<Utc>) -> Self {
-        let (method, url) = match &job.meta.protocol {
-            JobProtocol::Http(http) => (http.method.to_string(), http.url.to_string()),
-            JobProtocol::None => ("—".to_owned(), "no protocol".to_owned()),
+        let (method, url) = match &job.meta.sink {
+            JobSink::Http(http) => (http.method.to_string(), http.url.to_string()),
+            JobSink::None => ("-".to_owned(), "no sink".to_owned()),
         };
         let since = |at: DateTime<Utc>| relative((at - now).num_seconds());
         let (due, due_title) = match job.status {
-            JobStatus::Scheduled | JobStatus::Retrying => {
-                job.due_secs.map_or_else(Default::default, |secs| {
-                    let delta = secs - now.timestamp();
-                    let due = if delta <= 0 {
-                        "due".to_owned()
-                    } else {
-                        relative(delta)
-                    };
-                    (due, utc_secs(secs))
-                })
-            }
-            JobStatus::Enqueued => job.due_at.map_or_else(Default::default, |at| {
+            JobStatus::Scheduled | JobStatus::Retrying => job
+                .scheduled_at
+                .map_or_else(Default::default, |at| (since(at), utc(at))),
+            JobStatus::Enqueued => job.enqueued_at.map_or_else(Default::default, |at| {
                 (
                     format!(
                         "waiting {}",
@@ -149,7 +134,7 @@ impl JobRowView {
                     utc(at),
                 )
             }),
-            JobStatus::Processing => job.lock_at.map_or_else(Default::default, |at| {
+            JobStatus::Processing => job.claimed_at.map_or_else(Default::default, |at| {
                 (format!("started {}", since(at)), utc(at))
             }),
             JobStatus::Completed
@@ -233,7 +218,7 @@ impl ResultView {
             JobResultType::Timeout => ("Timeout".into(), String::new()),
             JobResultType::Cancelled => ("Cancelled".into(), String::new()),
             JobResultType::Error { error } => ("Error".into(), error.clone()),
-            JobResultType::None => ("Done".into(), "no protocol".into()),
+            JobResultType::None => ("Done".into(), "no sink".into()),
         };
         ResultView {
             title,
@@ -255,7 +240,7 @@ pub struct JobDetailView {
     pub created: String,
     pub retry_policy: String,
     pub timeout: String,
-    pub external_id: String,
+    pub key: String,
     pub headers: Vec<(String, String)>,
     pub body: String,
     pub body_size: usize,
@@ -288,7 +273,7 @@ impl JobDetailView {
             created: utc(view.created_at),
             retry_policy: retry_policy(&view.meta.retry),
             timeout: format!("{} ms", view.meta.timeout),
-            external_id: view.external_id.clone().unwrap_or_else(|| "—".into()),
+            key: view.key.clone().unwrap_or_else(|| "-".into()),
             // ours, for the target: only the open headers are shown, as in the API
             headers: sorted_headers(job.headers.as_ref(), shown_value),
             body: body_text(body),
@@ -302,7 +287,7 @@ impl JobDetailView {
 }
 
 /// Template filters for one field: `{{ at|utc }}`, `{{ id|short_id }}`. An absent
-/// value (`None`) is rendered empty, or `—` for the short ids.
+/// value (`None`) is rendered empty, or `-` for the short ids.
 pub mod filters {
     use askama::{Result, Values};
     use chrono::{DateTime, Utc};
@@ -358,18 +343,18 @@ pub mod filters {
         Ok(at.time().map(super::utc).unwrap_or_default())
     }
 
-    /// `host·K7QX`, `—` for none.
+    /// `host·K7QX`, `-` for none.
     #[askama::filter_fn]
     pub fn short_instance(id: impl Text, _: &dyn Values) -> Result<String> {
         Ok(id
             .text()
-            .map_or_else(|| "—".to_owned(), super::short_instance))
+            .map_or_else(|| "-".to_owned(), super::short_instance))
     }
 
-    /// `01JC…K7Q`, `—` for none.
+    /// `01JC…K7Q`, `-` for none.
     #[askama::filter_fn]
     pub fn short_id(id: impl Text, _: &dyn Values) -> Result<String> {
-        Ok(id.text().map_or_else(|| "—".to_owned(), super::short_id))
+        Ok(id.text().map_or_else(|| "-".to_owned(), super::short_id))
     }
 
     /// The text, empty for none: for `title` attributes.

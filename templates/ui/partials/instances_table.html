@@ -11,7 +11,7 @@
       <tr>
         <td title="{{ r.id }}"><strong>{{ r.host }}</strong> <span class="mono muted">{{ r.ulid }}</span>{% if r.this %} <small class="tag">this server</small>{% endif %}</td>
         <td><span class="status {{ r.state }}"><span>{{ r.state_label }}</span></span></td>
-        <td title="{{ r.last_at|utc }}">{{ r.seen }}</td>
+        <td title="{{ r.seen_at|utc }}">{{ r.seen }}</td>
         <td title="{{ r.started_at|utc }}">{{ r.started }}</td>
         <td class="num mono">{{ r.processing }}</td>
         <td class="num mono">{{ r.completed_24h }}</td>

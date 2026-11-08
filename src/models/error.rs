@@ -93,6 +93,21 @@ impl Error {
     pub fn invalid(parameter: &'static str, detail: impl Into<String>) -> Self {
         Error::InvalidParams(vec![ParamError::new(parameter, detail)])
     }
+
+    /// A database error that may pass by itself (a lost connection, a restart, a deadlock):
+    /// the write that failed so may be repeated.
+    pub fn is_transient(&self) -> bool {
+        match self {
+            Error::DbError(
+                sqlx::Error::Io(_) | sqlx::Error::PoolTimedOut | sqlx::Error::Tls(_),
+            ) => true,
+            // connection (08), deadlock and serialization (40), resources (53), shutdown (57)
+            Error::DbError(sqlx::Error::Database(err)) => err
+                .code()
+                .is_some_and(|code| ["08", "40", "53", "57"].iter().any(|c| code.starts_with(c))),
+            _ => false,
+        }
+    }
 }
 
 fn not_found(detail: String) -> Problem {

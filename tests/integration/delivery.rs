@@ -10,7 +10,7 @@ use crate::common;
 
 /// Request headers the target got, from a job to `/echo?headers=1`.
 async fn received_headers(pool: &PgPool, job_id: i64) -> HashMap<String, String> {
-    let body: Vec<u8> = sqlx::query_scalar("SELECT body FROM processed WHERE id = $1")
+    let body: Vec<u8> = sqlx::query_scalar("SELECT body FROM results WHERE id = $1")
         .bind(job_id)
         .fetch_one(pool)
         .await
@@ -77,6 +77,43 @@ async fn redelivery_has_the_same_job_id_and_the_next_retry(pool: PgPool) -> anyh
     let got = received_headers(&pool, job_id).await;
     assert_eq!(got.get("irisqo-job-id"), Some(&job_id.to_string()));
     assert_eq!(got.get("irisqo-retry").map(String::as_str), Some("1"));
+
+    // the history says why each attempt ended
+    let history = common::history(&pool, job_id).await;
+    let steps: Vec<_> = history
+        .iter()
+        .map(|(kind, message)| (kind.as_str(), message.as_deref()))
+        .collect();
+    assert_eq!(
+        steps,
+        [
+            ("enqueued", None),
+            ("claimed", None),
+            ("retried", Some("HTTP 503")),
+            ("claimed", None),
+            ("failed", Some("HTTP 503")),
+        ]
+    );
+    Ok(())
+}
+
+#[sqlx::test(migrations = "./sql/migrations")]
+async fn history_keeps_the_error_of_a_failed_connection(pool: PgPool) -> anyhow::Result<()> {
+    let state = common::state(pool.clone());
+    let addr = common::spawn_app(&state).await;
+    // nothing listens on port 9
+    let response = common::create(&state, addr, "http://127.0.0.1:9/hook").await;
+    let job_id: i64 = common::header(&response, "job-id")
+        .and_then(|v| v.parse().ok())
+        .expect("job-id");
+    assert_eq!(common::run_enqueued(&state).await, 1);
+
+    let (kind, message) = common::history(&pool, job_id).await.pop().expect("history");
+    assert_eq!(kind, "failed");
+    assert!(
+        message.unwrap_or_default().contains("Connect"),
+        "the connect error is in the history"
+    );
     Ok(())
 }
 
@@ -122,13 +159,7 @@ async fn shutdown_timeout_abandons_running_jobs(pool: PgPool) -> anyhow::Result<
         async move { WorkerService::new(state).run().await }
     });
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-    while common::count(
-        &pool,
-        "SELECT count(*) FROM enqueued WHERE lock_at IS NOT NULL",
-    )
-    .await
-        == 0
-    {
+    while common::count(&pool, "SELECT count(*) FROM claimed").await == 0 {
         assert!(tokio::time::Instant::now() < deadline, "job not started");
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
@@ -140,11 +171,12 @@ async fn shutdown_timeout_abandons_running_jobs(pool: PgPool) -> anyhow::Result<
 
     // what main does on exit: the abandoned job runs again elsewhere, same attempt
     db::instances::kill(&pool, &state.instance_id).await?;
-    let (retry, locked): (i32, bool) =
-        sqlx::query_as("SELECT retry, lock_at IS NOT NULL FROM enqueued WHERE id = $1")
-            .bind(job_id)
-            .fetch_one(&pool)
-            .await?;
+    let (retry, locked): (i32, bool) = sqlx::query_as(
+        "SELECT retry, EXISTS (SELECT 1 FROM claimed WHERE id = $1) FROM enqueued WHERE id = $1",
+    )
+    .bind(job_id)
+    .fetch_one(&pool)
+    .await?;
     assert_eq!((retry, locked), (0, false));
     Ok(())
 }

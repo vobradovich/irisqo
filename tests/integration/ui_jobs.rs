@@ -44,7 +44,7 @@ async fn list_shows_every_state(pool: PgPool) -> anyhow::Result<()> {
     let state = common::state(pool.clone());
     let addr = common::spawn_app(&state).await;
     let echo = format!("http://{addr}/echo");
-    let completed = job_id(&state, addr, &format!("{echo}?_id=order-7731")).await;
+    let completed = job_id(&state, addr, &format!("{echo}?_key=order-7731")).await;
     let failed = job_id(&state, addr, &format!("{echo}?status=404")).await;
     let retrying = job_id(
         &state,
@@ -79,7 +79,7 @@ async fn list_shows_every_state(pool: PgPool) -> anyhow::Result<()> {
         [(failed, JobStatus::Failed)]
     );
 
-    // search: external id, id, a part of the URL
+    // search: key, id, a part of the URL
     for (search, expected) in [
         ("order-7731", vec![completed]),
         (&*failed.to_string(), vec![failed]),
@@ -184,7 +184,7 @@ async fn schedule_pause_resume_and_one_chain(pool: PgPool) -> anyhow::Result<()>
     let schedule_id = common::header(&response, "schedule-id").expect("schedule-id");
     let api = |action: &str| format!("http://{addr}/api/v1/schedules/{schedule_id}/{action}");
 
-    // pause: inactive, the pending run is cancelled
+    // pause: paused, the pending run is cancelled
     assert_eq!(
         send(&state, Method::POST, &api("pause"), false).await.0,
         StatusCode::NO_CONTENT
@@ -211,7 +211,7 @@ async fn schedule_pause_resume_and_one_chain(pool: PgPool) -> anyhow::Result<()>
         1
     );
     assert_eq!(
-        common::count(&pool, "SELECT count(*) FROM schedules WHERE inactive").await,
+        common::count(&pool, "SELECT count(*) FROM schedules WHERE paused").await,
         0
     );
     // resuming again does not add a run
@@ -368,16 +368,16 @@ async fn ui_pages_and_actions(pool: PgPool) -> anyhow::Result<()> {
 async fn instances_page_shows_heartbeats_and_work(pool: PgPool) -> anyhow::Result<()> {
     let state = common::state(pool.clone());
     let addr = common::spawn_app(&state).await;
-    irisqo::features::instances::live(&pool, &state.instance_id).await?;
+    irisqo::features::instances::live(&pool, &state.instance_id, &["http", "worker"]).await?;
     sqlx::query(
-        "INSERT INTO instances(instance_id, last_at, status) VALUES
-            ('quiet-host:01JC0000000000000000000000', now() - interval '1 minute', 'live'),
-            ('old-host:01JB0000000000000000000000', now() - interval '2 hours', 'dead')",
+        "INSERT INTO instances(instance_id, roles, version, seen_at, stopped_at) VALUES
+            ('quiet-host:01jc0000000000000000000000', '{worker}', '1', now() - interval '1 minute', NULL),
+            ('old-host:01jb0000000000000000000000', '{worker}', '1', now() - interval '2 hours', now() - interval '2 hours')",
     )
     .execute(&pool)
     .await?;
     let ids = common::insert_enqueued(&pool, 2).await;
-    sqlx::query("UPDATE enqueued SET instance_id = $1, lock_at = now() WHERE id = ANY($2)")
+    sqlx::query("WITH a AS (DELETE FROM enqueued WHERE id = ANY($2) RETURNING id, retry) INSERT INTO claimed(id, retry, instance_id) SELECT id, retry, $1 FROM a")
         .bind(&state.instance_id)
         .bind(&ids)
         .execute(&pool)

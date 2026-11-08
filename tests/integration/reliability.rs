@@ -26,18 +26,19 @@ async fn reaper_releases_stuck_lock_and_rejects_late_result(pool: PgPool) -> any
         0
     );
     // stuck for an hour: released with retry + 1
-    sqlx::query("UPDATE enqueued SET lock_at = now() - interval '1 hour'")
+    sqlx::query("UPDATE claimed SET at = now() - interval '1 hour'")
         .execute(&pool)
         .await?;
     assert_eq!(
         db::jobqueue::reap_expired_locks(&pool, lease, &state.instance_id, 100).await?,
         1
     );
-    let (retry, locked): (i32, bool) =
-        sqlx::query_as("SELECT retry, lock_at IS NOT NULL FROM enqueued WHERE id = $1")
-            .bind(id)
-            .fetch_one(&pool)
-            .await?;
+    let (retry, locked): (i32, bool) = sqlx::query_as(
+        "SELECT retry, EXISTS (SELECT 1 FROM claimed WHERE id = $1) FROM enqueued WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_one(&pool)
+    .await?;
     assert_eq!((retry, locked), (1, false));
     let (status, message) = common::history(&pool, id).await.pop().expect("history");
     assert_eq!(status, "retried");
@@ -64,11 +65,11 @@ async fn expired_instance_is_killed_with_history(pool: PgPool) -> anyhow::Result
     let state = common::state(pool.clone());
     let id = common::insert_enqueued(&pool, 1).await[0];
     sqlx::query(
-        "INSERT INTO instances(instance_id, last_at) VALUES ('old', now() - interval '1 hour')",
+        "INSERT INTO instances(instance_id, roles, version, seen_at) VALUES ('old', '{worker}', '1', now() - interval '1 hour')",
     )
     .execute(&pool)
     .await?;
-    sqlx::query("UPDATE enqueued SET instance_id = 'old', lock_at = now()")
+    sqlx::query("WITH a AS (DELETE FROM enqueued RETURNING id, retry) INSERT INTO claimed(id, retry, instance_id) SELECT id, retry, 'old' FROM a")
         .execute(&pool)
         .await?;
 
@@ -76,11 +77,7 @@ async fn expired_instance_is_killed_with_history(pool: PgPool) -> anyhow::Result
         db::instances::kill_expired(&pool, Duration::from_secs(30), &state.instance_id).await?;
     assert_eq!(killed, 1);
     assert_eq!(
-        common::count(
-            &pool,
-            "SELECT count(*) FROM enqueued WHERE lock_at IS NULL AND retry = 1"
-        )
-        .await,
+        common::count(&pool, "SELECT count(*) FROM enqueued WHERE retry = 1").await,
         1
     );
     assert_eq!(
@@ -99,15 +96,11 @@ async fn shutdown_release_is_in_history(pool: PgPool) -> anyhow::Result<()> {
     db::instances::kill(&pool, &state.instance_id).await?;
 
     assert_eq!(
-        common::count(
-            &pool,
-            "SELECT count(*) FROM enqueued WHERE lock_at IS NULL AND retry = 0"
-        )
-        .await,
+        common::count(&pool, "SELECT count(*) FROM enqueued WHERE retry = 0").await,
         1
     );
     let (status, message) = common::history(&pool, id).await.pop().expect("history");
-    assert_eq!(status, "enqueued");
+    assert_eq!(status, "released");
     assert_eq!(message.as_deref(), Some("released on shutdown"));
     Ok(())
 }
@@ -116,7 +109,7 @@ async fn shutdown_release_is_in_history(pool: PgPool) -> anyhow::Result<()> {
 async fn scheduler_enqueues_every_due_job(pool: PgPool) -> anyhow::Result<()> {
     let state = common::state(pool.clone());
     common::insert_enqueued(&pool, 2500).await;
-    sqlx::query("WITH a AS (DELETE FROM enqueued RETURNING id) INSERT INTO scheduled(id, at) SELECT id, 1 FROM a")
+    sqlx::query("WITH a AS (DELETE FROM enqueued RETURNING id) INSERT INTO scheduled(id, at) SELECT id, to_timestamp(1) FROM a")
         .execute(&pool)
         .await?;
     let options = state.scheduler_options.as_ref().expect("scheduler options");
@@ -151,7 +144,7 @@ async fn retention_purges_old_data_only(pool: PgPool) -> anyhow::Result<()> {
     let response = common::create(&state, addr, &format!("http://{addr}/echo?_interval=60")).await;
     assert_eq!(response.status(), StatusCode::CREATED);
     common::enqueue_all_scheduled(&state).await;
-    sqlx::query("UPDATE schedules SET inactive = true")
+    sqlx::query("UPDATE schedules SET paused = true")
         .execute(&pool)
         .await?;
     common::run_enqueued(&state).await;
@@ -160,7 +153,7 @@ async fn retention_purges_old_data_only(pool: PgPool) -> anyhow::Result<()> {
         .await?;
     let pending = common::insert_enqueued(&pool, 1).await[0];
     // a long dead instance and a live one
-    sqlx::query("INSERT INTO instances(instance_id, last_at, status) VALUES ('dead', now() - interval '30 days', 'dead'), ('live', now(), 'live')")
+    sqlx::query("INSERT INTO instances(instance_id, roles, version, seen_at, stopped_at) VALUES ('dead', '{worker}', '1', now() - interval '30 days', now() - interval '30 days'), ('live', '{worker}', '1', now(), NULL)")
         .execute(&pool)
         .await?;
 
@@ -208,7 +201,7 @@ async fn run_echo(state: &Arc<irisqo::AppState>, query: &str) -> i64 {
 
 async fn scheduled_in(pool: &PgPool, id: i64) -> Option<(i32, i64)> {
     sqlx::query_as(
-        "SELECT retry, at - extract(epoch from now())::bigint FROM scheduled WHERE id = $1",
+        "SELECT retry, (extract(epoch from at) - extract(epoch from now()))::bigint FROM scheduled WHERE id = $1",
     )
     .bind(id)
     .fetch_optional(pool)
@@ -276,13 +269,14 @@ async fn results_are_written_in_one_batch(pool: PgPool) -> anyhow::Result<()> {
     assert_eq!(
         common::count(
             &pool,
-            "SELECT count(*) FROM history WHERE status = 'completed'"
+            "SELECT count(*) FROM history WHERE kind = 'completed'"
         )
         .await,
         299
     );
+    // the stale attempt is still claimed
     assert_eq!(
-        common::count(&pool, "SELECT count(*) FROM enqueued").await,
+        common::count(&pool, "SELECT count(*) FROM claimed").await,
         1
     );
     Ok(())

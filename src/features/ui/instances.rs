@@ -28,7 +28,7 @@ pub struct InstanceRowView {
     pub state: &'static str,
     pub state_label: &'static str,
     pub seen: String,
-    pub last_at: DateTime<Utc>,
+    pub seen_at: DateTime<Utc>,
     pub started: String,
     pub started_at: Option<DateTime<Utc>>,
     pub processing: i64,
@@ -43,11 +43,11 @@ impl InstanceRowView {
             .instance_id
             .rsplit_once(':')
             .unwrap_or(("", view.instance_id.as_str()));
-        let quiet = (now - view.last_at).num_seconds();
-        let (state, state_label) = match view.status.as_str() {
-            "live" if quiet > HEARTBEAT_INTERVAL.as_secs() as i64 * 2 => ("stale", "No heartbeat"),
-            "live" => ("running", "Live"),
-            _ => ("stopped", "Stopped"),
+        let quiet = (now - view.seen_at).num_seconds();
+        let (state, state_label) = match view.stopped_at {
+            None if quiet > HEARTBEAT_INTERVAL.as_secs() as i64 * 2 => ("stale", "No heartbeat"),
+            None => ("running", "Live"),
+            Some(_) => ("stopped", "Stopped"),
         };
         // the instance id ends with a ULID made at start
         let started_at = ulid::Ulid::from_string(ulid)
@@ -60,7 +60,7 @@ impl InstanceRowView {
             state,
             state_label,
             seen: relative(-quiet),
-            last_at: view.last_at,
+            seen_at: view.seen_at,
             started: started_at
                 .map(|at| relative((at - now).num_seconds()))
                 .unwrap_or_default(),

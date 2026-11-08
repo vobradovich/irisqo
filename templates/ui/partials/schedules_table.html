@@ -15,7 +15,7 @@
         <td title="{{ r.next_title }}">{{ r.next }}</td>
         <td>
           <span class="status {{ r.last_status }}"><span>{{ r.last_label }}</span></span>
-          {% if let Some(id) = r.last_id %}<a href="/ui/jobs/{{ id }}"><small>{{ r.last_at }}</small></a>{% endif %}
+          {% if let Some(id) = r.last_id %}<a href="/ui/jobs/{{ id }}"><small>{{ r.last_run_at }}</small></a>{% endif %}
         </td>
         <td>{% if r.active %}<span class="state-active">Active</span>{% else %}<span class="muted">Paused</span>{% endif %}</td>
         <td><div class="actions">
