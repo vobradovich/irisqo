@@ -229,10 +229,45 @@ fn like_pattern(term: &str) -> String {
     format!("%{escaped}%")
 }
 
+impl StatusFilter {
+    /// The ids that can have this status, read from the state table(s) of it: a filter must not
+    /// scan `jobs` (millions of finished rows) to find a few waiting ones. `None`: every job.
+    const fn candidates(self) -> Option<&'static str> {
+        Some(match self {
+            StatusFilter::All | StatusFilter::Only(JobStatus::Unknown) => return None,
+            StatusFilter::Active => {
+                "SELECT id FROM scheduled UNION ALL SELECT id FROM enqueued UNION ALL SELECT id FROM claimed"
+            }
+            StatusFilter::Only(JobStatus::Scheduled) => "SELECT id FROM scheduled WHERE retry = 0",
+            StatusFilter::Only(JobStatus::Retrying) => "SELECT id FROM scheduled WHERE retry > 0",
+            StatusFilter::Only(JobStatus::Enqueued) => "SELECT id FROM enqueued",
+            StatusFilter::Only(JobStatus::Processing) => "SELECT id FROM claimed",
+            StatusFilter::Only(JobStatus::Completed) => {
+                "SELECT id FROM processed WHERE status = 'completed'"
+            }
+            StatusFilter::Only(JobStatus::Failed) => {
+                "SELECT id FROM processed WHERE status = 'failed'"
+            }
+            StatusFilter::Only(JobStatus::Cancelled) => {
+                "SELECT id FROM processed WHERE status = 'cancelled'"
+            }
+        })
+    }
+}
+
 /// Newest first, `query.limit` at most.
 pub async fn list(pool: &Pool<Postgres>, query: &JobQuery) -> Result<Vec<JobView>, Error> {
+    // start from the rows of the status asked for, then the same view as `get`
+    let view = match query.status.candidates() {
+        Some(ids) => VIEW.replacen(
+            "FROM jobs AS j",
+            &format!("FROM jobs AS j INNER JOIN ({ids}) AS cand ON cand.id = j.id"),
+            1,
+        ),
+        None => VIEW.to_owned(),
+    };
     let sql = format!(
-        "WITH v AS ({VIEW}
+        "WITH v AS ({view}
             WHERE ($1::bigint IS NULL OR j.id < $1)
               AND ($2::text IS NULL OR j.id::text = $2 OR j.key = $2 OR ($3::text IS NOT NULL AND j.meta->>'url' ILIKE $3))
               AND ($4 = 'any' OR ($4 = 'scheduled' AND j.schedule_id IS NOT NULL) OR ($4 = 'none' AND j.schedule_id IS NULL))

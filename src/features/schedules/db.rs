@@ -127,12 +127,13 @@ pub async fn list_view(pool: &Pool<Postgres>, limit: i32) -> Result<Vec<Schedule
     const SQL: &str = "
     SELECT s.schedule_id, s.schedule, s.until, s.next_id,
         s.next_at, s.paused, j.meta,
-        (sc.id IS NOT NULL OR e.id IS NOT NULL) AS pending,
+        (sc.id IS NOT NULL OR e.id IS NOT NULL OR c.id IS NOT NULL) AS pending,
         lp.id AS last_id, lp.status AS last_status, lp.at AS last_run_at
     FROM schedules AS s
     LEFT JOIN jobs AS j ON j.id = s.next_id
     LEFT JOIN scheduled AS sc ON sc.id = s.next_id
     LEFT JOIN enqueued AS e ON e.id = s.next_id
+    LEFT JOIN claimed AS c ON c.id = s.next_id
     LEFT JOIN LATERAL (
         SELECT p.id, p.status, p.at
         FROM jobs AS j2 INNER JOIN processed AS p ON p.id = j2.id

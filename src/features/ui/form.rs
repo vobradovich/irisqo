@@ -348,6 +348,7 @@ mod tests {
         WorkerOptions {
             workers: 1,
             poll_interval: std::time::Duration::from_secs(1),
+            max_poll_interval: std::time::Duration::from_secs(1),
             prefetch: 1,
             timeout: 3000,
             max_timeout: 300_000,

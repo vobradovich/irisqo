@@ -543,3 +543,73 @@ async fn enqueue_v1_checks_the_form_of_key_and_queue(pool: PgPool) -> anyhow::Re
     .await?;
     Ok(())
 }
+
+#[sqlx::test(migrations = "./sql/migrations")]
+async fn a_released_or_requeued_job_keeps_its_priority_and_queue(
+    pool: PgPool,
+) -> anyhow::Result<()> {
+    let state = common::state(pool.clone());
+    let id = &state.instance_id;
+    let urgent: i64 = sqlx::query_scalar(
+        "SELECT enqueue_v1('{\"url\": \"http://localhost/x\", \"priority\": 5}')",
+    )
+    .fetch_one(&pool)
+    .await?;
+    let queued = enqueue_in_queue(&pool, "q").await;
+    let sql = "SELECT id, queue, priority FROM enqueued ORDER BY id";
+    let want = vec![(urgent, None, 5_i16), (queued, Some("q".to_owned()), 0)];
+
+    // claim, then release on shutdown
+    assert_eq!(common::fetch(&state, 10).await.len(), 2);
+    db::instances::kill(&pool, id).await?;
+    assert_eq!(
+        sqlx::query_as::<_, (i64, Option<String>, i16)>(sql)
+            .fetch_all(&pool)
+            .await?,
+        want
+    );
+
+    // claim, then an immediate retry of one job
+    let jobs = common::fetch(&state, 10).await;
+    let entry = irisqo::models::JobEntry {
+        id: urgent,
+        retry: jobs[0].retry,
+    };
+    assert_eq!(db::jobqueue::unlock(&pool, entry, id, "again").await?, 1);
+    let rows = sqlx::query_as::<_, (i64, Option<String>, i16)>(sql)
+        .fetch_all(&pool)
+        .await?;
+    assert_eq!(rows, vec![want[0].clone()]);
+
+    // processed, then run once more by a user
+    sqlx::query("WITH a AS (DELETE FROM claimed RETURNING id, retry) INSERT INTO processed(id, retry, instance_id, status) SELECT id, retry, 'x', 'failed' FROM a")
+        .execute(&pool)
+        .await?;
+    for job in [urgent, queued] {
+        db::jobqueue::requeue_job(&pool, job, id).await?;
+    }
+    let rows = sqlx::query_as::<_, (i64, Option<String>, i16)>(sql)
+        .fetch_all(&pool)
+        .await?;
+    assert_eq!(rows, want);
+    Ok(())
+}
+
+#[sqlx::test(migrations = "./sql/migrations")]
+async fn a_schedule_with_a_running_run_is_not_idle(pool: PgPool) -> anyhow::Result<()> {
+    let state = common::state(pool.clone());
+    let addr = common::spawn_app(&state).await;
+    let target = format!("http://{addr}/echo?_interval=3600");
+    common::create(&state, addr, &target).await;
+    common::enqueue_all_scheduled(&state).await;
+    assert_eq!(
+        common::fetch(&state, 10).await.len(),
+        1,
+        "the run is in flight"
+    );
+
+    let views = irisqo::features::schedules::list_view(&pool, 10).await?;
+    assert_eq!(views.len(), 1);
+    assert!(views[0].pending);
+    Ok(())
+}

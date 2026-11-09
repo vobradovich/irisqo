@@ -44,8 +44,11 @@ impl WorkerService {
         let batch = concurrency;
         info!({ instance_id, workers_count, per_worker, batch }, "start");
 
-        let mut interval = time::interval(app_state.worker_options.poll_interval);
-        interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
+        // An empty queue is polled after `--interval`, then less often: 2x per empty poll up to
+        // `--max-interval`. A claim that finds jobs starts over.
+        let interval = app_state.worker_options.poll_interval;
+        let max_interval = app_state.worker_options.max_poll_interval.max(interval);
+        let mut pause = interval;
 
         let (tx, rx) = async_channel::bounded::<JobWithRetry>(batch);
         let (done_tx, done_rx) = mpsc::channel::<Completion>(concurrency);
@@ -80,6 +83,12 @@ impl WorkerService {
             })
             .unwrap_or_default();
             let empty = jobs.is_empty();
+            let wait = pause;
+            pause = if empty {
+                (pause * 2).min(max_interval)
+            } else {
+                interval
+            };
             for job in jobs {
                 // On shutdown the jobs not handed over yet stay assigned to this
                 // instance: `kill` releases them on exit.
@@ -94,7 +103,7 @@ impl WorkerService {
                 select!(
                     biased;
                     () = app_state.shutdown_token.cancelled() => {},
-                    _ = interval.tick() => {},
+                    () = time::sleep(wait) => {},
                 );
             }
         }

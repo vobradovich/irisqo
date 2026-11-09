@@ -460,7 +460,18 @@ fn error_message(err: &Error) -> String {
     match err {
         Error::ClientError(res) | Error::ServerError(res) => res.history_message(),
         Error::Timeout(_) => Some("timeout".into()),
-        _ => None,
+        Error::JobNotFound(_)
+        | Error::ResultNotFound(_)
+        | Error::ScheduleNotFound(_)
+        | Error::DbError(_)
+        | Error::IoError(_)
+        | Error::HttpError(_)
+        | Error::HyperError(_)
+        | Error::HyperClientError(_)
+        | Error::InvalidParams(_)
+        | Error::ResponseTooLarge
+        | Error::BlockedTarget(_)
+        | Error::RetriesExceeded => None,
     }
     .unwrap_or_else(|| err.to_string())
 }

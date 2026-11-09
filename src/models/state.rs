@@ -47,7 +47,9 @@ pub struct SchedulerOptions {
 pub struct WorkerOptions {
     /// Worker tasks; `workers * prefetch` jobs are in flight in all.
     pub workers: usize,
+    /// First pause before polling an empty queue again; it doubles up to `max_poll_interval`.
     pub poll_interval: Duration,
+    pub max_poll_interval: Duration,
     /// Jobs a worker holds and runs at once (and claims in one fetch).
     pub prefetch: u16,
     pub timeout: u32,
@@ -74,11 +76,13 @@ xflags::xflags! {
         optional --db-connections n: u32
         /// Postgres schema of the tables and functions, created when missing. Default: irisqo
         optional --db-schema name: String
-        /// Worker tasks; each holds and runs up to --prefetch jobs at once. Default: 8
+        /// Worker tasks; each holds and runs up to --prefetch jobs at once. Default: 16
         optional -w,--workers n: usize
-        /// Worker Poll Interval in milliseconds. Default: 1000
+        /// Pause before the first re-poll of an empty queue, in milliseconds; it doubles while the queue stays empty. Default: 200
         optional --interval n: u64
-        /// Jobs a worker holds and runs at once; in flight in all: workers x prefetch. Default: 8
+        /// Longest pause between polls of an empty queue, in milliseconds. Default: 1000
+        optional --max-interval n: u64
+        /// Jobs a worker holds and runs at once; in flight in all: workers x prefetch. Default: 4
         optional --prefetch n: u16
         /// Default job timeout in milliseconds. Default: 3000
         optional --timeout n: u32
@@ -148,6 +152,7 @@ impl Options {
             db_schema,
             workers,
             interval,
+            max_interval,
             prefetch,
             timeout,
             max_timeout,
@@ -163,6 +168,7 @@ impl Options {
         take(db_schema, "IRISQO_DB_SCHEMA", &var)?;
         take(workers, "IRISQO_WORKERS", &var)?;
         take(interval, "IRISQO_INTERVAL", &var)?;
+        take(max_interval, "IRISQO_MAX_INTERVAL", &var)?;
         take(prefetch, "IRISQO_PREFETCH", &var)?;
         take(timeout, "IRISQO_TIMEOUT", &var)?;
         take(max_timeout, "IRISQO_MAX_TIMEOUT", &var)?;
@@ -252,9 +258,10 @@ impl AppState {
                 retention_hours: options.retention_hours.unwrap_or(7 * 24),
             }),
             worker_options: WorkerOptions {
-                workers: options.workers.unwrap_or(8).max(1),
-                poll_interval: Duration::from_millis(options.interval.unwrap_or(1000)),
-                prefetch: options.prefetch.unwrap_or(8),
+                workers: options.workers.unwrap_or(16).max(1),
+                poll_interval: Duration::from_millis(options.interval.unwrap_or(200)),
+                max_poll_interval: Duration::from_millis(options.max_interval.unwrap_or(1000)),
+                prefetch: options.prefetch.unwrap_or(4),
                 timeout: options.timeout.unwrap_or(3000).min(max_timeout),
                 max_timeout,
                 shutdown_timeout: Duration::from_secs(options.shutdown_timeout.unwrap_or(20)),

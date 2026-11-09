@@ -45,7 +45,9 @@ impl InstanceRowView {
             .unwrap_or(("", view.instance_id.as_str()));
         let quiet = (now - view.seen_at).num_seconds();
         let (state, state_label) = match view.stopped_at {
-            None if quiet > HEARTBEAT_INTERVAL.as_secs() as i64 * 2 => ("stale", "No heartbeat"),
+            None if quiet > i64::try_from(HEARTBEAT_INTERVAL.as_secs() * 2).unwrap_or(i64::MAX) => {
+                ("stale", "No heartbeat")
+            }
             None => ("running", "Live"),
             Some(_) => ("stopped", "Stopped"),
         };

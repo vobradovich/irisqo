@@ -269,9 +269,9 @@ pub async fn unlock(
 ) -> Result<u64, Error> {
     const SQL: &str = "
     WITH a AS (
-        DELETE FROM claimed WHERE id = $1 AND instance_id = $2 AND retry = $3 RETURNING id, retry, queue
+        DELETE FROM claimed WHERE id = $1 AND instance_id = $2 AND retry = $3 RETURNING id, retry, queue, priority
     ), b AS (
-        INSERT INTO enqueued(id, retry, queue) SELECT id, retry + 1, queue FROM a RETURNING id, retry
+        INSERT INTO enqueued(id, retry, queue, priority) SELECT id, retry + 1, queue, priority FROM a RETURNING id, retry
     )
     INSERT INTO history(id, retry, kind, instance_id, message) SELECT id, retry, 'retried', $2, $4 FROM b";
     let res = sqlx::query(SQL)
@@ -296,7 +296,7 @@ pub async fn retry(
     const SQL: &str = "
     WITH a AS (
         DELETE FROM claimed WHERE id = $1 AND instance_id = $3 AND retry = $4
-        RETURNING id, retry + 1 AS retry, queue, instance_id
+        RETURNING id, retry + 1 AS retry, queue, priority, instance_id
     ), r AS (
         -- in an ordered queue the retry holds its place: later jobs wait for it in `enqueued`
         SELECT a.*, (a.queue IS NOT NULL AND coalesce(q.ordered, true)) AS held
@@ -305,9 +305,9 @@ pub async fn retry(
         INSERT INTO history(id, retry, kind, instance_id, message)
         SELECT id, retry, 'retried', instance_id, $5 FROM r
     ), held AS (
-        INSERT INTO enqueued(id, retry, at, queue) SELECT id, retry, $2::timestamptz, queue FROM r WHERE held
+        INSERT INTO enqueued(id, retry, at, queue, priority) SELECT id, retry, $2::timestamptz, queue, priority FROM r WHERE held
     )
-    INSERT INTO scheduled(id, at, retry, queue) SELECT id, $2::timestamptz, retry, queue FROM r WHERE NOT held";
+    INSERT INTO scheduled(id, at, retry, queue, priority) SELECT id, $2::timestamptz, retry, queue, priority FROM r WHERE NOT held";
     let res = sqlx::query(SQL)
         .bind(entry.id)
         .bind(at)
@@ -331,9 +331,9 @@ pub async fn reap_expired_locks(
     WITH a AS (
         DELETE FROM claimed
         WHERE id IN (SELECT id FROM claimed WHERE at < now() - $1 ORDER BY at LIMIT $3 FOR UPDATE SKIP LOCKED)
-        RETURNING id, retry, queue, instance_id
+        RETURNING id, retry, queue, priority, instance_id
     ), b AS (
-        INSERT INTO enqueued(id, retry, queue) SELECT id, retry + 1, queue FROM a
+        INSERT INTO enqueued(id, retry, queue, priority) SELECT id, retry + 1, queue, priority FROM a
     )
     INSERT INTO history(id, retry, kind, instance_id, message)
     SELECT id, retry + 1, 'retried', $2, 'lock expired: ' || instance_id FROM a";
@@ -374,7 +374,13 @@ pub async fn fetch_job_with_retry(
                 };
                 tracing::error!(job_id = entry.id, "unreadable job: {err:?}");
                 let result = JobResult::from(Error::from(err));
-                results::processed(pool, entry, instance_id, &result).await?;
+                // when this write fails too, the job stays claimed (the lock reaper releases it)
+                // but the rest of the batch must still run
+                _ = results::processed(pool, entry, instance_id, &result)
+                    .await
+                    .inspect_err(|err| {
+                        tracing::error!(job_id = entry.id, "result of an unreadable job: {err:?}");
+                    });
             }
         }
     }
@@ -456,7 +462,10 @@ pub async fn requeue_job(
     WITH p AS (
         DELETE FROM processed WHERE id = $1 RETURNING id, retry
     ), e AS (
-        INSERT INTO enqueued(id, retry) SELECT id, retry + 1 FROM p RETURNING id, retry
+        INSERT INTO enqueued(id, retry, queue, priority)
+        SELECT p.id, p.retry + 1, j.meta->>'queue', coalesce((j.meta->>'priority')::smallint, 0)
+        FROM p INNER JOIN jobs AS j ON j.id = p.id
+        RETURNING id, retry
     )
     INSERT INTO history(id, retry, kind, instance_id, message)
     SELECT id, retry, 'enqueued', $2, 'retried by a user' FROM e";
