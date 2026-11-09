@@ -72,6 +72,9 @@ xflags::xflags! {
     cmd options {
         /// API Port number. Default: 8102
         optional -p,--port n: u16
+        /// Postgres connection URL, postgres://user:pass@host/db (better set by IRISQO_DB_URL: a flag
+        /// shows in ps). Required.
+        optional --db-url url: String
         /// Max db connections (keep below the Postgres max_connections). Default: 32
         optional --db-connections n: u32
         /// Postgres schema of the tables and functions, created when missing. Default: irisqo
@@ -148,6 +151,7 @@ impl Options {
         // every option, so that a new one cannot miss its variable
         let Options {
             port,
+            db_url,
             db_connections,
             db_schema,
             workers,
@@ -164,6 +168,7 @@ impl Options {
             api_token,
         } = self;
         take(port, "IRISQO_PORT", &var)?;
+        take(db_url, "IRISQO_DB_URL", &var)?;
         take(db_connections, "IRISQO_DB_CONNECTIONS", &var)?;
         take(db_schema, "IRISQO_DB_SCHEMA", &var)?;
         take(workers, "IRISQO_WORKERS", &var)?;
@@ -190,16 +195,19 @@ impl Options {
 }
 
 impl AppState {
-    /// Connects to `IRISQO_DB_URL` (only the environment or `.env`: a flag would show the password in `ps`), creates the schema (`--schema`, `irisqo` by default) and
+    /// Connects to `--db-url` (`IRISQO_DB_URL`), creates the schema (`--schema`, `irisqo` by default) and
     /// runs the migrations in it.
     #[must_use]
     pub async fn new(options: &Options) -> Arc<AppState> {
         let instance_id = new_instance_id();
         let schema = options.db_schema.as_deref().unwrap_or(DEFAULT_SCHEMA);
         check_schema(schema).expect("invalid schema");
-        let db_url = std::env::var("IRISQO_DB_URL").expect("IRISQO_DB_URL must be set");
-        let conn = PgConnectOptions::from_str(&db_url)
-            .expect("Unable to parse IRISQO_DB_URL")
+        let db_url = options
+            .db_url
+            .as_deref()
+            .expect("--db-url or IRISQO_DB_URL must be set");
+        let conn = PgConnectOptions::from_str(db_url)
+            .expect("Unable to parse the database URL")
             .application_name(&instance_id)
             // every statement and every function sees the tables of the schema
             .options([("search_path", schema)]);

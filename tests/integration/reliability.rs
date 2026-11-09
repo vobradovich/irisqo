@@ -613,3 +613,42 @@ async fn a_schedule_with_a_running_run_is_not_idle(pool: PgPool) -> anyhow::Resu
     assert!(views[0].pending);
     Ok(())
 }
+
+/// The tests above run in `public` (`#[sqlx::test]` migrates there). This one starts the app
+/// the way `main` does: its own schema, created and migrated by `AppState::new`.
+#[sqlx::test(migrations = false)]
+async fn the_app_creates_and_uses_its_own_schema(pool: PgPool) -> anyhow::Result<()> {
+    let database: String = sqlx::query_scalar("SELECT current_database()")
+        .fetch_one(&pool)
+        .await?;
+    let mut url = url::Url::parse(&std::env::var("DATABASE_URL")?)?;
+    url.set_path(&database);
+    let options = irisqo::models::Options::from_vec(vec![
+        "--db-url".into(),
+        url.to_string().into(),
+        "--db-schema".into(),
+        "mine".into(),
+        "--env".into(),
+        "development".into(),
+    ])
+    .expect("options");
+    let state = irisqo::AppState::new(&options).await;
+
+    let (inside, outside): (i64, i64) = sqlx::query_as(
+        "SELECT count(*) FILTER (WHERE table_schema = 'mine'),
+                count(*) FILTER (WHERE table_schema = 'public')
+         FROM information_schema.tables",
+    )
+    .fetch_one(&pool)
+    .await?;
+    assert!(inside >= 10, "the tables are in the schema: {inside}");
+    assert_eq!(outside, 0, "nothing in public");
+
+    // the functions find the tables of their schema
+    let id: i64 = sqlx::query_scalar("SELECT enqueue_v1('{\"url\": \"http://localhost/x\"}')")
+        .fetch_one(&state.pool)
+        .await?;
+    let jobs = common::fetch(&state, 10).await;
+    assert_eq!(jobs.iter().map(|j| j.job.id).collect::<Vec<_>>(), [id]);
+    Ok(())
+}

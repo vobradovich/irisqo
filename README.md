@@ -1,18 +1,53 @@
 # irisqo
 
-`irisqo` is a proof-of-concept service for making asynchronous HTTP requests with delays and retries, similar to `zeplo.io` or `qstash`.
+Self-hosted **HTTP job queue** on Postgres.
+
+A job is an **HTTP request** (method, URL, headers, body). Services enqueue calls to their own endpoints or to others.
+Retries, delays, cron, and concurrency live in **irisqo**, not in an in-process job SDK.
+
+```http
+POST https://irisqo/to/https://orders.internal/api/sync
+Authorization: Bearer …
+Irisqo-Forward-Authorization: Bearer …
+```
+
+Like QStash or Zeplo, but on **your** Postgres, calling **your** services.
+
+**Status:** early product (usable PoC). Core delivery works; items under Planned are in progress.  
+**License:** MIT.
 
 ### Design
-- Postgres Backend, Lock-Free Queries
-- KISS (Keep It Simple, Stupid)
+
+- Postgres Backend
+- Claim with `FOR UPDATE SKIP LOCKED`
+- KISS
+- DRY: outbox in Postgres, not reimplemented in every service
 
 ### Features
-- [x] Persistent queue backed by `Postgres` with lock-free queries.
-- [x] Scalability
-- [x] Retries and Delays
-- [x] OpenTelemetry Tracing
-- [x] Schedules, Intervals, and Cron
-- [x] UI
+
+#### Working now
+
+- [x] Persistent queue on Postgres
+- [x] Multi-instance scaling (heartbeats, lock reaping, graceful shutdown)
+- [x] Retries with backoff, delays, timeouts
+- [x] Schedules: interval and cron
+- [x] Proxy enqueue via `/to/{url}`, idempotency with `_key`
+- [x] Jobs and schedules API (cancel, retry)
+- [x] Server-rendered UI (htmx, Pico CSS, no CDN)
+- [x] OpenTelemetry (traces, metrics, logs over OTLP)
+- [x] SSRF protections, bearer auth, `problem+json` errors
+
+#### Planned
+
+- [ ] Job format v1 (JSON): `POST /api/v1/jobs`, batch, OpenAPI
+- [ ] Transactional enqueue: `enqueue_v1(job jsonb)` in the service transaction ([docs/sql.md](docs/sql.md); format not stable yet)
+- [ ] Flow keys: per-key parallelism, rate, pause; dynamic keys default to N = 1; per-host limit; Queues UI and metrics
+- [ ] Named schedules: upsert `PUT /api/v1/schedules/{name}`, time zones, run now, miss policy; human ids (`bold-lazy-heron`)
+- [ ] Callbacks / `then` as child jobs (`parent_id`)
+- [ ] Signed deliveries (`Irisqo-Signature`, HMAC, key rotation)
+- [ ] Run modes: `irisqo serve` / `irisqo worker`; Docker image, Helm chart
+- [ ] Batches, bulk actions, richer search, optional partitioning for large histories
+
 
 ## API
 
@@ -188,6 +223,7 @@ IRISQO_DB_URL=postgres://user:pass@localhost/irisqo cargo run --release -- --hel
 |---|---|---|
 | `--port` | 8102 | API port |
 | `--workers` | 16 | worker tasks; each holds and runs up to `--prefetch` jobs at once |
+| `--db-url` | — | Postgres URL, `postgres://user:pass@host/db`; better `IRISQO_DB_URL`: a flag shows in `ps`. Required |
 | `--db-connections` | 32 | pool size per instance, keep the sum over instances below Postgres `max_connections` |
 | `--db-schema` | irisqo | Postgres schema of the tables and functions, created when missing; `IRISQO_DB_SCHEMA` |
 | `--interval` | 200 | ms before the first re-poll of an empty queue; the pause doubles with each empty poll and starts over when a claim finds jobs |
@@ -204,7 +240,7 @@ IRISQO_DB_URL=postgres://user:pass@localhost/irisqo cargo run --release -- --hel
 Each option can also be set by an `IRISQO_` variable, in the environment or a `.env` file:
 `--max-timeout` is `IRISQO_MAX_TIMEOUT`, `--env` is `IRISQO_ENV`. The command line wins.
 
-The database URL (`postgres://user:pass@host/db`) is required and has no flag, only `IRISQO_DB_URL`: a flag would show the password in `ps`.
+The database URL is required: set `IRISQO_DB_URL` (better than `--db-url`: a flag shows the password in `ps`).
 
 ### Telemetry
 Traces, metrics and logs go out over OTLP (HTTP/protobuf), configured by the standard env vars:
