@@ -1,7 +1,7 @@
 use std::{fmt::Display, str::FromStr};
 
 use crate::models::ParamError;
-use chrono::{TimeZone, Utc};
+use chrono::{DateTime, Datelike, DurationRound, TimeDelta, Utc};
 use cron::Schedule;
 use serde::{Deserialize, Serialize};
 
@@ -15,44 +15,42 @@ pub enum JobSchedule {
     Cron { cron: String },
 }
 
-/// Latest accepted unix timestamp in seconds: 9999-12-31T23:59:59Z.
-pub const MAX_UNIX_SECS: i64 = 253_402_300_799;
-
 impl JobSchedule {
-    pub fn now_secs() -> i64 {
-        Utc::now().timestamp()
+    /// `true` when `at` is a usable time: after 1970, up to 9999-12-31.
+    pub fn in_range(at: DateTime<Utc>) -> bool {
+        at.timestamp() > 0 && at.year() <= 9999
     }
 
-    /// `true` when `secs` is a usable unix timestamp (`1..=MAX_UNIX_SECS`).
-    pub const fn is_valid_unix_secs(secs: i64) -> bool {
-        secs > 0 && secs <= MAX_UNIX_SECS
+    /// A unix timestamp in seconds as a time, `None` when it is not a usable one.
+    pub fn from_unix_secs(secs: i64) -> Option<DateTime<Utc>> {
+        DateTime::from_timestamp(secs, 0).filter(|at| Self::in_range(*at))
     }
 
-    /// The next run strictly after `after_unix_sec`, `None` when there is none
-    /// before `until_unix_sec` or the timestamps are out of range.
-    pub fn next(&self, after_unix_sec: i64, until_unix_sec: Option<i64>) -> Option<i64> {
-        if !Self::is_valid_unix_secs(after_unix_sec) {
+    /// The next run strictly after `after`, `None` when there is none
+    /// before `until` or the times are out of range.
+    pub fn next(
+        &self,
+        after: DateTime<Utc>,
+        until: Option<DateTime<Utc>>,
+    ) -> Option<DateTime<Utc>> {
+        if !Self::in_range(after) {
             return None;
         }
-        let next = match &self {
+        let next = match self {
             JobSchedule::Interval { interval } => {
-                let interval = i64::from(*interval);
-                if interval == 0 {
+                let interval = TimeDelta::seconds(i64::from(*interval));
+                if interval.is_zero() {
                     return None;
                 }
-                (after_unix_sec - after_unix_sec % interval).checked_add(interval)?
-            }
-            JobSchedule::Cron { cron } => {
-                let dt = Utc.timestamp_opt(after_unix_sec, 0).single()?;
-                Schedule::from_str(cron)
+                // the grid of the interval starts at the unix epoch
+                after
+                    .duration_trunc(interval)
                     .ok()?
-                    .after(&dt)
-                    .next()?
-                    .timestamp()
+                    .checked_add_signed(interval)?
             }
+            JobSchedule::Cron { cron } => Schedule::from_str(cron).ok()?.after(&after).next()?,
         };
-        let in_range = Self::is_valid_unix_secs(next) && until_unix_sec.is_none_or(|u| next <= u);
-        in_range.then_some(next)
+        (Self::in_range(next) && until.is_none_or(|u| next <= u)).then_some(next)
     }
 }
 
@@ -137,20 +135,24 @@ async fn schedule_from_str_interval() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
+fn at(secs: i64) -> DateTime<Utc> {
+    DateTime::from_timestamp(secs, 0).expect("in range")
+}
+
 #[tokio::test]
 async fn schedule_from_str_interval_after() -> anyhow::Result<()> {
     // arrange
     let s = "300";
-    let now_secs = JobSchedule::now_secs();
-    let now_sec_to_5_min: i64 = now_secs - (now_secs % 300);
+    let now = Utc::now();
+    let five_min = TimeDelta::minutes(5);
 
     // act
     let schedule: JobSchedule = s.parse().unwrap();
-    let next = schedule.next(now_secs, None);
+    let next = schedule.next(now, None);
 
     // assert
-    assert!(next.is_some());
-    assert_eq!(now_sec_to_5_min + 300, next.unwrap());
+    assert_eq!(next, Some(now.duration_trunc(five_min).unwrap() + five_min));
     Ok(())
 }
 
@@ -158,11 +160,11 @@ async fn schedule_from_str_interval_after() -> anyhow::Result<()> {
 async fn schedule_from_str_interval_after_until() -> anyhow::Result<()> {
     // arrange
     let s = "300";
-    let now_secs = JobSchedule::now_secs();
+    let now = Utc::now();
 
     // act
     let schedule: JobSchedule = s.parse().unwrap();
-    let next = schedule.next(now_secs, Some(now_secs));
+    let next = schedule.next(now, Some(now));
 
     // assert
     assert!(next.is_none());
@@ -193,17 +195,15 @@ async fn schedule_from_str_cron() -> anyhow::Result<()> {
 async fn schedule_from_str_cron_after() -> anyhow::Result<()> {
     // arrange
     let s = "*/5 * * * *";
-    let now_secs = JobSchedule::now_secs();
-
-    let now_sec_to_5_min: i64 = now_secs - (now_secs % 300);
+    let now = Utc::now();
+    let five_min = TimeDelta::minutes(5);
 
     // act
     let schedule: JobSchedule = s.parse().unwrap();
-    let next = schedule.next(now_secs, None);
+    let next = schedule.next(now, None);
 
     // assert
-    assert!(next.is_some());
-    assert_eq!(now_sec_to_5_min + 300, next.unwrap());
+    assert_eq!(next, Some(now.duration_trunc(five_min).unwrap() + five_min));
     Ok(())
 }
 
@@ -217,13 +217,13 @@ fn schedule_next_out_of_range_none() {
     let interval = JobSchedule::Interval { interval: 60 };
     let cron: JobSchedule = "*/5 * * * *".parse().unwrap();
     for schedule in [&interval, &cron] {
-        assert_eq!(schedule.next(i64::MAX, None), None);
-        assert_eq!(schedule.next(MAX_UNIX_SECS, None), None);
-        assert_eq!(schedule.next(-1, None), None);
+        assert_eq!(schedule.next(DateTime::<Utc>::MAX_UTC, None), None);
+        assert_eq!(schedule.next(at(253_402_300_799), None), None);
+        assert_eq!(schedule.next(at(-1), None), None);
     }
     // a zero interval stored before the validation existed
     assert_eq!(
-        JobSchedule::Interval { interval: 0 }.next(1_000, None),
+        JobSchedule::Interval { interval: 0 }.next(at(1_000), None),
         None
     );
 }
@@ -231,6 +231,6 @@ fn schedule_next_out_of_range_none() {
 #[test]
 fn schedule_next_until() {
     let schedule = JobSchedule::Interval { interval: 60 };
-    assert_eq!(schedule.next(1_000, Some(1_020)), Some(1_020));
-    assert_eq!(schedule.next(1_000, Some(1_019)), None);
+    assert_eq!(schedule.next(at(1_000), Some(at(1_020))), Some(at(1_020)));
+    assert_eq!(schedule.next(at(1_000), Some(at(1_019))), None);
 }

@@ -110,7 +110,7 @@ pub async fn run_enqueued(state: &AppState) -> usize {
 
 /// `processed.status` of a job, `None` while it is not processed.
 pub async fn processed_status(pool: &PgPool, job_id: i64) -> Option<String> {
-    sqlx::query_scalar("SELECT status::text FROM processed WHERE id = $1")
+    sqlx::query_scalar("SELECT status FROM processed WHERE id = $1")
         .bind(job_id)
         .fetch_optional(pool)
         .await
@@ -142,7 +142,7 @@ pub fn header(response: &hyper::Response<hyper::body::Incoming>, name: &str) -> 
 
 /// Makes every scheduled job due and moves it to `enqueued`.
 pub async fn enqueue_all_scheduled(state: &AppState) -> u64 {
-    sqlx::query("UPDATE scheduled SET at = 1")
+    sqlx::query("UPDATE scheduled SET at = to_timestamp(1)")
         .execute(&state.pool)
         .await
         .expect("make scheduled due");
@@ -158,11 +158,11 @@ pub async fn count(pool: &PgPool, sql: &'static str) -> i64 {
         .expect("count")
 }
 
-/// Inserts `n` no-protocol jobs straight into `enqueued`; returns their ids.
+/// Inserts `n` no-sink jobs straight into `enqueued`; returns their ids.
 pub async fn insert_enqueued(pool: &PgPool, n: i32) -> Vec<i64> {
     sqlx::query_scalar(
         "WITH a AS (
-            INSERT INTO jobs(meta) SELECT '{\"protocol\": \"none\", \"retry\": \"none\", \"timeout\": 1000}'::jsonb
+            INSERT INTO jobs(meta) SELECT '{\"sink\": \"none\", \"retry\": \"none\", \"timeout\": 1000}'::jsonb
             FROM generate_series(1, $1) RETURNING id
         )
         INSERT INTO enqueued(id) SELECT id FROM a RETURNING id",
@@ -175,7 +175,7 @@ pub async fn insert_enqueued(pool: &PgPool, n: i32) -> Vec<i64> {
 
 /// Statuses of a job's history, oldest first.
 pub async fn history(pool: &PgPool, job_id: i64) -> Vec<(String, Option<String>)> {
-    sqlx::query_as("SELECT status::text, message FROM history WHERE id = $1 ORDER BY at, status")
+    sqlx::query_as("SELECT kind, message FROM history WHERE id = $1 ORDER BY seq")
         .bind(job_id)
         .fetch_all(pool)
         .await

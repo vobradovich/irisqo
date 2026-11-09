@@ -59,7 +59,7 @@ async fn bench(
     const INSERT: &str = "
     WITH a AS (
         INSERT INTO jobs(meta, headers, body)
-        SELECT jsonb_build_object('retry', 'none', 'timeout', 10000, 'protocol', 'http', 'method', 'GET', 'url', $1::text),
+        SELECT jsonb_build_object('retry', 'none', 'timeout', 10000, 'sink', 'http', 'method', 'GET', 'url', $1::text),
                '{}'::jsonb, NULL
         FROM generate_series(1, $2)
         RETURNING id

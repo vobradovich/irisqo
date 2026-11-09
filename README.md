@@ -1,18 +1,53 @@
 # irisqo
 
-`irisqo` is a proof-of-concept service for making asynchronous HTTP requests with delays and retries, similar to `zeplo.io` or `qstash`.
+Self-hosted **HTTP job queue** on Postgres.
+
+A job is an **HTTP request** (method, URL, headers, body). Services enqueue calls to their own endpoints or to others.
+Retries, delays, cron, and concurrency live in **irisqo**, not in an in-process job SDK.
+
+```http
+POST https://irisqo/to/https://orders.internal/api/sync
+Authorization: Bearer …
+Irisqo-Forward-Authorization: Bearer …
+```
+
+Like QStash or Zeplo, but on **your** Postgres, calling **your** services.
+
+**Status:** early product (usable PoC). Core delivery works; items under Planned are in progress.  
+**License:** MIT.
 
 ### Design
-- Postgres Backend, Lock-Free Queries
-- KISS (Keep It Simple, Stupid)
+
+- Postgres Backend
+- Claim with `FOR UPDATE SKIP LOCKED`
+- KISS
+- DRY: outbox in Postgres, not reimplemented in every service
 
 ### Features
-- [x] Persistent queue backed by `Postgres` with lock-free queries.
-- [x] Scalability
-- [x] Retries and Delays
-- [x] OpenTelemetry Tracing
-- [x] Schedules, Intervals, and Cron
-- [x] UI
+
+#### Working now
+
+- [x] Persistent queue on Postgres
+- [x] Multi-instance scaling (heartbeats, lock reaping, graceful shutdown)
+- [x] Retries with backoff, delays, timeouts
+- [x] Schedules: interval and cron
+- [x] Proxy enqueue via `/to/{url}`, idempotency with `_key`
+- [x] Jobs and schedules API (cancel, retry)
+- [x] Server-rendered UI (htmx, Pico CSS, no CDN)
+- [x] OpenTelemetry (traces, metrics, logs over OTLP)
+- [x] SSRF protections, bearer auth, `problem+json` errors
+
+#### Planned
+
+- [ ] Job format v1 (JSON): `POST /api/v1/jobs`, batch, OpenAPI
+- [ ] Transactional enqueue: `enqueue_v1(job jsonb)` in the service transaction ([docs/sql.md](docs/sql.md); format not stable yet)
+- [ ] Flow keys: per-key parallelism, rate, pause; dynamic keys default to N = 1; per-host limit; Queues UI and metrics
+- [ ] Named schedules: upsert `PUT /api/v1/schedules/{name}`, time zones, run now, miss policy; human ids (`bold-lazy-heron`)
+- [ ] Callbacks / `then` as child jobs (`parent_id`)
+- [ ] Signed deliveries (`Irisqo-Signature`, HMAC, key rotation)
+- [ ] Run modes: `irisqo serve` / `irisqo worker`; Docker image, Helm chart
+- [ ] Batches, bulk actions, richer search, optional partitioning for large histories
+
 
 ## API
 
@@ -28,7 +63,7 @@ GET {{host}}/to/https://postman-echo.com/get
 Response Headers
 - `job-id` - this is the ID of the request job
 - `schedule-id` - ID of the new schedule
-- `external-id` - optional external ID of the request from `_id` query parameter.
+- `key` - optional idempotency key of the request from `_key` query parameter.
 
 ### Headers
 The target gets only the body headers (`Content-Type`, `Content-Encoding`, `Content-Language`) and the
@@ -169,7 +204,7 @@ behind a proxy). A page of another site cannot make a user's browser post to it 
 </table>
 
 - **Jobs**: the queue stats and the jobs by state (scheduled, retrying, enqueued, processing,
-  completed, failed, cancelled), searchable by id, external id or URL, refreshed every 2 s; a row
+  completed, failed, cancelled), searchable by id, key or URL, refreshed every 2 s; a row
   opens its history in place.
 - **Job**: the request, the result, the history; retry, cancel, delete. With `--trace-url`
   (e.g. `http://localhost:5080/web/traces?trace_id={trace_id}`) the result links to its trace.
@@ -181,16 +216,19 @@ behind a proxy). A page of another site cannot make a user's browser post to it 
 ## Running
 
 ```bash
-DATABASE_URL=postgres://user:pass@localhost/irisqo cargo run --release -- --help
+IRISQO_DB_URL=postgres://user:pass@localhost/irisqo cargo run --release -- --help
 ```
 
 | Option | Default | |
 |---|---|---|
 | `--port` | 8102 | API port |
-| `--concurrency` | 64 | jobs in flight across all cores |
+| `--workers` | 16 | worker tasks; each holds and runs up to `--prefetch` jobs at once |
+| `--db-url` | — | Postgres URL, `postgres://user:pass@host/db`; better `IRISQO_DB_URL`: a flag shows in `ps`. Required |
 | `--db-connections` | 32 | pool size per instance, keep the sum over instances below Postgres `max_connections` |
-| `--interval` | 1000 | ms between queue polls when the queue is empty |
-| `--prefetch` | 8 | jobs assigned per fetch: `max(prefetch, concurrency / 4)` |
+| `--db-schema` | irisqo | Postgres schema of the tables and functions, created when missing; `IRISQO_DB_SCHEMA` |
+| `--interval` | 200 | ms before the first re-poll of an empty queue; the pause doubles with each empty poll and starts over when a claim finds jobs |
+| `--max-interval` | 1000 | ms, longest pause between polls of an empty queue |
+| `--prefetch` | 4 | jobs a worker holds and runs at once; in flight in all: `workers x prefetch` (64 by default), one fetch takes that many |
 | `--timeout` / `--max-timeout` | 3000 / 300000 | default and max request timeout, ms |
 | `--retention-hours` | 168 | processed jobs older than this are deleted, `0` keeps them |
 | `--trace-url` | — | UI link to a trace, `{trace_id}` is replaced |
@@ -201,6 +239,8 @@ DATABASE_URL=postgres://user:pass@localhost/irisqo cargo run --release -- --help
 
 Each option can also be set by an `IRISQO_` variable, in the environment or a `.env` file:
 `--max-timeout` is `IRISQO_MAX_TIMEOUT`, `--env` is `IRISQO_ENV`. The command line wins.
+
+The database URL is required: set `IRISQO_DB_URL` (better than `--db-url`: a flag shows the password in `ps`).
 
 ### Telemetry
 Traces, metrics and logs go out over OTLP (HTTP/protobuf), configured by the standard env vars:

@@ -153,6 +153,16 @@ impl JobResult {
         }
     }
 
+    /// What the history says about the attempt: the error, or the HTTP status.
+    pub fn history_message(&self) -> Option<String> {
+        match &self.meta.result {
+            JobResultType::Error { error } => Some(error.clone()),
+            JobResultType::Timeout => Some("timeout".into()),
+            JobResultType::Http(meta) => Some(format!("HTTP {}", meta.status_code.as_u16())),
+            JobResultType::None | JobResultType::Cancelled => None,
+        }
+    }
+
     /// `Retry-After` of the response in seconds from now.
     pub fn retry_after(&self, now_secs: i64) -> Option<u32> {
         let headers = self.headers.as_ref()?;

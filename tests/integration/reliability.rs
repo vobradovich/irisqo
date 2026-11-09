@@ -26,18 +26,19 @@ async fn reaper_releases_stuck_lock_and_rejects_late_result(pool: PgPool) -> any
         0
     );
     // stuck for an hour: released with retry + 1
-    sqlx::query("UPDATE enqueued SET lock_at = now() - interval '1 hour'")
+    sqlx::query("UPDATE claimed SET at = now() - interval '1 hour'")
         .execute(&pool)
         .await?;
     assert_eq!(
         db::jobqueue::reap_expired_locks(&pool, lease, &state.instance_id, 100).await?,
         1
     );
-    let (retry, locked): (i32, bool) =
-        sqlx::query_as("SELECT retry, lock_at IS NOT NULL FROM enqueued WHERE id = $1")
-            .bind(id)
-            .fetch_one(&pool)
-            .await?;
+    let (retry, locked): (i32, bool) = sqlx::query_as(
+        "SELECT retry, EXISTS (SELECT 1 FROM claimed WHERE id = $1) FROM enqueued WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_one(&pool)
+    .await?;
     assert_eq!((retry, locked), (1, false));
     let (status, message) = common::history(&pool, id).await.pop().expect("history");
     assert_eq!(status, "retried");
@@ -64,11 +65,11 @@ async fn expired_instance_is_killed_with_history(pool: PgPool) -> anyhow::Result
     let state = common::state(pool.clone());
     let id = common::insert_enqueued(&pool, 1).await[0];
     sqlx::query(
-        "INSERT INTO instances(instance_id, last_at) VALUES ('old', now() - interval '1 hour')",
+        "INSERT INTO instances(instance_id, roles, version, seen_at) VALUES ('old', '{worker}', '1', now() - interval '1 hour')",
     )
     .execute(&pool)
     .await?;
-    sqlx::query("UPDATE enqueued SET instance_id = 'old', lock_at = now()")
+    sqlx::query("WITH a AS (DELETE FROM enqueued RETURNING id, retry) INSERT INTO claimed(id, retry, instance_id) SELECT id, retry, 'old' FROM a")
         .execute(&pool)
         .await?;
 
@@ -76,11 +77,7 @@ async fn expired_instance_is_killed_with_history(pool: PgPool) -> anyhow::Result
         db::instances::kill_expired(&pool, Duration::from_secs(30), &state.instance_id).await?;
     assert_eq!(killed, 1);
     assert_eq!(
-        common::count(
-            &pool,
-            "SELECT count(*) FROM enqueued WHERE lock_at IS NULL AND retry = 1"
-        )
-        .await,
+        common::count(&pool, "SELECT count(*) FROM enqueued WHERE retry = 1").await,
         1
     );
     assert_eq!(
@@ -99,15 +96,11 @@ async fn shutdown_release_is_in_history(pool: PgPool) -> anyhow::Result<()> {
     db::instances::kill(&pool, &state.instance_id).await?;
 
     assert_eq!(
-        common::count(
-            &pool,
-            "SELECT count(*) FROM enqueued WHERE lock_at IS NULL AND retry = 0"
-        )
-        .await,
+        common::count(&pool, "SELECT count(*) FROM enqueued WHERE retry = 0").await,
         1
     );
     let (status, message) = common::history(&pool, id).await.pop().expect("history");
-    assert_eq!(status, "enqueued");
+    assert_eq!(status, "released");
     assert_eq!(message.as_deref(), Some("released on shutdown"));
     Ok(())
 }
@@ -116,7 +109,7 @@ async fn shutdown_release_is_in_history(pool: PgPool) -> anyhow::Result<()> {
 async fn scheduler_enqueues_every_due_job(pool: PgPool) -> anyhow::Result<()> {
     let state = common::state(pool.clone());
     common::insert_enqueued(&pool, 2500).await;
-    sqlx::query("WITH a AS (DELETE FROM enqueued RETURNING id) INSERT INTO scheduled(id, at) SELECT id, 1 FROM a")
+    sqlx::query("WITH a AS (DELETE FROM enqueued RETURNING id) INSERT INTO scheduled(id, at) SELECT id, to_timestamp(1) FROM a")
         .execute(&pool)
         .await?;
     let options = state.scheduler_options.as_ref().expect("scheduler options");
@@ -151,7 +144,7 @@ async fn retention_purges_old_data_only(pool: PgPool) -> anyhow::Result<()> {
     let response = common::create(&state, addr, &format!("http://{addr}/echo?_interval=60")).await;
     assert_eq!(response.status(), StatusCode::CREATED);
     common::enqueue_all_scheduled(&state).await;
-    sqlx::query("UPDATE schedules SET inactive = true")
+    sqlx::query("UPDATE schedules SET paused = true")
         .execute(&pool)
         .await?;
     common::run_enqueued(&state).await;
@@ -160,7 +153,7 @@ async fn retention_purges_old_data_only(pool: PgPool) -> anyhow::Result<()> {
         .await?;
     let pending = common::insert_enqueued(&pool, 1).await[0];
     // a long dead instance and a live one
-    sqlx::query("INSERT INTO instances(instance_id, last_at, status) VALUES ('dead', now() - interval '30 days', 'dead'), ('live', now(), 'live')")
+    sqlx::query("INSERT INTO instances(instance_id, roles, version, seen_at, stopped_at) VALUES ('dead', '{worker}', '1', now() - interval '30 days', now() - interval '30 days'), ('live', '{worker}', '1', now(), NULL)")
         .execute(&pool)
         .await?;
 
@@ -208,7 +201,7 @@ async fn run_echo(state: &Arc<irisqo::AppState>, query: &str) -> i64 {
 
 async fn scheduled_in(pool: &PgPool, id: i64) -> Option<(i32, i64)> {
     sqlx::query_as(
-        "SELECT retry, at - extract(epoch from now())::bigint FROM scheduled WHERE id = $1",
+        "SELECT retry, (extract(epoch from at) - extract(epoch from now()))::bigint FROM scheduled WHERE id = $1",
     )
     .bind(id)
     .fetch_optional(pool)
@@ -276,13 +269,14 @@ async fn results_are_written_in_one_batch(pool: PgPool) -> anyhow::Result<()> {
     assert_eq!(
         common::count(
             &pool,
-            "SELECT count(*) FROM history WHERE status = 'completed'"
+            "SELECT count(*) FROM history WHERE kind = 'completed'"
         )
         .await,
         299
     );
+    // the stale attempt is still claimed
     assert_eq!(
-        common::count(&pool, "SELECT count(*) FROM enqueued").await,
+        common::count(&pool, "SELECT count(*) FROM claimed").await,
         1
     );
     Ok(())
@@ -429,5 +423,232 @@ async fn running_job_of_deleted_schedule_is_not_cloned(pool: PgPool) -> anyhow::
         1
     );
     assert_eq!(common::count(&pool, "SELECT count(*) FROM jobs").await, 1);
+    Ok(())
+}
+
+async fn enqueue_in_queue(pool: &PgPool, queue: &str) -> i64 {
+    sqlx::query_scalar(
+        "SELECT enqueue_v1(jsonb_build_object('url', 'http://localhost/x', 'queue', $1::text))",
+    )
+    .bind(queue)
+    .fetch_one(pool)
+    .await
+    .expect("enqueue_v1")
+}
+
+#[sqlx::test(migrations = "./sql/migrations")]
+async fn an_unreadable_job_fails_alone(pool: PgPool) -> anyhow::Result<()> {
+    let state = common::state(pool.clone());
+    let good = enqueue_in_queue(&pool, "other").await;
+    let bad: i64 = sqlx::query_scalar("SELECT enqueue_v1('{\"url\": \"http://localhost/x\"}')")
+        .fetch_one(&pool)
+        .await?;
+    // a URL the worker cannot read
+    sqlx::query(
+        "UPDATE jobs SET meta = jsonb_set(meta, '{url}', '\"http://localhost/a b\"') WHERE id = $1",
+    )
+    .bind(bad)
+    .execute(&pool)
+    .await?;
+
+    let jobs = common::fetch(&state, 10).await;
+    let ids: Vec<i64> = jobs.iter().map(|j| j.job.id).collect();
+    assert_eq!(ids, [good]);
+    assert_eq!(
+        common::processed_status(&pool, bad).await.as_deref(),
+        Some("failed")
+    );
+    Ok(())
+}
+
+#[sqlx::test(migrations = "./sql/migrations")]
+async fn resume_does_not_clone_a_running_run(pool: PgPool) -> anyhow::Result<()> {
+    let state = common::state(pool.clone());
+    let addr = common::spawn_app(&state).await;
+    let target = format!("http://{addr}/echo?_interval=3600");
+    let response = common::create(&state, addr, &target).await;
+    let schedule_id = common::header(&response, "schedule-id").expect("schedule-id");
+    common::enqueue_all_scheduled(&state).await;
+    assert_eq!(
+        common::fetch(&state, 10).await.len(),
+        1,
+        "the run is in flight"
+    );
+
+    let id = &state.instance_id;
+    irisqo::features::schedules::pause(&pool, &schedule_id, id).await?;
+    irisqo::features::schedules::resume(&pool, &schedule_id, chrono::Utc::now(), id).await?;
+    let runs: i64 = sqlx::query_scalar("SELECT count(*) FROM jobs WHERE schedule_id = $1")
+        .bind(&schedule_id)
+        .fetch_one(&pool)
+        .await?;
+    assert_eq!(runs, 1);
+    Ok(())
+}
+
+#[sqlx::test(migrations = "./sql/migrations")]
+async fn a_delayed_retry_keeps_its_place_in_an_ordered_queue(pool: PgPool) -> anyhow::Result<()> {
+    let state = common::state(pool.clone());
+    let a = enqueue_in_queue(&pool, "q").await;
+    enqueue_in_queue(&pool, "q").await;
+    let jobs = common::fetch(&state, 10).await;
+    let ids: Vec<i64> = jobs.iter().map(|j| j.job.id).collect();
+    assert_eq!(ids, [a], "one at a time");
+
+    let entry = irisqo::models::JobEntry { id: a, retry: 0 };
+    let at = chrono::Utc::now() + chrono::Duration::seconds(60);
+    db::jobqueue::retry(&pool, entry, at, &state.instance_id, "again").await?;
+    let next = common::fetch(&state, 10).await;
+    assert!(next.is_empty(), "the next job waits for the retry");
+    Ok(())
+}
+
+#[sqlx::test(migrations = "./sql/migrations")]
+async fn a_queue_gives_its_jobs_in_id_order(pool: PgPool) -> anyhow::Result<()> {
+    let state = common::state(pool.clone());
+    sqlx::query("INSERT INTO queues(queue_id, parallelism) VALUES ('q', 2)")
+        .execute(&pool)
+        .await?;
+    let older = enqueue_in_queue(&pool, "q").await;
+    enqueue_in_queue(&pool, "q").await;
+    // the older job was retried: still first in its queue
+    sqlx::query("UPDATE enqueued SET retry = 1 WHERE id = $1")
+        .bind(older)
+        .execute(&pool)
+        .await?;
+    let jobs = common::fetch(&state, 1).await;
+    let ids: Vec<i64> = jobs.iter().map(|j| j.job.id).collect();
+    assert_eq!(ids, [older]);
+    Ok(())
+}
+
+#[sqlx::test(migrations = "./sql/migrations")]
+async fn enqueue_v1_checks_the_form_of_key_and_queue(pool: PgPool) -> anyhow::Result<()> {
+    for (field, bad) in [("key", "two\nlines"), ("queue", "no spaces")] {
+        let job = serde_json::json!({ "url": "http://localhost/x", field: bad }).to_string();
+        let err = sqlx::query_scalar::<_, i64>("SELECT enqueue_v1($1::jsonb)")
+            .bind(job)
+            .fetch_one(&pool)
+            .await
+            .expect_err("rejected");
+        assert!(
+            err.to_string().contains(&format!("{field} must be")),
+            "{err}"
+        );
+    }
+    sqlx::query_scalar::<_, i64>(
+        "SELECT enqueue_v1('{\"url\": \"http://localhost/x\", \"key\": \"Order 1/abc=\", \"queue\": \"q:1\"}')",
+    )
+    .fetch_one(&pool)
+    .await?;
+    Ok(())
+}
+
+#[sqlx::test(migrations = "./sql/migrations")]
+async fn a_released_or_requeued_job_keeps_its_priority_and_queue(
+    pool: PgPool,
+) -> anyhow::Result<()> {
+    let state = common::state(pool.clone());
+    let id = &state.instance_id;
+    let urgent: i64 = sqlx::query_scalar(
+        "SELECT enqueue_v1('{\"url\": \"http://localhost/x\", \"priority\": 5}')",
+    )
+    .fetch_one(&pool)
+    .await?;
+    let queued = enqueue_in_queue(&pool, "q").await;
+    let sql = "SELECT id, queue, priority FROM enqueued ORDER BY id";
+    let want = vec![(urgent, None, 5_i16), (queued, Some("q".to_owned()), 0)];
+
+    // claim, then release on shutdown
+    assert_eq!(common::fetch(&state, 10).await.len(), 2);
+    db::instances::kill(&pool, id).await?;
+    assert_eq!(
+        sqlx::query_as::<_, (i64, Option<String>, i16)>(sql)
+            .fetch_all(&pool)
+            .await?,
+        want
+    );
+
+    // claim, then an immediate retry of one job
+    let jobs = common::fetch(&state, 10).await;
+    let entry = irisqo::models::JobEntry {
+        id: urgent,
+        retry: jobs[0].retry,
+    };
+    assert_eq!(db::jobqueue::unlock(&pool, entry, id, "again").await?, 1);
+    let rows = sqlx::query_as::<_, (i64, Option<String>, i16)>(sql)
+        .fetch_all(&pool)
+        .await?;
+    assert_eq!(rows, vec![want[0].clone()]);
+
+    // processed, then run once more by a user
+    sqlx::query("WITH a AS (DELETE FROM claimed RETURNING id, retry) INSERT INTO processed(id, retry, instance_id, status) SELECT id, retry, 'x', 'failed' FROM a")
+        .execute(&pool)
+        .await?;
+    for job in [urgent, queued] {
+        db::jobqueue::requeue_job(&pool, job, id).await?;
+    }
+    let rows = sqlx::query_as::<_, (i64, Option<String>, i16)>(sql)
+        .fetch_all(&pool)
+        .await?;
+    assert_eq!(rows, want);
+    Ok(())
+}
+
+#[sqlx::test(migrations = "./sql/migrations")]
+async fn a_schedule_with_a_running_run_is_not_idle(pool: PgPool) -> anyhow::Result<()> {
+    let state = common::state(pool.clone());
+    let addr = common::spawn_app(&state).await;
+    let target = format!("http://{addr}/echo?_interval=3600");
+    common::create(&state, addr, &target).await;
+    common::enqueue_all_scheduled(&state).await;
+    assert_eq!(
+        common::fetch(&state, 10).await.len(),
+        1,
+        "the run is in flight"
+    );
+
+    let views = irisqo::features::schedules::list_view(&pool, 10).await?;
+    assert_eq!(views.len(), 1);
+    assert!(views[0].pending);
+    Ok(())
+}
+
+/// The tests above run in `public` (`#[sqlx::test]` migrates there). This one starts the app
+/// the way `main` does: its own schema, created and migrated by `AppState::new`.
+#[sqlx::test(migrations = false)]
+async fn the_app_creates_and_uses_its_own_schema(pool: PgPool) -> anyhow::Result<()> {
+    let database: String = sqlx::query_scalar("SELECT current_database()")
+        .fetch_one(&pool)
+        .await?;
+    let mut url = url::Url::parse(&std::env::var("DATABASE_URL")?)?;
+    url.set_path(&database);
+    let options = irisqo::models::Options::from_vec(vec![
+        "--db-url".into(),
+        url.to_string().into(),
+        "--db-schema".into(),
+        "mine".into(),
+        "--env".into(),
+        "development".into(),
+    ])
+    .expect("options");
+    let state = irisqo::AppState::new(&options).await;
+
+    let (inside, outside): (i64, i64) = sqlx::query_as(
+        "SELECT count(*) FILTER (WHERE table_schema = 'mine'),
+                count(*) FILTER (WHERE table_schema = 'public')
+         FROM information_schema.tables",
+    )
+    .fetch_one(&pool)
+    .await?;
+    assert!(inside >= 10, "the tables are in the schema: {inside}");
+    assert_eq!(outside, 0, "nothing in public");
+
+    // the functions find the tables of their schema
+    let id: i64 = sqlx::query_scalar("SELECT enqueue_v1('{\"url\": \"http://localhost/x\"}')")
+        .fetch_one(&state.pool)
+        .await?;
+    let jobs = common::fetch(&state, 10).await;
+    assert_eq!(jobs.iter().map(|j| j.job.id).collect::<Vec<_>>(), [id]);
     Ok(())
 }

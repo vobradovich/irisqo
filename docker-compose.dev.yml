@@ -3,7 +3,7 @@
 # (root@example.com / Complexpass#123).
 #
 #   docker compose -f docker-compose.dev.yml up -d
-#   export DATABASE_URL=postgres://postgres:postgres@localhost/postgres
+#   export IRISQO_DB_URL=postgres://postgres:postgres@localhost/postgres
 #   export IRISQO_ENV=development
 #   export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:5080/api/default
 #   export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Basic%20cm9vdEBleGFtcGxlLmNvbTpDb21wbGV4cGFzcyMxMjM="

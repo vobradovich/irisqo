@@ -45,10 +45,12 @@ pub struct SchedulerOptions {
 
 #[derive(Debug)]
 pub struct WorkerOptions {
-    /// Jobs in flight across all cores.
-    pub concurrency: usize,
+    /// Worker tasks; `workers * prefetch` jobs are in flight in all.
+    pub workers: usize,
+    /// First pause before polling an empty queue again; it doubles up to `max_poll_interval`.
     pub poll_interval: Duration,
-    /// Jobs assigned by one fetch: `max(prefetch, concurrency / 4)`.
+    pub max_poll_interval: Duration,
+    /// Jobs a worker holds and runs at once (and claims in one fetch).
     pub prefetch: u16,
     pub timeout: u32,
     /// Upper bound for the per-job `_timeout`, in milliseconds.
@@ -62,6 +64,7 @@ pub struct WorkerOptions {
 /// Extra time on top of `max_timeout` before a lock counts as stuck.
 const LOCK_GRACE: Duration = Duration::from_secs(60);
 const DEFAULT_DB_CONNECTIONS: u32 = 32;
+const DEFAULT_SCHEMA: &str = "irisqo";
 
 // Generates `pub struct Options`; `Options::from_vec(vec![])` gives the defaults (tests).
 xflags::xflags! {
@@ -69,13 +72,20 @@ xflags::xflags! {
     cmd options {
         /// API Port number. Default: 8102
         optional -p,--port n: u16
+        /// Postgres connection URL, postgres://user:pass@host/db (better set by IRISQO_DB_URL: a flag
+        /// shows in ps). Required.
+        optional --db-url url: String
         /// Max db connections (keep below the Postgres max_connections). Default: 32
         optional --db-connections n: u32
-        /// Jobs in flight across all cores. Default: 64
-        optional --concurrency n: usize
-        /// Worker Poll Interval in milliseconds. Default: 1000
+        /// Postgres schema of the tables and functions, created when missing. Default: irisqo
+        optional --db-schema name: String
+        /// Worker tasks; each holds and runs up to --prefetch jobs at once. Default: 16
+        optional -w,--workers n: usize
+        /// Pause before the first re-poll of an empty queue, in milliseconds; it doubles while the queue stays empty. Default: 200
         optional --interval n: u64
-        /// Prefetch count. Default: 8
+        /// Longest pause between polls of an empty queue, in milliseconds. Default: 1000
+        optional --max-interval n: u64
+        /// Jobs a worker holds and runs at once; in flight in all: workers x prefetch. Default: 4
         optional --prefetch n: u16
         /// Default job timeout in milliseconds. Default: 3000
         optional --timeout n: u32
@@ -141,9 +151,12 @@ impl Options {
         // every option, so that a new one cannot miss its variable
         let Options {
             port,
+            db_url,
             db_connections,
-            concurrency,
+            db_schema,
+            workers,
             interval,
+            max_interval,
             prefetch,
             timeout,
             max_timeout,
@@ -155,9 +168,12 @@ impl Options {
             api_token,
         } = self;
         take(port, "IRISQO_PORT", &var)?;
+        take(db_url, "IRISQO_DB_URL", &var)?;
         take(db_connections, "IRISQO_DB_CONNECTIONS", &var)?;
-        take(concurrency, "IRISQO_CONCURRENCY", &var)?;
+        take(db_schema, "IRISQO_DB_SCHEMA", &var)?;
+        take(workers, "IRISQO_WORKERS", &var)?;
         take(interval, "IRISQO_INTERVAL", &var)?;
+        take(max_interval, "IRISQO_MAX_INTERVAL", &var)?;
         take(prefetch, "IRISQO_PREFETCH", &var)?;
         take(timeout, "IRISQO_TIMEOUT", &var)?;
         take(max_timeout, "IRISQO_MAX_TIMEOUT", &var)?;
@@ -167,6 +183,9 @@ impl Options {
         take(env, "IRISQO_ENV", &var)?;
         take(allow_targets, "IRISQO_ALLOW_TARGETS", &var)?;
         take(api_token, "IRISQO_API_TOKEN", &var)?;
+        if let Some(schema) = db_schema {
+            check_schema(schema)?;
+        }
         Ok(())
     }
 
@@ -176,14 +195,22 @@ impl Options {
 }
 
 impl AppState {
-    /// Connects to `DATABASE_URL` and runs the migrations.
+    /// Connects to `--db-url` (`IRISQO_DB_URL`), creates the schema (`--schema`, `irisqo` by default) and
+    /// runs the migrations in it.
     #[must_use]
     pub async fn new(options: &Options) -> Arc<AppState> {
         let instance_id = new_instance_id();
-        let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
-        let conn = PgConnectOptions::from_str(&db_url)
-            .expect("Unable to parse DATABASE_URL")
-            .application_name(&instance_id);
+        let schema = options.db_schema.as_deref().unwrap_or(DEFAULT_SCHEMA);
+        check_schema(schema).expect("invalid schema");
+        let db_url = options
+            .db_url
+            .as_deref()
+            .expect("--db-url or IRISQO_DB_URL must be set");
+        let conn = PgConnectOptions::from_str(db_url)
+            .expect("Unable to parse the database URL")
+            .application_name(&instance_id)
+            // every statement and every function sees the tables of the schema
+            .options([("search_path", schema)]);
 
         let db_connections = options.db_connections.unwrap_or(DEFAULT_DB_CONNECTIONS);
         let pool = PgPoolOptions::new()
@@ -193,10 +220,18 @@ impl AppState {
             .await
             .expect("Unable to connect to Postgres");
 
+        // the migrations and their table `_sqlx_migrations` go to the first schema of the path
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "CREATE SCHEMA IF NOT EXISTS \"{schema}\""
+        )))
+        .execute(&pool)
+        .await
+        .expect("Unable to create the schema");
         sqlx::migrate!("./sql/migrations")
             .run(&pool)
             .await
             .expect("Unable to run migrations");
+        warn_on_clock_skew(&pool).await;
 
         Self::with_pool(pool, instance_id, options)
     }
@@ -231,9 +266,10 @@ impl AppState {
                 retention_hours: options.retention_hours.unwrap_or(7 * 24),
             }),
             worker_options: WorkerOptions {
-                concurrency: options.concurrency.unwrap_or(64).max(1),
-                poll_interval: Duration::from_millis(options.interval.unwrap_or(1000)),
-                prefetch: options.prefetch.unwrap_or(8),
+                workers: options.workers.unwrap_or(16).max(1),
+                poll_interval: Duration::from_millis(options.interval.unwrap_or(200)),
+                max_poll_interval: Duration::from_millis(options.max_interval.unwrap_or(1000)),
+                prefetch: options.prefetch.unwrap_or(4),
                 timeout: options.timeout.unwrap_or(3000).min(max_timeout),
                 max_timeout,
                 shutdown_timeout: Duration::from_secs(options.shutdown_timeout.unwrap_or(20)),
@@ -249,11 +285,76 @@ impl AppState {
     }
 }
 
+/// A schema name that is safe to quote into SQL: lower case letters, digits and `_`.
+fn check_schema(name: &str) -> Result<(), String> {
+    let mut chars = name.chars();
+    let valid = name.len() <= 63
+        && chars
+            .next()
+            .is_some_and(|c| c.is_ascii_lowercase() || c == '_')
+        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+    if valid && !name.starts_with("pg_") {
+        Ok(())
+    } else {
+        Err(format!(
+            "--db-schema {name:?}: use up to 63 characters of a-z, 0-9 and _, starting with a letter or _, not pg_*"
+        ))
+    }
+}
+
+#[test]
+fn schema_names() {
+    for ok in ["irisqo", "_q", "queue_2", "a"] {
+        assert!(check_schema(ok).is_ok(), "{ok}");
+    }
+    for bad in [
+        "",
+        "Irisqo",
+        "2q",
+        "a-b",
+        "a\"b",
+        "pg_catalog",
+        "public;drop",
+    ] {
+        assert!(check_schema(bad).is_err(), "{bad}");
+    }
+}
+
+/// Job times come from the clock of the service but are compared with `now()` of the database:
+/// warns once at the start when the clocks differ.
+async fn warn_on_clock_skew(pool: &Pool<Postgres>) {
+    const MAX_SKEW: chrono::TimeDelta = chrono::TimeDelta::seconds(1);
+    let Ok(db_now) = sqlx::query_scalar::<_, chrono::DateTime<chrono::Utc>>("SELECT now()")
+        .fetch_one(pool)
+        .await
+    else {
+        return;
+    };
+    let skew = db_now - chrono::Utc::now();
+    if skew.abs() > MAX_SKEW {
+        tracing::warn!(
+            "the clock of the database differs from this host by {} s: delays and schedules are off by that much",
+            skew.num_seconds()
+        );
+    }
+}
+
 /// `hostname:ulid`, also used as the Postgres `application_name`.
 #[must_use]
 pub fn new_instance_id() -> String {
-    let hostname = whoami::hostname().unwrap_or_else(|_| "unknown".into());
-    format!("{}:{}", hostname, ulid::Ulid::generate())
+    // a valid name: lower case, a-z 0-9 . _ : -
+    let hostname = whoami::hostname()
+        .unwrap_or_else(|_| "unknown".into())
+        .to_lowercase()
+        .replace(
+            |c: char| !(c.is_ascii_alphanumeric() || ".-_".contains(c)),
+            "-",
+        );
+    format!(
+        "{}:{}",
+        hostname.trim_start_matches(['.', '_', '-']),
+        ulid::Ulid::generate().to_string().to_lowercase()
+    )
 }
 
 #[test]
@@ -269,7 +370,7 @@ fn options_fall_back_to_the_environment() {
     assert_eq!(options.port, Some(8000), "the command line wins");
     assert_eq!(options.max_timeout, Some(1000));
     assert_eq!(options.environment(), Environment::Development);
-    assert_eq!(options.concurrency, None);
+    assert_eq!(options.workers, None);
 
     let mut bad = Options::from_vec(vec![]).expect("options");
     let err = bad

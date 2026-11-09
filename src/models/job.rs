@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use bytes::Bytes;
+use chrono::{DateTime, Utc};
 use http_body_util::Full;
 use hyper::HeaderMap;
 #[cfg(test)]
@@ -22,7 +23,7 @@ pub struct JobRow {
     pub headers: Option<HashMap<String, String>>,
     pub body: Option<Vec<u8>>,
     pub schedule_id: Option<String>,
-    pub external_id: Option<String>,
+    pub key: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, sqlx::FromRow)]
@@ -43,23 +44,23 @@ pub struct JobCreate {
     pub meta: JobMeta,
     pub headers: Option<HashMap<String, String>>,
     pub body: Bytes,
-    pub at: Option<i64>,
+    pub at: Option<DateTime<Utc>>,
     pub schedule: Option<JobSchedule>,
-    pub until: Option<i64>,
-    pub external_id: Option<String>,
+    pub until: Option<DateTime<Utc>>,
+    pub key: Option<String>,
 }
 
 #[derive(Debug, sqlx::FromRow)]
 pub struct JobCreateRow {
     pub id: i64,
     pub schedule_id: Option<String>,
-    pub external_id: Option<String>,
+    pub key: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct JobMeta {
     #[serde(flatten, default)]
-    pub protocol: JobProtocol,
+    pub sink: JobSink,
     #[serde(flatten, default)]
     pub retry: JobRetry,
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -74,9 +75,9 @@ pub struct JobMeta {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-#[serde(tag = "protocol")]
+#[serde(tag = "sink")]
 #[serde(rename_all = "snake_case")]
-pub enum JobProtocol {
+pub enum JobSink {
     #[default]
     None,
     Http(HttpMeta),
@@ -98,7 +99,7 @@ impl TryFrom<JobRow> for hyper::Request<Full<Bytes>> {
 
     fn try_from(value: JobRow) -> Result<Self, Self::Error> {
         let meta = value.meta;
-        let JobProtocol::Http(meta) = meta.protocol else {
+        let JobSink::Http(meta) = meta.sink else {
             return Err(Error::invalid("url", "is not an HTTP URL"));
         };
 
@@ -127,7 +128,7 @@ async fn job_row_into_request_err() -> anyhow::Result<()> {
         headers: None,
         body: None,
         schedule_id: None,
-        external_id: None,
+        key: None,
     };
     // act
     let req = hyper::Request::<Full<Bytes>>::try_from(job);
@@ -144,7 +145,7 @@ async fn job_row_into_request_ok() -> anyhow::Result<()> {
     let job = JobRow {
         id: 0,
         meta: JobMeta {
-            protocol: JobProtocol::Http(HttpMeta {
+            sink: JobSink::Http(HttpMeta {
                 method: Method::GET,
                 url: Uri::try_from("http://localhost").unwrap(),
             }),
@@ -162,7 +163,7 @@ async fn job_row_into_request_ok() -> anyhow::Result<()> {
         )])),
         body: None,
         schedule_id: None,
-        external_id: None,
+        key: None,
     };
     // act
     let req = hyper::Request::<Full<Bytes>>::try_from(job);

@@ -5,5 +5,14 @@
   <h1>Instances</h1>
   <p>The irisqo processes sharing this queue. Each sends a heartbeat every {{ heartbeat_secs }} s; one silent for {{ expire_secs }} s is stopped and its jobs go back to the queue.</p>
 </hgroup>
+<div class="filters">
+  <nav class="segmented" aria-label="Show">
+    <ul>
+      {% for f in filters %}
+      <li><a href="{{ f.href }}"{% if f.current %} aria-current="page"{% endif %}>{{ f.label }}</a></li>
+      {% endfor %}
+    </ul>
+  </nav>
+</div>
 {% include "ui/partials/instances_table.html" %}
 {% endblock %}

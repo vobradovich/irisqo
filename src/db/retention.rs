@@ -37,7 +37,7 @@ pub async fn purge_schedules(pool: &Pool<Postgres>) -> Result<u64, Error> {
 
 /// Deletes instances dead for more than `older_than`.
 pub async fn purge_instances(pool: &Pool<Postgres>, older_than: Duration) -> Result<u64, Error> {
-    const SQL: &str = "DELETE FROM instances WHERE status = 'dead' AND last_at < now() - $1";
+    const SQL: &str = "DELETE FROM instances WHERE stopped_at < now() - $1";
     let res = sqlx::query(SQL).bind(older_than).execute(pool).await?;
     Ok(res.rows_affected())
 }

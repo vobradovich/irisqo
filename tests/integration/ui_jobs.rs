@@ -44,7 +44,7 @@ async fn list_shows_every_state(pool: PgPool) -> anyhow::Result<()> {
     let state = common::state(pool.clone());
     let addr = common::spawn_app(&state).await;
     let echo = format!("http://{addr}/echo");
-    let completed = job_id(&state, addr, &format!("{echo}?_id=order-7731")).await;
+    let completed = job_id(&state, addr, &format!("{echo}?_key=order-7731")).await;
     let failed = job_id(&state, addr, &format!("{echo}?status=404")).await;
     let retrying = job_id(
         &state,
@@ -79,7 +79,7 @@ async fn list_shows_every_state(pool: PgPool) -> anyhow::Result<()> {
         [(failed, JobStatus::Failed)]
     );
 
-    // search: external id, id, a part of the URL
+    // search: key, id, a part of the URL
     for (search, expected) in [
         ("order-7731", vec![completed]),
         (&*failed.to_string(), vec![failed]),
@@ -134,6 +134,13 @@ async fn cancel_and_retry_through_the_api(pool: PgPool) -> anyhow::Result<()> {
         common::processed_status(&pool, pending).await.as_deref(),
         Some("cancelled")
     );
+    // the result of a cancelled job is still there
+    assert_eq!(
+        send(&state, Method::GET, &api(pending, "result"), false)
+            .await
+            .0,
+        StatusCode::OK
+    );
     assert_eq!(
         common::history(&pool, pending)
             .await
@@ -184,7 +191,7 @@ async fn schedule_pause_resume_and_one_chain(pool: PgPool) -> anyhow::Result<()>
     let schedule_id = common::header(&response, "schedule-id").expect("schedule-id");
     let api = |action: &str| format!("http://{addr}/api/v1/schedules/{schedule_id}/{action}");
 
-    // pause: inactive, the pending run is cancelled
+    // pause: paused, the pending run is cancelled
     assert_eq!(
         send(&state, Method::POST, &api("pause"), false).await.0,
         StatusCode::NO_CONTENT
@@ -211,7 +218,7 @@ async fn schedule_pause_resume_and_one_chain(pool: PgPool) -> anyhow::Result<()>
         1
     );
     assert_eq!(
-        common::count(&pool, "SELECT count(*) FROM schedules WHERE inactive").await,
+        common::count(&pool, "SELECT count(*) FROM schedules WHERE paused").await,
         0
     );
     // resuming again does not add a run
@@ -368,16 +375,16 @@ async fn ui_pages_and_actions(pool: PgPool) -> anyhow::Result<()> {
 async fn instances_page_shows_heartbeats_and_work(pool: PgPool) -> anyhow::Result<()> {
     let state = common::state(pool.clone());
     let addr = common::spawn_app(&state).await;
-    irisqo::features::instances::live(&pool, &state.instance_id).await?;
+    irisqo::features::instances::live(&pool, &state.instance_id, &["http", "worker"]).await?;
     sqlx::query(
-        "INSERT INTO instances(instance_id, last_at, status) VALUES
-            ('quiet-host:01JC0000000000000000000000', now() - interval '1 minute', 'live'),
-            ('old-host:01JB0000000000000000000000', now() - interval '2 hours', 'dead')",
+        "INSERT INTO instances(instance_id, roles, version, seen_at, stopped_at) VALUES
+            ('quiet-host:01jc0000000000000000000000', '{worker}', '1', now() - interval '1 minute', NULL),
+            ('old-host:01jb0000000000000000000000', '{worker}', '1', now() - interval '2 hours', now() - interval '2 hours')",
     )
     .execute(&pool)
     .await?;
     let ids = common::insert_enqueued(&pool, 2).await;
-    sqlx::query("UPDATE enqueued SET instance_id = $1, lock_at = now() WHERE id = ANY($2)")
+    sqlx::query("WITH a AS (DELETE FROM enqueued WHERE id = ANY($2) RETURNING id, retry) INSERT INTO claimed(id, retry, instance_id) SELECT id, retry, $1 FROM a")
         .bind(&state.instance_id)
         .bind(&ids)
         .execute(&pool)
@@ -393,14 +400,17 @@ async fn instances_page_shows_heartbeats_and_work(pool: PgPool) -> anyhow::Resul
     assert_eq!(status, StatusCode::OK);
     assert!(html.contains("aria-current=\"page\">Instances</a>"));
     let (host, _) = state.instance_id.rsplit_once(':').expect("host:ulid");
-    let this = html.find(host).expect("this instance");
-    let quiet = html.find("quiet-host").expect("stale instance");
-    let old = html.find("old-host").expect("dead instance");
-    assert!(this.min(quiet) < old, "live instances first");
+    assert!(html.contains(host) && html.contains("quiet-host"));
+    assert!(!html.contains("old-host"), "Live hides the stopped ones");
     assert!(html.contains("this server"));
+    assert!(html.contains(&format!(
+        "<td class=\"mono\">{}</td>",
+        env!("CARGO_PKG_VERSION")
+    )));
+    assert!(html.contains("<small class=\"tag\">worker</small>"));
     assert!(html.contains("<span class=\"status running\"><span>Live</span>"));
     assert!(html.contains("<span class=\"status stale\"><span>No heartbeat</span>"));
-    assert!(html.contains("<span class=\"status stopped\"><span>Stopped</span>"));
+    assert!(!html.contains("<span class=\"status stopped\">"));
     assert!(
         html.contains("<td class=\"num mono\">2</td>"),
         "jobs it holds"
@@ -415,5 +425,63 @@ async fn instances_page_shows_heartbeats_and_work(pool: PgPool) -> anyhow::Resul
     .await;
     assert_eq!(status, StatusCode::OK);
     assert!(html.starts_with("<div id=\"instances\"") && html.contains("hx-trigger=\"every 5s\""));
+
+    let (_, _, html) = send(
+        &state,
+        Method::GET,
+        &format!("http://{addr}/ui/instances?show=all"),
+        false,
+    )
+    .await;
+    assert!(html.contains("old-host"));
+    assert!(html.contains("<span class=\"status stopped\"><span>Stopped</span>"));
+    Ok(())
+}
+
+#[sqlx::test(migrations = "./sql/migrations")]
+async fn instances_are_listed_page_by_page(pool: PgPool) -> anyhow::Result<()> {
+    let state = common::state(pool.clone());
+    let addr = common::spawn_app(&state).await;
+    sqlx::query(
+        "INSERT INTO instances(instance_id, roles, version, started_at)
+         SELECT 'host-' || lpad(n::text, 3, '0') || ':01jc0000000000000000000000', '{worker}', '1',
+                now() - n * interval '1 minute'
+         FROM generate_series(1, 120) AS n",
+    )
+    .execute(&pool)
+    .await?;
+
+    let get = |path: String| {
+        let state = state.clone();
+        async move {
+            send(&state, Method::GET, &format!("http://{addr}{path}"), false)
+                .await
+                .2
+        }
+    };
+    let first = get("/ui/instances?show=live".into()).await;
+    assert_eq!(first.matches("<td title=\"host-").count(), 50);
+    assert!(
+        first.contains("host-001:") && !first.contains("host-051:"),
+        "newest first"
+    );
+    assert!(!first.contains(">Newest</a>"));
+    // the link to the next page carries the last instance of this one
+    let older = first
+        .split("<a href=\"")
+        .map(|part| part.split('"').next().unwrap_or_default())
+        .find(|href| href.contains("before="))
+        .expect("older link")
+        .replace("&amp;", "&")
+        .replace("&#38;", "&");
+
+    let second = get(older).await;
+    assert_eq!(second.matches("<td title=\"host-").count(), 50);
+    assert!(second.contains("host-051:") && second.contains("host-100:"));
+    assert!(second.contains(">Newest</a>"));
+    assert!(second.contains("hx-get=\"/ui/instances/table?show=live&#38;before="));
+
+    let all = get("/ui/instances?show=all".into()).await;
+    assert!(all.contains("aria-current=\"page\">All</a>"));
     Ok(())
 }

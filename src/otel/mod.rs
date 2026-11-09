@@ -132,7 +132,7 @@ pub fn on_failure(
         }
         _ => {}
     }
-    tracing::error!(
+    tracing::warn!(
         "request failed latency={} ms status={}",
         latency.as_millis(),
         failure_classification,

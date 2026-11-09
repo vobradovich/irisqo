@@ -33,12 +33,12 @@
     <div><dt>Created</dt><dd>{{ job.created }}</dd></div>
     <div><dt>Retry policy</dt><dd>{{ job.retry_policy }}</dd></div>
     <div><dt>Timeout</dt><dd>{{ job.timeout }}</dd></div>
-    <div><dt>External id</dt><dd class="mono">{{ job.external_id }}</dd></div>
-    <div><dt>Schedule</dt><dd class="mono" title="{{ job.row.schedule_id|or_empty }}">{% if job.row.schedule_id.is_some() %}<a href="/ui/schedules">{{ job.row.schedule_id|short_id }}</a>{% else %}—{% endif %}</dd></div>
+    <div><dt>Key</dt><dd class="mono">{{ job.key }}</dd></div>
+    <div><dt>Schedule</dt><dd class="mono" title="{{ job.row.schedule_id|or_empty }}">{% if job.row.schedule_id.is_some() %}<a href="/ui/schedules">{{ job.row.schedule_id|short_id }}</a>{% else %}-{% endif %}</dd></div>
     <div><dt>Trace</dt><dd class="mono">
       {%- if let Some(href) = job.trace_href %}<a href="{{ href }}" rel="noreferrer" target="_blank">open ↗</a>
-      {%- else if let Some(r) = job.result %}{% if let Some(t) = r.trace_id %}{{ t }}{% else %}—{% endif %}
-      {%- else %}—{% endif %}</dd></div>
+      {%- else if let Some(r) = job.result %}{% if let Some(t) = r.trace_id %}{{ t }}{% else %}-{% endif %}
+      {%- else %}-{% endif %}</dd></div>
   </dl>
 
   <div class="cards">
@@ -79,7 +79,7 @@
       {% for h in job.history %}
       <li>
         <span class="mono muted" title="{{ h.at|utc }}">{{ h.at.format("%H:%M:%S") }}</span>
-        <span class="status {{ h.status }}"><span>{{ h.status.label() }}</span></span>
+        <span class="status {{ h.kind }}"><span>{{ h.kind.label() }}</span></span>
         <span class="mono muted">retry {{ h.retry }}</span>
         <span class="mono muted" title="{{ h.instance_id }}">{{ h.instance_id|short_instance }}</span>
         <span>{{ h.message|or_empty }}</span>

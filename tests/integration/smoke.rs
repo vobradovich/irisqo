@@ -8,7 +8,7 @@ use sqlx::PgPool;
 use crate::common;
 
 #[sqlx::test(migrations = "./sql/migrations")]
-async fn job_without_protocol_completes(pool: PgPool) -> anyhow::Result<()> {
+async fn job_without_sink_completes(pool: PgPool) -> anyhow::Result<()> {
     let state = common::state(pool.clone());
     let job = JobCreate {
         meta: JobMeta {
@@ -54,10 +54,10 @@ async fn http_job_is_queued_and_delivered(pool: PgPool) -> anyhow::Result<()> {
         Some("completed")
     );
     let history: Vec<String> =
-        sqlx::query_scalar("SELECT status::text FROM history WHERE id = $1 ORDER BY at")
+        sqlx::query_scalar("SELECT kind FROM history WHERE id = $1 ORDER BY seq")
             .bind(job_id)
             .fetch_all(&pool)
             .await?;
-    assert_eq!(history, ["enqueued", "assigned", "completed"]);
+    assert_eq!(history, ["enqueued", "claimed", "completed"]);
     Ok(())
 }

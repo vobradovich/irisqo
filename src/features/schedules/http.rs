@@ -73,7 +73,7 @@ async fn resume(
     let found = super::db::resume(
         &state.pool,
         &schedule_id,
-        super::JobSchedule::now_secs(),
+        chrono::Utc::now(),
         &state.instance_id,
     )
     .await?;

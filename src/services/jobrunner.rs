@@ -6,12 +6,13 @@ use crate::{
         schedules::JobSchedule,
     },
     models::{
-        AppState, Error, JobEntry, JobProtocol, JobRetry, JobRow, JobWithRetry, MAX_RETRY_DELAY,
+        AppState, Error, JobEntry, JobRetry, JobRow, JobSink, JobWithRetry, MAX_RETRY_DELAY,
         targets, with_jitter,
     },
     otel::{self, HeaderInjector, metrics::metrics},
 };
 use bytes::Bytes;
+use chrono::{DateTime, Utc};
 use http_body_util::{BodyExt, Full, Limited};
 use hyper::header::HeaderValue;
 use opentelemetry::{
@@ -117,9 +118,9 @@ async fn job_attempt(app_state: &AppState, job_with_retry: JobWithRetry) -> Opti
     debug!({ instance_id, job_id, retry }, "==> run");
     let job_retry = job.meta.retry;
     let schedule_id = job.schedule_id.clone();
-    let job_result = match job.meta.protocol {
-        JobProtocol::None => Ok(JobResult::default()),
-        JobProtocol::Http(_) => job_run_http(app_state, job, retry).await,
+    let job_result = match job.meta.sink {
+        JobSink::None => Ok(JobResult::default()),
+        JobSink::Http(_) => job_run_http(app_state, job, retry).await,
     };
     let result = match job_result {
         Ok(result) => result,
@@ -136,6 +137,32 @@ async fn job_attempt(app_state: &AppState, job_with_retry: JobWithRetry) -> Opti
     })
 }
 
+/// Pauses between repeats of a failed write: 250 ms doubling, 30 s in all (under the job lease).
+fn write_pauses() -> impl Iterator<Item = Duration> {
+    (0..7).map(|i| Duration::from_millis(250 << i))
+}
+
+/// Repeats a write that failed with a transient database error, after each of the `pauses`.
+async fn write_with_retry<T, F, Fut>(
+    pauses: impl IntoIterator<Item = Duration>,
+    mut write: F,
+) -> Result<T, Error>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, Error>>,
+{
+    for pause in pauses {
+        match write().await {
+            Err(err) if err.is_transient() => {
+                warn!("write failed, again in {pause:?}: {err:?}");
+                time::sleep(pause).await;
+            }
+            result => return result,
+        }
+    }
+    write().await
+}
+
 /// Writes final results: one statement for all plain jobs, a transaction per scheduled
 /// job (its result and the next run are written atomically).
 pub async fn complete(app_state: &AppState, completions: Vec<Completion>) {
@@ -146,8 +173,10 @@ pub async fn complete(app_state: &AppState, completions: Vec<Completion>) {
     if !plain.is_empty() {
         let items: Vec<_> = plain.iter().map(|c| (c.entry, &c.result)).collect();
         let total = items.len() as u64;
-        _ = results::processed_many(&app_state.pool, &items, instance_id)
-            .await
+        _ = write_with_retry(write_pauses(), || {
+            results::processed_many(&app_state.pool, &items, instance_id)
+        })
+        .await
             .inspect(|&affected| {
                 if affected < total {
                     // The lock was lost (lock expired, instance expired, job deleted)
@@ -160,9 +189,11 @@ pub async fn complete(app_state: &AppState, completions: Vec<Completion>) {
     }
     for completion in scheduled {
         let job_id = completion.entry.id;
-        _ = processed_scheduled(app_state, completion)
-            .await
-            .inspect_err(|err| error!({ instance_id, job_id }, "processed error {:?}", err));
+        _ = write_with_retry(write_pauses(), || {
+            processed_scheduled(app_state, &completion)
+        })
+        .await
+        .inspect_err(|err| error!({ instance_id, job_id }, "processed error {:?}", err));
     }
 }
 
@@ -318,18 +349,19 @@ fn error_type(err: &Error) -> &'static str {
     }
 }
 
-async fn processed_scheduled(app_state: &AppState, completion: Completion) -> Result<(), Error> {
+async fn processed_scheduled(app_state: &AppState, completion: &Completion) -> Result<(), Error> {
     let instance_id = &app_state.instance_id;
     let Completion {
         entry,
         schedule_id,
         result,
     } = completion;
+    let entry = *entry;
     let job_id = entry.id;
-    let next_at = schedule_next_at(app_state, schedule_id.as_deref()).await;
+    let next_at = schedule_next_at(app_state, schedule_id.as_deref()).await?;
     // Result and next schedule run are written atomically
     let mut tx = app_state.pool.begin().await?;
-    let affected = results::processed(&mut *tx, entry, instance_id, &result).await?;
+    let affected = results::processed(&mut *tx, entry, instance_id, result).await?;
     if affected == 0 {
         // The lock was lost (lock expired, instance expired, job deleted): nothing to complete or reschedule
         warn!({ instance_id, job_id }, "job is not locked by this attempt, skip");
@@ -340,26 +372,33 @@ async fn processed_scheduled(app_state: &AppState, completion: Completion) -> Re
         if let Some(next_id) =
             db::jobqueue::clone_schedule_at(&mut *tx, job_id, next_at, instance_id).await?
         {
-            debug!({ instance_id, job_id, next_id, next_at }, "==> clone and schedule");
+            debug!({ instance_id, job_id, next_id, next_at = %next_at }, "==> clone and schedule");
         }
     }
     tx.commit().await?;
     Ok(())
 }
 
-async fn schedule_next_at(app_state: &AppState, schedule_id: Option<&str>) -> Option<i64> {
-    let schedule_id = schedule_id?;
-
-    let row = features::schedules::get_by_id(&app_state.pool, schedule_id).await.map_err(|err| {
-        error!({ instance_id = app_state.instance_id, schedule_id }, "schedules::get_by_id error {:?}", err);
-    }).ok()??;
-    if row.inactive {
-        return None;
+/// When the schedule runs next. A database error is returned: the write is repeated.
+async fn schedule_next_at(
+    app_state: &AppState,
+    schedule_id: Option<&str>,
+) -> Result<Option<DateTime<Utc>>, Error> {
+    let Some(schedule_id) = schedule_id else {
+        return Ok(None);
+    };
+    let Some(row) = features::schedules::get_by_id(&app_state.pool, schedule_id).await? else {
+        return Ok(None);
+    };
+    if row.paused {
+        return Ok(None);
     }
-    let schedule = row.schedule.parse::<JobSchedule>().map_err(|err| {
+    let Ok(schedule) = row.schedule.parse::<JobSchedule>().inspect_err(|err| {
         error!({ instance_id = app_state.instance_id, schedule_id }, "JobSchedule::parse error {:?}", err);
-    }).ok()?;
-    schedule.next(JobSchedule::now_secs(), row.until)
+    }) else {
+        return Ok(None);
+    };
+    Ok(schedule.next(Utc::now(), row.until))
 }
 
 /// Schedules a retry when the error is worth one; returns the final result otherwise.
@@ -375,7 +414,7 @@ async fn on_error(
         Error::HyperError(_) | Error::HyperClientError(_) | Error::Timeout(_) => (true, None),
         Error::ServerError(res) | Error::ClientError(res) => (
             res.status_code().is_some_and(is_retryable_status),
-            res.retry_after(JobSchedule::now_secs()),
+            res.retry_after(Utc::now().timestamp()),
         ),
         Error::JobNotFound(_)
         | Error::ResultNotFound(_)
@@ -397,7 +436,15 @@ async fn on_error(
     if !retryable {
         return Some(err.into());
     }
-    match retry_or_fail(app_state, entry, job_retry, retry_after).await {
+    match retry_or_fail(
+        app_state,
+        entry,
+        job_retry,
+        retry_after,
+        &error_message(&err),
+    )
+    .await
+    {
         Ok(()) => None,
         Err(Error::RetriesExceeded) => Some(err.into()),
         Err(retry_err) => {
@@ -408,12 +455,34 @@ async fn on_error(
     }
 }
 
+/// Why an attempt failed, for the history of the job.
+fn error_message(err: &Error) -> String {
+    match err {
+        Error::ClientError(res) | Error::ServerError(res) => res.history_message(),
+        Error::Timeout(_) => Some("timeout".into()),
+        Error::JobNotFound(_)
+        | Error::ResultNotFound(_)
+        | Error::ScheduleNotFound(_)
+        | Error::DbError(_)
+        | Error::IoError(_)
+        | Error::HttpError(_)
+        | Error::HyperError(_)
+        | Error::HyperClientError(_)
+        | Error::InvalidParams(_)
+        | Error::ResponseTooLarge
+        | Error::BlockedTarget(_)
+        | Error::RetriesExceeded => None,
+    }
+    .unwrap_or_else(|| err.to_string())
+}
+
 /// Backoff with jitter, but never sooner than the `Retry-After` of the response.
 async fn retry_or_fail(
     app_state: &AppState,
     entry: JobEntry,
     job_retry: JobRetry,
     retry_after: Option<u32>,
+    message: &str,
 ) -> Result<(), Error> {
     let instance_id = &app_state.instance_id;
     let JobEntry { id: job_id, retry } = entry;
@@ -426,14 +495,60 @@ async fn retry_or_fail(
         .min(MAX_RETRY_DELAY);
     let affected = if delay == 0 {
         debug!({ instance_id, job_id, retry }, "==> unlock");
-        db::jobqueue::unlock(&app_state.pool, entry, instance_id).await?
+        db::jobqueue::unlock(&app_state.pool, entry, instance_id, message).await?
     } else {
-        let at = JobSchedule::now_secs() + i64::from(delay);
+        let at = Utc::now() + chrono::Duration::seconds(i64::from(delay));
         debug!({ instance_id, job_id, retry, delay }, "==> retry");
-        db::jobqueue::retry(&app_state.pool, entry, at, instance_id).await?
+        db::jobqueue::retry(&app_state.pool, entry, at, instance_id, message).await?
     };
     if affected == 0 {
         warn!({ instance_id, job_id }, "job is not locked by this attempt, skip retry");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    const FAST: [Duration; 2] = [Duration::from_millis(1); 2];
+
+    #[tokio::test]
+    async fn a_transient_error_is_repeated() {
+        let calls = AtomicU32::new(0);
+        let res = write_with_retry(FAST, || async {
+            match calls.fetch_add(1, Ordering::SeqCst) {
+                0..2 => Err(Error::DbError(sqlx::Error::PoolTimedOut)),
+                _ => Ok(7),
+            }
+        })
+        .await;
+        assert_eq!(res.ok(), Some(7));
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test]
+    async fn another_error_is_not_repeated() {
+        let calls = AtomicU32::new(0);
+        let res: Result<(), Error> = write_with_retry(FAST, || async {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Err(Error::DbError(sqlx::Error::RowNotFound))
+        })
+        .await;
+        assert!(res.is_err());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn a_write_is_repeated_only_so_often() {
+        let calls = AtomicU32::new(0);
+        let res: Result<(), Error> = write_with_retry(FAST, || async {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Err(Error::DbError(sqlx::Error::PoolTimedOut))
+        })
+        .await;
+        assert!(res.is_err());
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+    }
 }

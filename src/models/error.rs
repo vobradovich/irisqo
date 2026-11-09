@@ -93,6 +93,35 @@ impl Error {
     pub fn invalid(parameter: &'static str, detail: impl Into<String>) -> Self {
         Error::InvalidParams(vec![ParamError::new(parameter, detail)])
     }
+
+    /// A database error that may pass (lost connection, restart, deadlock): the write may be repeated.
+    pub fn is_transient(&self) -> bool {
+        match self {
+            Error::DbError(err) => match err {
+                sqlx::Error::Io(_) | sqlx::Error::PoolTimedOut | sqlx::Error::Tls(_) => true,
+                // connection (08), deadlock and serialization (40), resources (53), shutdown (57)
+                sqlx::Error::Database(err) => err.code().is_some_and(|code| {
+                    ["08", "40", "53", "57"].iter().any(|c| code.starts_with(c))
+                }),
+                // sqlx::Error is non-exhaustive
+                _ => false,
+            },
+            Error::JobNotFound(_)
+            | Error::ResultNotFound(_)
+            | Error::ScheduleNotFound(_)
+            | Error::Timeout(_)
+            | Error::IoError(_)
+            | Error::HttpError(_)
+            | Error::HyperError(_)
+            | Error::HyperClientError(_)
+            | Error::InvalidParams(_)
+            | Error::ServerError(_)
+            | Error::ClientError(_)
+            | Error::ResponseTooLarge
+            | Error::BlockedTarget(_)
+            | Error::RetriesExceeded => false,
+        }
+    }
 }
 
 fn not_found(detail: String) -> Problem {
