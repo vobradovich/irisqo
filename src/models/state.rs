@@ -190,16 +190,16 @@ impl Options {
 }
 
 impl AppState {
-    /// Connects to `DATABASE_URL`, creates the schema (`--schema`, `irisqo` by default) and
+    /// Connects to `IRISQO_DB_URL` (only the environment or `.env`: a flag would show the password in `ps`), creates the schema (`--schema`, `irisqo` by default) and
     /// runs the migrations in it.
     #[must_use]
     pub async fn new(options: &Options) -> Arc<AppState> {
         let instance_id = new_instance_id();
         let schema = options.db_schema.as_deref().unwrap_or(DEFAULT_SCHEMA);
         check_schema(schema).expect("invalid schema");
-        let db_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+        let db_url = std::env::var("IRISQO_DB_URL").expect("IRISQO_DB_URL must be set");
         let conn = PgConnectOptions::from_str(&db_url)
-            .expect("Unable to parse DATABASE_URL")
+            .expect("Unable to parse IRISQO_DB_URL")
             .application_name(&instance_id)
             // every statement and every function sees the tables of the schema
             .options([("search_path", schema)]);

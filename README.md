@@ -181,7 +181,7 @@ behind a proxy). A page of another site cannot make a user's browser post to it 
 ## Running
 
 ```bash
-DATABASE_URL=postgres://user:pass@localhost/irisqo cargo run --release -- --help
+IRISQO_DB_URL=postgres://user:pass@localhost/irisqo cargo run --release -- --help
 ```
 
 | Option | Default | |
@@ -203,6 +203,8 @@ DATABASE_URL=postgres://user:pass@localhost/irisqo cargo run --release -- --help
 
 Each option can also be set by an `IRISQO_` variable, in the environment or a `.env` file:
 `--max-timeout` is `IRISQO_MAX_TIMEOUT`, `--env` is `IRISQO_ENV`. The command line wins.
+
+The database URL (`postgres://user:pass@host/db`) is required and has no flag, only `IRISQO_DB_URL`: a flag would show the password in `ps`.
 
 ### Telemetry
 Traces, metrics and logs go out over OTLP (HTTP/protobuf), configured by the standard env vars:
