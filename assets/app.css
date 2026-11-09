@@ -632,6 +632,8 @@ pre.body {
 .state-active { color: var(--success); font-weight: 600; }
 .table-wrap .num { text-align: right; }
 .table-wrap .failed-count { color: var(--danger); }
+/* the tooltip of a column header: not in the small capitals of the header */
+.table-wrap th [data-tooltip]::before { text-transform: none; letter-spacing: normal; font-weight: 400; font-size: 0.8rem; }
 .tag {
   margin-left: 0.25rem;
   padding: 0.0625rem 0.5rem;

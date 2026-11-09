@@ -1,24 +1,28 @@
-<div id="instances" class="table-wrap" hx-get="/ui/instances/table" hx-trigger="every 5s" hx-swap="outerMorph">
-  {% if rows.is_empty() %}
-  <p class="empty">No instances yet.</p>
+<div id="instances" class="table-wrap" hx-get="{{ list.table_href }}" hx-trigger="every 5s" hx-swap="outerMorph">
+  {% if list.rows.is_empty() %}
+  <p class="empty">{{ list.empty }}</p>
   {% else %}
   <table>
     <thead>
-      <tr><th scope="col">Instance</th><th scope="col">State</th><th scope="col">Last heartbeat</th><th scope="col">Started</th><th scope="col" class="num">Processing</th><th scope="col" class="num">Completed, 24 h</th><th scope="col" class="num">Failed, 24 h</th></tr>
+      <tr><th scope="col">Instance</th><th scope="col">State</th><th scope="col">Version</th><th scope="col">Last heartbeat</th><th scope="col">Started</th><th scope="col" class="num">Processing</th><th scope="col" class="num"><span data-tooltip="Completed in the last 24 hours; failed ones in red" data-placement="left">Last 24 h</span></th></tr>
     </thead>
     <tbody>
-      {% for r in rows %}
+      {% for r in list.rows %}
       <tr>
-        <td title="{{ r.id }}"><strong>{{ r.host }}</strong> <span class="mono muted">{{ r.ulid }}</span>{% if r.this %} <small class="tag">this server</small>{% endif %}</td>
+        <td title="{{ r.id }}"><strong>{{ r.host }}</strong> <span class="mono muted">{{ r.ulid }}</span>{% if r.this %} <small class="tag">this server</small>{% endif %}<br>{% for role in r.roles %}<small class="tag">{{ role }}</small> {% endfor %}</td>
         <td><span class="status {{ r.state }}"><span>{{ r.state_label }}</span></span></td>
+        <td class="mono">{{ r.version }}</td>
         <td title="{{ r.seen_at|utc }}">{{ r.seen }}</td>
         <td title="{{ r.started_at|utc }}">{{ r.started }}</td>
         <td class="num mono">{{ r.processing }}</td>
-        <td class="num mono">{{ r.completed_24h }}</td>
-        <td class="num mono{% if r.failed_24h > 0 %} failed-count{% endif %}">{{ r.failed_24h }}</td>
+        <td class="num mono">{{ r.completed_24h }}{% if r.failed_24h > 0 %} <span class="failed-count">· {{ r.failed_24h }} failed</span>{% endif %}</td>
       </tr>
       {% endfor %}
     </tbody>
   </table>
   {% endif %}
+  <nav class="pager" aria-label="Pages">
+    {% if let Some(href) = list.newest_href %}<a href="{{ href }}" role="button" class="secondary">Newest</a>{% endif %}
+    {% if let Some(href) = list.older_href %}<a href="{{ href }}" role="button" class="secondary">Older</a>{% endif %}
+  </nav>
 </div>

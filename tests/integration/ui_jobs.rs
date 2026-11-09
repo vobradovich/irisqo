@@ -400,14 +400,17 @@ async fn instances_page_shows_heartbeats_and_work(pool: PgPool) -> anyhow::Resul
     assert_eq!(status, StatusCode::OK);
     assert!(html.contains("aria-current=\"page\">Instances</a>"));
     let (host, _) = state.instance_id.rsplit_once(':').expect("host:ulid");
-    let this = html.find(host).expect("this instance");
-    let quiet = html.find("quiet-host").expect("stale instance");
-    let old = html.find("old-host").expect("dead instance");
-    assert!(this.min(quiet) < old, "live instances first");
+    assert!(html.contains(host) && html.contains("quiet-host"));
+    assert!(!html.contains("old-host"), "Live hides the stopped ones");
     assert!(html.contains("this server"));
+    assert!(html.contains(&format!(
+        "<td class=\"mono\">{}</td>",
+        env!("CARGO_PKG_VERSION")
+    )));
+    assert!(html.contains("<small class=\"tag\">worker</small>"));
     assert!(html.contains("<span class=\"status running\"><span>Live</span>"));
     assert!(html.contains("<span class=\"status stale\"><span>No heartbeat</span>"));
-    assert!(html.contains("<span class=\"status stopped\"><span>Stopped</span>"));
+    assert!(!html.contains("<span class=\"status stopped\">"));
     assert!(
         html.contains("<td class=\"num mono\">2</td>"),
         "jobs it holds"
@@ -422,5 +425,63 @@ async fn instances_page_shows_heartbeats_and_work(pool: PgPool) -> anyhow::Resul
     .await;
     assert_eq!(status, StatusCode::OK);
     assert!(html.starts_with("<div id=\"instances\"") && html.contains("hx-trigger=\"every 5s\""));
+
+    let (_, _, html) = send(
+        &state,
+        Method::GET,
+        &format!("http://{addr}/ui/instances?show=all"),
+        false,
+    )
+    .await;
+    assert!(html.contains("old-host"));
+    assert!(html.contains("<span class=\"status stopped\"><span>Stopped</span>"));
+    Ok(())
+}
+
+#[sqlx::test(migrations = "./sql/migrations")]
+async fn instances_are_listed_page_by_page(pool: PgPool) -> anyhow::Result<()> {
+    let state = common::state(pool.clone());
+    let addr = common::spawn_app(&state).await;
+    sqlx::query(
+        "INSERT INTO instances(instance_id, roles, version, started_at)
+         SELECT 'host-' || lpad(n::text, 3, '0') || ':01jc0000000000000000000000', '{worker}', '1',
+                now() - n * interval '1 minute'
+         FROM generate_series(1, 120) AS n",
+    )
+    .execute(&pool)
+    .await?;
+
+    let get = |path: String| {
+        let state = state.clone();
+        async move {
+            send(&state, Method::GET, &format!("http://{addr}{path}"), false)
+                .await
+                .2
+        }
+    };
+    let first = get("/ui/instances?show=live".into()).await;
+    assert_eq!(first.matches("<td title=\"host-").count(), 50);
+    assert!(
+        first.contains("host-001:") && !first.contains("host-051:"),
+        "newest first"
+    );
+    assert!(!first.contains(">Newest</a>"));
+    // the link to the next page carries the last instance of this one
+    let older = first
+        .split("<a href=\"")
+        .map(|part| part.split('"').next().unwrap_or_default())
+        .find(|href| href.contains("before="))
+        .expect("older link")
+        .replace("&amp;", "&")
+        .replace("&#38;", "&");
+
+    let second = get(older).await;
+    assert_eq!(second.matches("<td title=\"host-").count(), 50);
+    assert!(second.contains("host-051:") && second.contains("host-100:"));
+    assert!(second.contains(">Newest</a>"));
+    assert!(second.contains("hx-get=\"/ui/instances/table?show=live&#38;before="));
+
+    let all = get("/ui/instances?show=all".into()).await;
+    assert!(all.contains("aria-current=\"page\">All</a>"));
     Ok(())
 }
