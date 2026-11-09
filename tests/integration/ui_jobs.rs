@@ -134,6 +134,13 @@ async fn cancel_and_retry_through_the_api(pool: PgPool) -> anyhow::Result<()> {
         common::processed_status(&pool, pending).await.as_deref(),
         Some("cancelled")
     );
+    // the result of a cancelled job is still there
+    assert_eq!(
+        send(&state, Method::GET, &api(pending, "result"), false)
+            .await
+            .0,
+        StatusCode::OK
+    );
     assert_eq!(
         common::history(&pool, pending)
             .await

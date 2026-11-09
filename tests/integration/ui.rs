@@ -275,7 +275,7 @@ async fn api_reports_every_invalid_parameter(pool: PgPool) -> anyhow::Result<()>
             serde_json::from_slice::<serde_json::Value>(&bytes).expect("json")
         }
     };
-    let long_id = "x".repeat(129);
+    let long_id = "x".repeat(256);
     let body = problem(format!(
         "http://{addr}/echo?_delay=soon&_timeout=0&_interval=0&_key={long_id}"
     ))

@@ -8,7 +8,7 @@ use crate::{
     models::{AppState, JobWithRetry},
     services::jobrunner::{self, Completion},
 };
-use std::{num::NonZeroUsize, sync::Arc, thread, time::Duration};
+use std::{sync::Arc, time::Duration};
 
 /// Max results written by one statement.
 const COMPLETE_BATCH: usize = 256;
@@ -18,7 +18,7 @@ const COMPLETER_GRACE: Duration = Duration::from_secs(5);
 /// Loader -> workers -> completer.
 ///
 /// - The loader assigns jobs to this instance in batches (one db round trip per batch).
-/// - One long-lived worker task per core drives up to `per_worker` jobs concurrently
+/// - `--workers` long-lived worker tasks drive up to `--prefetch` jobs each concurrently
 ///   (`buffer_unordered`); they all pull from the same channel, so a slow job never
 ///   blocks the others.
 /// - The completer writes the final results: whatever has piled up while the previous
@@ -37,12 +37,11 @@ impl WorkerService {
     pub async fn run(&self) {
         let instance_id = &self.app_state.instance_id;
         let app_state: &Arc<AppState> = &self.app_state;
-        let concurrency = app_state.worker_options.concurrency;
-
-        let cores = thread::available_parallelism().map_or(1, NonZeroUsize::get);
-        let workers_count = cores.min(concurrency);
-        let per_worker = concurrency.div_ceil(workers_count);
-        let batch = usize::from(app_state.worker_options.prefetch).max(concurrency / 4);
+        let workers_count = app_state.worker_options.workers;
+        let per_worker = usize::from(app_state.worker_options.prefetch).max(1);
+        let concurrency = workers_count * per_worker;
+        // one fetch fills every worker
+        let batch = concurrency;
         info!({ instance_id, workers_count, per_worker, batch }, "start");
 
         let mut interval = time::interval(app_state.worker_options.poll_interval);

@@ -7,7 +7,7 @@ use crate::models::Error;
 use sqlx::{Pool, Postgres};
 
 /// Deletes up to `limit` jobs processed more than `older_than` ago;
-/// their `processed`, `results` and `history` rows go with them (ON DELETE CASCADE).
+/// their `processed` and `history` rows go with them (ON DELETE CASCADE).
 pub async fn purge_processed(
     pool: &Pool<Postgres>,
     older_than: Duration,

@@ -10,7 +10,7 @@ use crate::common;
 
 /// Request headers the target got, from a job to `/echo?headers=1`.
 async fn received_headers(pool: &PgPool, job_id: i64) -> HashMap<String, String> {
-    let body: Vec<u8> = sqlx::query_scalar("SELECT body FROM results WHERE id = $1")
+    let body: Vec<u8> = sqlx::query_scalar("SELECT body FROM processed WHERE id = $1")
         .bind(job_id)
         .fetch_one(pool)
         .await

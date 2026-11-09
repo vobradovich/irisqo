@@ -137,20 +137,16 @@ async fn job_attempt(app_state: &AppState, job_with_retry: JobWithRetry) -> Opti
     })
 }
 
-/// Pauses between the repeats of a write that failed: about 30 s in all, less than the lease
-/// of a job (a job whose result is lost stays locked until then and runs again).
-const WRITE_PAUSES: [Duration; 7] = [
-    Duration::from_millis(250),
-    Duration::from_millis(500),
-    Duration::from_secs(1),
-    Duration::from_secs(2),
-    Duration::from_secs(4),
-    Duration::from_secs(8),
-    Duration::from_secs(15),
-];
+/// Pauses between repeats of a failed write: 250 ms doubling, 30 s in all (under the job lease).
+fn write_pauses() -> impl Iterator<Item = Duration> {
+    (0..7).map(|i| Duration::from_millis(250 << i))
+}
 
 /// Repeats a write that failed with a transient database error, after each of the `pauses`.
-async fn write_with_retry<T, F, Fut>(pauses: &[Duration], mut write: F) -> Result<T, Error>
+async fn write_with_retry<T, F, Fut>(
+    pauses: impl IntoIterator<Item = Duration>,
+    mut write: F,
+) -> Result<T, Error>
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<T, Error>>,
@@ -159,7 +155,7 @@ where
         match write().await {
             Err(err) if err.is_transient() => {
                 warn!("write failed, again in {pause:?}: {err:?}");
-                time::sleep(*pause).await;
+                time::sleep(pause).await;
             }
             result => return result,
         }
@@ -177,7 +173,7 @@ pub async fn complete(app_state: &AppState, completions: Vec<Completion>) {
     if !plain.is_empty() {
         let items: Vec<_> = plain.iter().map(|c| (c.entry, &c.result)).collect();
         let total = items.len() as u64;
-        _ = write_with_retry(&WRITE_PAUSES, || {
+        _ = write_with_retry(write_pauses(), || {
             results::processed_many(&app_state.pool, &items, instance_id)
         })
         .await
@@ -193,7 +189,7 @@ pub async fn complete(app_state: &AppState, completions: Vec<Completion>) {
     }
     for completion in scheduled {
         let job_id = completion.entry.id;
-        _ = write_with_retry(&WRITE_PAUSES, || {
+        _ = write_with_retry(write_pauses(), || {
             processed_scheduled(app_state, &completion)
         })
         .await
@@ -383,9 +379,7 @@ async fn processed_scheduled(app_state: &AppState, completion: &Completion) -> R
     Ok(())
 }
 
-/// When the schedule runs next; `None` when it does not.
-/// A database error is returned, not swallowed: the write is repeated, and a schedule
-/// must not end because the database blinked.
+/// When the schedule runs next. A database error is returned: the write is repeated.
 async fn schedule_next_at(
     app_state: &AppState,
     schedule_id: Option<&str>,
@@ -512,7 +506,7 @@ mod tests {
     #[tokio::test]
     async fn a_transient_error_is_repeated() {
         let calls = AtomicU32::new(0);
-        let res = write_with_retry(&FAST, || async {
+        let res = write_with_retry(FAST, || async {
             match calls.fetch_add(1, Ordering::SeqCst) {
                 0..2 => Err(Error::DbError(sqlx::Error::PoolTimedOut)),
                 _ => Ok(7),
@@ -526,7 +520,7 @@ mod tests {
     #[tokio::test]
     async fn another_error_is_not_repeated() {
         let calls = AtomicU32::new(0);
-        let res: Result<(), Error> = write_with_retry(&FAST, || async {
+        let res: Result<(), Error> = write_with_retry(FAST, || async {
             calls.fetch_add(1, Ordering::SeqCst);
             Err(Error::DbError(sqlx::Error::RowNotFound))
         })
@@ -538,7 +532,7 @@ mod tests {
     #[tokio::test]
     async fn a_write_is_repeated_only_so_often() {
         let calls = AtomicU32::new(0);
-        let res: Result<(), Error> = write_with_retry(&FAST, || async {
+        let res: Result<(), Error> = write_with_retry(FAST, || async {
             calls.fetch_add(1, Ordering::SeqCst);
             Err(Error::DbError(sqlx::Error::PoolTimedOut))
         })

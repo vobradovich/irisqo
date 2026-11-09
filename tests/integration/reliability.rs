@@ -425,3 +425,121 @@ async fn running_job_of_deleted_schedule_is_not_cloned(pool: PgPool) -> anyhow::
     assert_eq!(common::count(&pool, "SELECT count(*) FROM jobs").await, 1);
     Ok(())
 }
+
+async fn enqueue_in_queue(pool: &PgPool, queue: &str) -> i64 {
+    sqlx::query_scalar(
+        "SELECT enqueue_v1(jsonb_build_object('url', 'http://localhost/x', 'queue', $1::text))",
+    )
+    .bind(queue)
+    .fetch_one(pool)
+    .await
+    .expect("enqueue_v1")
+}
+
+#[sqlx::test(migrations = "./sql/migrations")]
+async fn an_unreadable_job_fails_alone(pool: PgPool) -> anyhow::Result<()> {
+    let state = common::state(pool.clone());
+    let good = enqueue_in_queue(&pool, "other").await;
+    let bad: i64 = sqlx::query_scalar("SELECT enqueue_v1('{\"url\": \"http://localhost/x\"}')")
+        .fetch_one(&pool)
+        .await?;
+    // a URL the worker cannot read
+    sqlx::query(
+        "UPDATE jobs SET meta = jsonb_set(meta, '{url}', '\"http://localhost/a b\"') WHERE id = $1",
+    )
+    .bind(bad)
+    .execute(&pool)
+    .await?;
+
+    let jobs = common::fetch(&state, 10).await;
+    let ids: Vec<i64> = jobs.iter().map(|j| j.job.id).collect();
+    assert_eq!(ids, [good]);
+    assert_eq!(
+        common::processed_status(&pool, bad).await.as_deref(),
+        Some("failed")
+    );
+    Ok(())
+}
+
+#[sqlx::test(migrations = "./sql/migrations")]
+async fn resume_does_not_clone_a_running_run(pool: PgPool) -> anyhow::Result<()> {
+    let state = common::state(pool.clone());
+    let addr = common::spawn_app(&state).await;
+    let target = format!("http://{addr}/echo?_interval=3600");
+    let response = common::create(&state, addr, &target).await;
+    let schedule_id = common::header(&response, "schedule-id").expect("schedule-id");
+    common::enqueue_all_scheduled(&state).await;
+    assert_eq!(
+        common::fetch(&state, 10).await.len(),
+        1,
+        "the run is in flight"
+    );
+
+    let id = &state.instance_id;
+    irisqo::features::schedules::pause(&pool, &schedule_id, id).await?;
+    irisqo::features::schedules::resume(&pool, &schedule_id, chrono::Utc::now(), id).await?;
+    let runs: i64 = sqlx::query_scalar("SELECT count(*) FROM jobs WHERE schedule_id = $1")
+        .bind(&schedule_id)
+        .fetch_one(&pool)
+        .await?;
+    assert_eq!(runs, 1);
+    Ok(())
+}
+
+#[sqlx::test(migrations = "./sql/migrations")]
+async fn a_delayed_retry_keeps_its_place_in_an_ordered_queue(pool: PgPool) -> anyhow::Result<()> {
+    let state = common::state(pool.clone());
+    let a = enqueue_in_queue(&pool, "q").await;
+    enqueue_in_queue(&pool, "q").await;
+    let jobs = common::fetch(&state, 10).await;
+    let ids: Vec<i64> = jobs.iter().map(|j| j.job.id).collect();
+    assert_eq!(ids, [a], "one at a time");
+
+    let entry = irisqo::models::JobEntry { id: a, retry: 0 };
+    let at = chrono::Utc::now() + chrono::Duration::seconds(60);
+    db::jobqueue::retry(&pool, entry, at, &state.instance_id, "again").await?;
+    let next = common::fetch(&state, 10).await;
+    assert!(next.is_empty(), "the next job waits for the retry");
+    Ok(())
+}
+
+#[sqlx::test(migrations = "./sql/migrations")]
+async fn a_queue_gives_its_jobs_in_id_order(pool: PgPool) -> anyhow::Result<()> {
+    let state = common::state(pool.clone());
+    sqlx::query("INSERT INTO queues(queue_id, parallelism) VALUES ('q', 2)")
+        .execute(&pool)
+        .await?;
+    let older = enqueue_in_queue(&pool, "q").await;
+    enqueue_in_queue(&pool, "q").await;
+    // the older job was retried: still first in its queue
+    sqlx::query("UPDATE enqueued SET retry = 1 WHERE id = $1")
+        .bind(older)
+        .execute(&pool)
+        .await?;
+    let jobs = common::fetch(&state, 1).await;
+    let ids: Vec<i64> = jobs.iter().map(|j| j.job.id).collect();
+    assert_eq!(ids, [older]);
+    Ok(())
+}
+
+#[sqlx::test(migrations = "./sql/migrations")]
+async fn enqueue_v1_checks_the_form_of_key_and_queue(pool: PgPool) -> anyhow::Result<()> {
+    for (field, bad) in [("key", "two\nlines"), ("queue", "no spaces")] {
+        let job = serde_json::json!({ "url": "http://localhost/x", field: bad }).to_string();
+        let err = sqlx::query_scalar::<_, i64>("SELECT enqueue_v1($1::jsonb)")
+            .bind(job)
+            .fetch_one(&pool)
+            .await
+            .expect_err("rejected");
+        assert!(
+            err.to_string().contains(&format!("{field} must be")),
+            "{err}"
+        );
+    }
+    sqlx::query_scalar::<_, i64>(
+        "SELECT enqueue_v1('{\"url\": \"http://localhost/x\", \"key\": \"Order 1/abc=\", \"queue\": \"q:1\"}')",
+    )
+    .fetch_one(&pool)
+    .await?;
+    Ok(())
+}

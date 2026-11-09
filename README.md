@@ -187,11 +187,11 @@ DATABASE_URL=postgres://user:pass@localhost/irisqo cargo run --release -- --help
 | Option | Default | |
 |---|---|---|
 | `--port` | 8102 | API port |
-| `--concurrency` | 64 | jobs in flight across all cores |
+| `--workers` | 8 | worker tasks; each holds and runs up to `--prefetch` jobs at once |
 | `--db-connections` | 32 | pool size per instance, keep the sum over instances below Postgres `max_connections` |
 | `--db-schema` | irisqo | Postgres schema of the tables and functions, created when missing; `IRISQO_DB_SCHEMA` |
 | `--interval` | 1000 | ms between queue polls when the queue is empty |
-| `--prefetch` | 8 | jobs claimed per fetch: `max(prefetch, concurrency / 4)` |
+| `--prefetch` | 8 | jobs a worker holds and runs at once; in flight in all: `workers x prefetch` (64 by default), one fetch takes that many |
 | `--timeout` / `--max-timeout` | 3000 / 300000 | default and max request timeout, ms |
 | `--retention-hours` | 168 | processed jobs older than this are deleted, `0` keeps them |
 | `--trace-url` | — | UI link to a trace, `{trace_id}` is replaced |

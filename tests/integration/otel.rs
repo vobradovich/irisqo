@@ -105,7 +105,7 @@ async fn job_continues_the_request_trace(pool: PgPool) -> anyhow::Result<()> {
 
     // the result links to the attempt
     let (result_trace, result_span): (Option<String>, Option<String>) = sqlx::query_as(
-        "SELECT outcome->>'trace_id', outcome->>'span_id' FROM results WHERE id = $1",
+        "SELECT outcome->>'trace_id', outcome->>'span_id' FROM processed WHERE id = $1",
     )
     .bind(job_id)
     .fetch_one(&pool)

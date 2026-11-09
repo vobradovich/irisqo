@@ -133,9 +133,9 @@ pub fn prepare_job(
                 Some(t) => until = Some(t),
                 None => bad("_until", "must be a unix time in seconds"),
             },
-            "_key" if !value.is_empty() && !is_ident(&value) => bad(
+            "_key" if !value.is_empty() && !is_key(&value) => bad(
                 "_key",
-                "must be 1 to 128 characters of a-z, 0-9, . _ : - and start with a letter or a digit",
+                "must be 1 to 255 characters without control characters",
             ),
             "_key" => key = (!value.is_empty()).then(|| value.into_owned()),
             _ => {
@@ -218,14 +218,7 @@ pub async fn create_job(state: &AppState, job: JobCreate) -> Result<JobCreateRow
         })
 }
 
-/// A name the database accepts (`ident`): lower case letters, digits, `.`, `_`, `:` and `-`.
-fn is_ident(value: &str) -> bool {
-    let mut chars = value.chars();
-    chars
-        .next()
-        .is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
-        && value.chars().count() <= 128
-        && chars.all(|c| {
-            c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | ':' | '-')
-        })
+/// An idempotency key (as in `enqueue_v1`): up to 255 characters, no control characters.
+fn is_key(value: &str) -> bool {
+    value.chars().count() <= 255 && !value.chars().any(char::is_control)
 }

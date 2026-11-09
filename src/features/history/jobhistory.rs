@@ -10,7 +10,7 @@ pub struct JobHistoryRow {
 }
 
 /// A step in the history of a job (`history.kind` in the database).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum HistoryKind {
     Scheduled,
@@ -23,22 +23,11 @@ pub enum HistoryKind {
     Cancelled,
     Callback,
     /// Not a known step: a newer database.
+    #[serde(other)]
     Unknown,
 }
 
 impl HistoryKind {
-    pub const KNOWN: [HistoryKind; 9] = [
-        HistoryKind::Scheduled,
-        HistoryKind::Enqueued,
-        HistoryKind::Claimed,
-        HistoryKind::Released,
-        HistoryKind::Retried,
-        HistoryKind::Completed,
-        HistoryKind::Failed,
-        HistoryKind::Cancelled,
-        HistoryKind::Callback,
-    ];
-
     pub const fn as_str(self) -> &'static str {
         match self {
             HistoryKind::Scheduled => "scheduled",
@@ -73,10 +62,7 @@ impl HistoryKind {
 
 impl From<String> for HistoryKind {
     fn from(value: String) -> Self {
-        Self::KNOWN
-            .into_iter()
-            .find(|s| s.as_str() == value)
-            .unwrap_or(HistoryKind::Unknown)
+        serde_json::from_value(serde_json::Value::String(value)).unwrap_or(Self::Unknown)
     }
 }
 

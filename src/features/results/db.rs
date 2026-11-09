@@ -7,7 +7,11 @@ use sqlx::{Pool, Postgres, types::Json};
 use super::JobResult;
 
 pub async fn get_by_id(pool: &Pool<Postgres>, job_id: i64) -> Result<Option<JobResultRow>, Error> {
-    const SQL: &str = "SELECT id, outcome AS meta, headers, body FROM results WHERE id = $1";
+    // a cancelled job has no response: its result is derived, not stored
+    const SQL: &str = "
+    SELECT id, coalesce(outcome, '{\"result\": \"cancelled\"}'::jsonb) AS meta, headers, body
+    FROM processed
+    WHERE id = $1 AND (outcome IS NOT NULL OR status = 'cancelled')";
     let job = sqlx::query_as::<_, JobResultRow>(SQL)
         .bind(job_id)
         .fetch_optional(pool)
@@ -50,13 +54,10 @@ where
     ), hist AS (
         INSERT INTO history(id, retry, kind, instance_id, message)
         SELECT i.id, i.retry, i.status, $7, i.message FROM input AS i INNER JOIN a ON a.id = i.id
-    ), p AS (
-        INSERT INTO processed(id, retry, instance_id, status)
-        SELECT i.id, i.retry, $7, i.status FROM input AS i INNER JOIN a ON a.id = i.id
-        RETURNING id
     )
-    INSERT INTO results(id, outcome, headers, body)
-    SELECT i.id, i.meta, i.headers, i.body FROM input AS i INNER JOIN p ON p.id = i.id";
+    INSERT INTO processed(id, retry, instance_id, status, outcome, headers, body)
+    SELECT i.id, i.retry, $7, i.status, i.meta, i.headers, i.body
+    FROM input AS i INNER JOIN a ON a.id = i.id";
     if items.is_empty() {
         return Ok(0);
     }

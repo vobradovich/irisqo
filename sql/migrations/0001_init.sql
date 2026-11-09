@@ -6,15 +6,15 @@
 --   scheduled -> enqueued -> claimed -> processed
 -- `at` is the time the row entered its state.
 
--- # Types
--- A name or an id given from outside: a queue, a schedule, an instance, an idempotency key.
--- 'payments', 'order-42', 'nightly.report', 'host-1:01arz3ndektsv4rrffq69g5fav'.
-CREATE DOMAIN ident AS varchar(128) CHECK (VALUE ~ '^[a-z0-9][a-z0-9._:-]{0,127}$');
+-- # Names and ids
+-- Queue, schedule and instance are `text`, a name like 'order-42' (^[a-z0-9][a-z0-9._:-]{0,127}$);
+-- a key is any text of 1-255 characters without control characters. They are checked where they
+-- come in (API, enqueue_v1), not by a regex CHECK on every write (about 12 us each).
 
 -- # Entities
 -- ## Instances
 CREATE TABLE instances (
-    instance_id ident PRIMARY KEY,                    -- host:ulid, in lower case
+    instance_id text PRIMARY KEY,                     -- host:ulid, in lower case
     roles       text[] NOT NULL                       -- what this process runs
                 CHECK (cardinality(roles) > 0
                        AND roles <@ ARRAY['http', 'worker', 'scheduler', 'retention', 'relay']),
@@ -30,7 +30,7 @@ CREATE TABLE instances (
 -- Only declared queues and queues with settings. A queue without a row here is dynamic with
 -- the defaults: N = 1, ordered, not paused, no rate limit.
 CREATE TABLE queues (
-    queue_id    ident PRIMARY KEY,                   -- 'payments', 'order-42'
+    queue_id    text PRIMARY KEY,                   -- 'payments', 'order-42'
     parallelism int NOT NULL DEFAULT 1
                 CHECK (parallelism > 0),
     ordered     boolean NOT NULL DEFAULT true,       -- a retry keeps its place in the queue
@@ -47,8 +47,8 @@ CREATE TABLE queues (
 -- The kind follows from `schedule`: digits only is an interval in seconds, otherwise cron.
 -- TODO: limit on the number of runs (`until` limits by time only).
 CREATE TABLE schedules (
-    schedule_id ident PRIMARY KEY,                   -- a name: given or generated (petname)
-    schedule    varchar(1024) NOT NULL,              -- '300' or '0 9 * * 1-5'
+    schedule_id text PRIMARY KEY,                    -- a name: given or generated (petname)
+    schedule    text NOT NULL,                       -- '300' or '0 9 * * 1-5'
     timezone    text NOT NULL DEFAULT 'UTC',         -- timezone of a cron schedule
     next_id     bigint NULL,                         -- the waiting run
     next_at     timestamptz NULL,
@@ -65,8 +65,8 @@ CREATE TABLE jobs (
     meta        jsonb NOT NULL,                      -- target, method, options, queue, priority, sink, callback, then, relation
     headers     jsonb NULL,
     body        bytea NULL,
-    key         ident NULL,                          -- client idempotency key, unique
-    schedule_id ident NULL REFERENCES schedules ON DELETE SET NULL,
+    key         text NULL,                          -- client idempotency key, unique
+    schedule_id text NULL REFERENCES schedules ON DELETE SET NULL,
     parent_id   bigint NULL REFERENCES jobs ON DELETE SET NULL   -- the job this one answers: callback / then / retry_of
 );
 CREATE UNIQUE INDEX ux_jobs_key     ON jobs (key) WHERE key IS NOT NULL;
@@ -80,7 +80,7 @@ CREATE TABLE scheduled (
     at       timestamptz NOT NULL,                   -- when to run
     retry    int NOT NULL DEFAULT 0
              CHECK (retry >= 0),
-    queue    ident NULL,                             -- meta.queue, copied to enqueued
+    queue    text NULL,                              -- meta.queue, copied to enqueued
     priority smallint NOT NULL DEFAULT 0,            -- meta.priority; higher runs first, copied to enqueued
     CONSTRAINT ck_scheduled_queue_priority CHECK (queue IS NULL OR priority = 0)
 );
@@ -114,7 +114,7 @@ CREATE TABLE enqueued (
     retry    int NOT NULL DEFAULT 0
              CHECK (retry >= 0),
     at       timestamptz NOT NULL DEFAULT now(),     -- the earliest moment the job may start
-    queue    ident NULL,                             -- copied on entry
+    queue    text NULL,                             -- copied on entry
     priority smallint NOT NULL DEFAULT 0,            -- copied from scheduled or meta.priority
     CONSTRAINT ck_enqueued_queue_priority CHECK (queue IS NULL OR priority = 0)
 );
@@ -127,35 +127,28 @@ CREATE INDEX ix_enqueued_queue      ON enqueued (queue, id)
 CREATE TABLE claimed (
     id          bigint PRIMARY KEY REFERENCES jobs ON DELETE CASCADE,
     retry       int NOT NULL,
-    queue       ident NULL,
-    instance_id ident NOT NULL,
+    queue       text NULL,
+    instance_id text NOT NULL,
     at          timestamptz NOT NULL DEFAULT now()       -- claim time
 );
 CREATE INDEX ix_claimed_queue       ON claimed (queue) WHERE queue IS NOT NULL;
 CREATE INDEX ix_claimed_instance_id ON claimed (instance_id);
 CREATE INDEX ix_claimed_at          ON claimed (at);   -- reaper
 
--- 4. processed: finished (without the target response)
+-- 4. processed: finished, with the response of the target (outcome, headers; the body only with --store-response)
 CREATE TABLE processed (
     id          bigint PRIMARY KEY REFERENCES jobs ON DELETE CASCADE,
     retry       int NOT NULL,
-    instance_id ident NOT NULL,
+    instance_id text NOT NULL,
     at          timestamptz NOT NULL DEFAULT now(),
     status      text NOT NULL
-                CHECK (status IN ('completed', 'failed', 'cancelled'))
+                CHECK (status IN ('completed', 'failed', 'cancelled')),
+    outcome     jsonb NULL,   -- HTTP status and version | timeout | error, trace_id/span_id; NULL: cancelled
+    headers     jsonb NULL,
+    body        bytea NULL
 );
 CREATE INDEX ix_processed_at        ON processed (at);                -- retention
 CREATE INDEX ix_processed_status_id ON processed (status, id DESC);   -- UI tabs
-
--- ## Outcome
--- The response of the target. The body is stored only with --store-response.
--- Deleted together with its processed row.
-CREATE TABLE results (
-    id      bigint PRIMARY KEY REFERENCES processed ON DELETE CASCADE,
-    outcome jsonb NOT NULL,   -- HTTP status and version | timeout | error, trace_id/span_id of the attempt
-    headers jsonb NULL,
-    body    bytea NULL
-);
 
 -- ## History
 -- Journal of state changes. seq is the cursor for the indexer (Quickwit / OpenObserve):
@@ -168,7 +161,7 @@ CREATE TABLE history (
     kind        text NOT NULL
                 CHECK (kind IN ('scheduled', 'enqueued', 'claimed', 'released', 'retried',
                                 'completed', 'failed', 'cancelled', 'callback')),
-    instance_id ident NULL,
+    instance_id text NULL,
     message     text NULL
 );
 CREATE INDEX ix_history_id_seq ON history (id, seq);
@@ -201,8 +194,7 @@ CREATE TABLE stats (
 --   key           idempotency key: a repeated key returns the existing job id
 --   traceparent, tracestate
 -- Only the format is checked: the target is not (no DNS, no private-address check). The
--- columns check the rest: the format of key and queue (ident), the range of priority
--- (smallint), a queue together with a priority.
+-- columns check the rest: the range of priority (smallint), a queue together with a priority.
 -- Schedules are not created here.
 CREATE FUNCTION enqueue_v1(job jsonb) RETURNS bigint
 LANGUAGE plpgsql SET search_path FROM CURRENT AS $$
@@ -223,7 +215,8 @@ BEGIN
         WHEN jsonb_typeof(job) IS DISTINCT FROM 'object'
             THEN 'must be a JSON object'
         WHEN coalesce(job->>'url', '') !~* '^https?://[^/?#[:space:]]+'
-            THEN 'url must be an http or https URL'
+            OR job->>'url' ~ '[[:space:][:cntrl:]]'
+            THEN 'url must be an http or https URL without spaces'
         WHEN coalesce(job->>'method', 'POST') !~* '^[a-z]{1,16}$'
             THEN 'method must be an HTTP method'
         WHEN jsonb_typeof(job->'headers') NOT IN ('object', 'null')
@@ -234,6 +227,10 @@ BEGIN
             THEN 'header values must be strings'
         WHEN jsonb_typeof(job->'body') = 'string' AND jsonb_typeof(job->'body_base64') = 'string'
             THEN 'body and body_base64 are exclusive'
+        WHEN v_key !~ '^[^[:cntrl:]]{1,255}$'
+            THEN 'key must be 1 to 255 characters without control characters'
+        WHEN v_queue !~ '^[a-z0-9][a-z0-9._:-]{0,127}$'
+            THEN 'queue must be 1 to 128 characters of a-z, 0-9, . _ : - and start with a letter or a digit'
         WHEN job->>'priority' !~ '^-?[0-9]{1,5}$'
             THEN 'priority must be an integer'
         WHEN job->>'timeout' !~ '^[1-9][0-9]{0,8}$'
@@ -390,6 +387,8 @@ CREATE FUNCTION claim_v1(
     p_queues      text[]  DEFAULT NULL
 )
 RETURNS TABLE (id bigint, retry int)
+-- ROWS: without it the planner assumes 1000 rows and joins the result with `jobs` by a seq scan of jobs
+ROWS 64
 LANGUAGE plpgsql SET search_path FROM CURRENT SET jit = off AS $$
 #variable_conflict use_column
 DECLARE
@@ -467,6 +466,9 @@ BEGIN
              FROM enqueued e
              WHERE e.queue = u.name
                AND e.at <= now()
+               -- the queue may have been paused or rate limited since the first step
+               AND NOT coalesce(q.paused, false)
+               AND (q.next_at IS NULL OR q.next_at <= now())
                AND (NOT coalesce(q.ordered, true)
                     OR NOT EXISTS (SELECT 1
                                    FROM enqueued h
@@ -481,7 +483,8 @@ BEGIN
         DELETE FROM enqueued
         WHERE id IN (SELECT a.id
                      FROM a
-                     ORDER BY a.queued, a.priority DESC, a.retry, a.id
+                     -- a queue gives its rows in id order, whatever their retry
+                     ORDER BY a.queued, a.priority DESC, CASE WHEN a.queued THEN 0 ELSE a.retry END, a.id
                      LIMIT p_limit)
         RETURNING id, retry, queue
     ), hist AS (

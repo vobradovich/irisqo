@@ -346,7 +346,7 @@ mod tests {
 
     fn options() -> WorkerOptions {
         WorkerOptions {
-            concurrency: 1,
+            workers: 1,
             poll_interval: std::time::Duration::from_secs(1),
             prefetch: 1,
             timeout: 3000,

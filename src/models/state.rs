@@ -45,10 +45,10 @@ pub struct SchedulerOptions {
 
 #[derive(Debug)]
 pub struct WorkerOptions {
-    /// Jobs in flight across all cores.
-    pub concurrency: usize,
+    /// Worker tasks; `workers * prefetch` jobs are in flight in all.
+    pub workers: usize,
     pub poll_interval: Duration,
-    /// Jobs assigned by one fetch: `max(prefetch, concurrency / 4)`.
+    /// Jobs a worker holds and runs at once (and claims in one fetch).
     pub prefetch: u16,
     pub timeout: u32,
     /// Upper bound for the per-job `_timeout`, in milliseconds.
@@ -74,11 +74,11 @@ xflags::xflags! {
         optional --db-connections n: u32
         /// Postgres schema of the tables and functions, created when missing. Default: irisqo
         optional --db-schema name: String
-        /// Jobs in flight across all cores. Default: 64
-        optional --concurrency n: usize
+        /// Worker tasks; each holds and runs up to --prefetch jobs at once. Default: 8
+        optional -w,--workers n: usize
         /// Worker Poll Interval in milliseconds. Default: 1000
         optional --interval n: u64
-        /// Prefetch count. Default: 8
+        /// Jobs a worker holds and runs at once; in flight in all: workers x prefetch. Default: 8
         optional --prefetch n: u16
         /// Default job timeout in milliseconds. Default: 3000
         optional --timeout n: u32
@@ -146,7 +146,7 @@ impl Options {
             port,
             db_connections,
             db_schema,
-            concurrency,
+            workers,
             interval,
             prefetch,
             timeout,
@@ -161,7 +161,7 @@ impl Options {
         take(port, "IRISQO_PORT", &var)?;
         take(db_connections, "IRISQO_DB_CONNECTIONS", &var)?;
         take(db_schema, "IRISQO_DB_SCHEMA", &var)?;
-        take(concurrency, "IRISQO_CONCURRENCY", &var)?;
+        take(workers, "IRISQO_WORKERS", &var)?;
         take(interval, "IRISQO_INTERVAL", &var)?;
         take(prefetch, "IRISQO_PREFETCH", &var)?;
         take(timeout, "IRISQO_TIMEOUT", &var)?;
@@ -252,7 +252,7 @@ impl AppState {
                 retention_hours: options.retention_hours.unwrap_or(7 * 24),
             }),
             worker_options: WorkerOptions {
-                concurrency: options.concurrency.unwrap_or(64).max(1),
+                workers: options.workers.unwrap_or(8).max(1),
                 poll_interval: Duration::from_millis(options.interval.unwrap_or(1000)),
                 prefetch: options.prefetch.unwrap_or(8),
                 timeout: options.timeout.unwrap_or(3000).min(max_timeout),
@@ -305,20 +305,17 @@ fn schema_names() {
     }
 }
 
-/// The times of jobs are set by the clock of the service and compared with `now()` of the
-/// database, so the two clocks must agree: warns once at the start when they do not.
+/// Job times come from the clock of the service but are compared with `now()` of the database:
+/// warns once at the start when the clocks differ.
 async fn warn_on_clock_skew(pool: &Pool<Postgres>) {
     const MAX_SKEW: chrono::TimeDelta = chrono::TimeDelta::seconds(1);
-    let before = chrono::Utc::now();
     let Ok(db_now) = sqlx::query_scalar::<_, chrono::DateTime<chrono::Utc>>("SELECT now()")
         .fetch_one(pool)
         .await
     else {
         return;
     };
-    let after = chrono::Utc::now();
-    // the database answered somewhere between the two readings: take the middle
-    let skew = db_now - (before + (after - before) / 2);
+    let skew = db_now - chrono::Utc::now();
     if skew.abs() > MAX_SKEW {
         tracing::warn!(
             "the clock of the database differs from this host by {} s: delays and schedules are off by that much",
@@ -330,19 +327,14 @@ async fn warn_on_clock_skew(pool: &Pool<Postgres>) {
 /// `hostname:ulid`, also used as the Postgres `application_name`.
 #[must_use]
 pub fn new_instance_id() -> String {
-    // the database keeps it as `ident`: lower case, a-z 0-9 . _ : -
-    let hostname: String = whoami::hostname()
+    // a valid name: lower case, a-z 0-9 . _ : -
+    let hostname = whoami::hostname()
         .unwrap_or_else(|_| "unknown".into())
         .to_lowercase()
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
-                c
-            } else {
-                '-'
-            }
-        })
-        .collect();
+        .replace(
+            |c: char| !(c.is_ascii_alphanumeric() || ".-_".contains(c)),
+            "-",
+        );
     format!(
         "{}:{}",
         hostname.trim_start_matches(['.', '_', '-']),
@@ -363,7 +355,7 @@ fn options_fall_back_to_the_environment() {
     assert_eq!(options.port, Some(8000), "the command line wins");
     assert_eq!(options.max_timeout, Some(1000));
     assert_eq!(options.environment(), Environment::Development);
-    assert_eq!(options.concurrency, None);
+    assert_eq!(options.workers, None);
 
     let mut bad = Options::from_vec(vec![]).expect("options");
     let err = bad

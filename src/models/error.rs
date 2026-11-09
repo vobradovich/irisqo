@@ -94,8 +94,7 @@ impl Error {
         Error::InvalidParams(vec![ParamError::new(parameter, detail)])
     }
 
-    /// A database error that may pass by itself (a lost connection, a restart, a deadlock):
-    /// the write that failed so may be repeated.
+    /// A database error that may pass (lost connection, restart, deadlock): the write may be repeated.
     pub fn is_transient(&self) -> bool {
         match self {
             Error::DbError(

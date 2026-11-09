@@ -70,7 +70,8 @@ pub async fn resume(
     WHERE schedule_id = $1
     RETURNING s.schedule, s.until, s.next_id,
         EXISTS (SELECT 1 FROM scheduled WHERE id = s.next_id)
-            OR EXISTS (SELECT 1 FROM enqueued WHERE id = s.next_id) AS pending";
+            OR EXISTS (SELECT 1 FROM enqueued WHERE id = s.next_id)
+            OR EXISTS (SELECT 1 FROM claimed WHERE id = s.next_id) AS pending";
     #[derive(sqlx::FromRow)]
     struct Resumed {
         schedule: String,
