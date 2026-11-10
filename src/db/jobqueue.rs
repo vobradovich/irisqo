@@ -12,21 +12,29 @@ pub async fn create(
     mut job: JobCreate,
     instance_id: &str,
 ) -> Result<JobCreateRow, Error> {
-    let key = &job.key.clone();
-    let res = if let Some(schedule) = job.schedule.take() {
+    let key = job.key.clone();
+    let schedule = job.schedule.take();
+    let is_schedule = schedule.is_some();
+    let res = if let Some(schedule) = schedule {
         create_with_schedule(pool, job, schedule, instance_id).await
     } else if let Some(at) = job.at {
         create_at(pool, job, at, instance_id).await
     } else {
         create_enqueue(pool, job, instance_id).await
     };
-    // Check existing Job for idempotency
+    // Check existing Job for idempotency: the key of a schedule is its schedule id
     if let Err(Error::DbError(sqlx::Error::Database(ref err))) = res
         && err.code().unwrap_or_default() == "23505"
         && let Some(key) = key
-        && let Some(job) = get_id_by_key(pool, key).await?
     {
-        return Ok(job);
+        let existing = if is_schedule {
+            get_schedule_run(pool, &key).await?
+        } else {
+            get_id_by_key(pool, &key).await?
+        };
+        if let Some(job) = existing {
+            return Ok(job);
+        }
     }
     res
 }
@@ -226,9 +234,26 @@ pub async fn get_id_by_key(
     pool: &Pool<Postgres>,
     key: &str,
 ) -> Result<Option<JobCreateRow>, Error> {
-    const SQL: &str = "SELECT id, schedule_id, key FROM jobs WHERE key = $1 OR schedule_id = $1 ORDER BY id LIMIT 1";
+    const SQL: &str = "SELECT id, schedule_id, key FROM jobs WHERE key = $1";
     let job = sqlx::query_as::<_, JobCreateRow>(SQL)
         .bind(key)
+        .fetch_optional(pool)
+        .await?;
+    Ok(job)
+}
+
+/// The current run of a schedule.
+async fn get_schedule_run(
+    pool: &Pool<Postgres>,
+    schedule_id: &str,
+) -> Result<Option<JobCreateRow>, Error> {
+    const SQL: &str = "
+    SELECT j.id, s.schedule_id, j.key
+    FROM schedules AS s
+    INNER JOIN jobs AS j ON j.id = s.next_id
+    WHERE s.schedule_id = $1";
+    let job = sqlx::query_as::<_, JobCreateRow>(SQL)
+        .bind(schedule_id)
         .fetch_optional(pool)
         .await?;
     Ok(job)
