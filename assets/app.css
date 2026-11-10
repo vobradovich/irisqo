@@ -502,12 +502,13 @@ nav.segmented a[aria-current] { background: var(--accent-soft); color: var(--lin
 }
 .job-cols {
   display: grid;
-  grid-template-columns: 5.5rem 8rem minmax(14rem, 1fr) 5rem 9rem 8rem 7rem;
+  grid-template-columns: 5.5rem 8rem minmax(14rem, 1fr) 5rem 9rem 12rem 7rem;
   gap: 0.75rem;
   align-items: center;
-  min-width: 60rem;
+  min-width: 64rem;
   padding: 0.5rem 1rem;
 }
+.job-cols .key { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .jobs-head {
   border-bottom: 1px solid var(--border);
   color: var(--muted);

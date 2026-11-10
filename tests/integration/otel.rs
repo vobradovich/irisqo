@@ -33,7 +33,7 @@ async fn create_traced(
         .expect("request");
     let response = state.client.request(req).await.expect("response");
     assert_eq!(response.status(), StatusCode::CREATED);
-    common::header(&response, "job-id")
+    common::header(&response, "irisqo-job-id")
         .and_then(|v| v.parse().ok())
         .expect("job-id")
 }

@@ -111,6 +111,7 @@ pub struct JobRowView {
     pub due: String,
     pub due_title: String,
     pub instance_id: Option<String>,
+    pub key: Option<String>,
     pub schedule_id: Option<String>,
 }
 
@@ -161,6 +162,7 @@ impl JobRowView {
             due,
             due_title,
             instance_id: job.instance_id.clone(),
+            key: job.key.clone(),
             schedule_id: job.schedule_id.clone(),
         }
     }

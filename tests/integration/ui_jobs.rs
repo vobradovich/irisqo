@@ -17,7 +17,7 @@ async fn send(
 async fn job_id(state: &irisqo::AppState, addr: std::net::SocketAddr, target: &str) -> i64 {
     let response = common::create(state, addr, target).await;
     assert_eq!(response.status(), StatusCode::CREATED, "{target}");
-    common::header(&response, "job-id")
+    common::header(&response, "irisqo-job-id")
         .and_then(|v| v.parse().ok())
         .expect("job-id")
 }
@@ -188,7 +188,7 @@ async fn schedule_pause_resume_and_one_chain(pool: PgPool) -> anyhow::Result<()>
     let state = common::state(pool.clone());
     let addr = common::spawn_app(&state).await;
     let response = common::create(&state, addr, &format!("http://{addr}/echo?_interval=60")).await;
-    let schedule_id = common::header(&response, "schedule-id").expect("schedule-id");
+    let schedule_id = common::header(&response, "irisqo-schedule-id").expect("schedule-id");
     let api = |action: &str| format!("http://{addr}/api/v1/schedules/{schedule_id}/{action}");
 
     // pause: paused, the pending run is cancelled
@@ -259,7 +259,7 @@ async fn ui_pages_and_actions(pool: PgPool) -> anyhow::Result<()> {
     let ui = |path: &str| format!("http://{addr}{path}");
     let pending = job_id(&state, addr, &format!("http://{addr}/echo?_delay=600")).await;
     let response = common::create(&state, addr, &format!("http://{addr}/echo?_interval=60")).await;
-    let schedule_id = common::header(&response, "schedule-id").expect("schedule-id");
+    let schedule_id = common::header(&response, "irisqo-schedule-id").expect("schedule-id");
 
     let (status, _, html) = send(&state, Method::GET, &ui("/ui/jobs"), false).await;
     assert_eq!(status, StatusCode::OK);
