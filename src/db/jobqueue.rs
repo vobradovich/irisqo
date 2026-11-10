@@ -346,17 +346,19 @@ pub async fn reap_expired_locks(
     Ok(res.rows_affected())
 }
 
-/// Claims up to `prefetch` enqueued jobs for `instance_id` (`claim_v1`).
+/// Claims up to `prefetch` enqueued jobs for `instance_id` and returns them (`claim_v1`: the
+/// jobs without a queue first, the queues get what is left, in one call and one transaction).
 ///
-/// The rows are fetched in full, so the statement (and its row locks) is committed
-/// before any job runs: a worker completing a job never waits on the fetch itself.
+/// `claim_v1` reads the jobs in the statement that claims them: a join with `jobs` outside
+/// would use an older snapshot and miss a job enqueued meanwhile, which would stay claimed and
+/// never run. The claim is committed before any job runs: a worker completing a job never
+/// waits on the fetch itself.
 pub async fn fetch_job_with_retry(
     pool: &Pool<Postgres>,
     instance_id: &str,
     prefetch: i32,
 ) -> Result<Vec<JobWithRetry>, Error> {
-    const SQL: &str =
-        "SELECT j.*, c.retry FROM claim_v1($2, $1) AS c INNER JOIN jobs AS j ON j.id = c.id";
+    const SQL: &str = "SELECT * FROM claim_v1($2, $1)";
     let rows = sqlx::query(SQL)
         .bind(prefetch)
         .bind(instance_id)
@@ -368,18 +370,19 @@ pub async fn fetch_job_with_retry(
             Ok(job) => jobs.push(job),
             // an unreadable job (a bad URL, say) fails alone, it must not hold the batch
             Err(err) => {
-                let entry = JobEntry {
-                    id: row.try_get("id")?,
-                    retry: row.try_get("retry")?,
+                let (Ok(id), Ok(retry)) = (row.try_get("id"), row.try_get("retry")) else {
+                    tracing::error!("unreadable job without an id: {err:?}");
+                    continue;
                 };
-                tracing::error!(job_id = entry.id, "unreadable job: {err:?}");
+                let entry = JobEntry { id, retry };
+                tracing::error!(job_id = id, "unreadable job: {err:?}");
                 let result = JobResult::from(Error::from(err));
                 // when this write fails too, the job stays claimed (the lock reaper releases it)
                 // but the rest of the batch must still run
                 _ = results::processed(pool, entry, instance_id, &result)
                     .await
                     .inspect_err(|err| {
-                        tracing::error!(job_id = entry.id, "result of an unreadable job: {err:?}");
+                        tracing::error!(job_id = id, "result of an unreadable job: {err:?}");
                     });
             }
         }

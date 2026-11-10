@@ -94,6 +94,10 @@ CREATE INDEX ix_jobs_parent_id   ON jobs (parent_id) WHERE parent_id IS NOT NULL
 
 ### 1. scheduled: waits for its time
 
+`scheduled`, `enqueued` and `claimed` live on insert and delete: every claim starts at the head of an index, through the
+dead entries. Their autovacuum is set by a small number of dead rows (`autovacuum_vacuum_scale_factor = 0`,
+`autovacuum_vacuum_threshold = 1000`, and the same for analyze), not by a share of the table.
+
 ```sql
 CREATE TABLE scheduled (
     id       bigint PRIMARY KEY REFERENCES jobs ON DELETE CASCADE,
@@ -111,14 +115,14 @@ CREATE INDEX ix_scheduled_at ON scheduled (at);
 
 A job has either a queue or a priority: priority orders only the rows without a queue.
 
-`claim_v1` selects in one transaction per batch:
+`claim_v1` claims a batch in one call (one transaction): first the jobs without a queue (`claim_plain_v1`), then the
+queues get the room that is left (`claim_queued_v1`).
 
-- rows without a queue first: `priority DESC`, `retry` (new jobs before retries), `id`;
-- queues only when those rows do not fill the batch. A queue is locked with `pg_try_advisory_xact_lock`
+- rows without a queue: `priority DESC`, `retry` (new jobs before retries), `id`;
+- queues, only when the first part did not fill the batch. A queue is locked with `pg_try_advisory_xact_lock`
   (one worker at a time) and gives `parallelism - running` rows in `id` order, at most `rate`, nothing
   before `next_at`. A row of an ordered queue waits for every earlier row of the queue that is held
-  (`at > now()`);
-- `p_unqueued = false` skips the rows without a queue, `p_queues` limits the queues.
+  (`at > now()`). `p_queues` limits the queues.
 
 A retry with a delay goes back to `scheduled`, except in an ordered queue: there it stays in `enqueued` with `at` in the future and later jobs of the queue wait for it.
 
@@ -242,23 +246,46 @@ this call counted. After taking the lock the age is checked again: the previous 
 
 ### claim_v1
 
-`claim_v1(p_instance_id text, p_limit int, p_unqueued boolean DEFAULT true, p_queues text[] DEFAULT NULL)
-RETURNS TABLE (id bigint, retry int)`: claims up to `p_limit` jobs for a worker, `enqueued` -> `claimed`. The rules
-are described with the table `enqueued`. `p_queues`: NULL any queue, `'{}'` none. The caller joins `jobs` by id:
+`claim_v1(p_instance_id text, p_limit int, p_queues text[] DEFAULT NULL)
+RETURNS TABLE (id, meta, headers, body, schedule_id, key, retry)`: claims up to `p_limit` jobs for a worker,
+`enqueued` -> `claimed`, and returns them with the columns of `jobs` that a worker needs: the jobs without a queue first,
+then the queues with what is left (one call, one transaction). `p_queues`: NULL any queue, `'{}'` none.
 
 ```sql
-SELECT j.*, c.retry FROM claim_v1($1, $2) c JOIN jobs j USING (id)
+SELECT * FROM claim_v1($1, $2)
 ```
 
-- `jit` is off: the planner overestimates the queue part and JIT compilation took about 250 ms per call.
-- `ROWS 64`: without it the planner assumes 1000 rows and joins `jobs` by a seq scan.
+It calls `claim_plain_v1` and, when that gave less than `p_limit` rows, `claim_queued_v1` with the rest (`GET DIAGNOSTICS
+ROW_COUNT` counts the first part). `jit` is off: the planner overestimates the queue part and JIT compilation took about
+250 ms per call.
 
-Step 1 locks the queues (`v_queues`). It is skipped when the rows without a queue already fill the batch. The locks
-are taken in a statement of their own: the next statement reads `claimed` after them, so two workers never fill the
-same free slot. Inside it, the recursive `qs` finds the distinct waiting queues (index skip scan), `src` is the waiting
-queues or the ones this worker serves, `ready` the queues that can give a job right now.
+### claim_plain_v1
 
-Step 2 takes the rows: first the rows without a queue (new jobs before retries), then, for the locked queues, the free
-slots in `id` order (an ordered queue waits for a held row; the queue may have been paused or rate limited since the
-first step). A queue gives its rows in `id` order, whatever their retry. The rows are deleted from `enqueued`,
-written to `history` and inserted into `claimed`; a rate-limited queue gets its `next_at`.
+`claim_plain_v1(p_instance_id text, p_limit int) RETURNS TABLE (id, meta, headers, body, schedule_id, key, retry)`:
+the jobs without a queue, a `LANGUAGE sql` function of one statement. Claims up to `p_limit` jobs (`priority DESC`,
+`retry`, `id`; `FOR UPDATE SKIP LOCKED`), `enqueued` -> `claimed`, writes `history`, and returns the jobs in the order
+of the claim.
+
+### claim_queued_v1
+
+`claim_queued_v1(p_instance_id text, p_limit int, p_queues text[] DEFAULT NULL)` returns the same columns, in `id`
+order: the jobs of the queues. The rules are described with the table `enqueued`.
+
+Step 1 locks the queues (`v_queues`). The locks are taken in a statement of their own: the next statement reads
+`claimed` after them, so two workers never fill the same free slot. Inside it, the recursive `qs` finds the distinct
+waiting queues (index skip scan), `src` is the waiting queues or the ones this worker serves, `ready` the queues that can
+give a job right now.
+
+Step 2 takes the free slots of the locked queues in `id` order (the queue may have been paused or rate limited since the
+first step). A queue gives its rows in `id` order, whatever their retry. An ordered queue looks at its first `n` rows
+only, held ones included, and gives the rows before the first held one (`bool_or(at > now()) OVER (ORDER BY id)`); in
+`ready` it counts as having a job only when its head row is due. So a held retry at the head of a queue with a big
+backlog costs one probe, not a scan of the backlog. An unordered queue skips the held rows. The
+rows are deleted from `enqueued`, written to `history` and inserted into `claimed`; a rate-limited queue gets its
+`next_at`.
+
+### Why the jobs are returned by the claim
+
+The claim functions read the jobs in the statement that claims them. Every statement of a plpgsql function takes a fresh
+snapshot, so a join with `jobs` outside the function (`... FROM claim_v1(..) c JOIN jobs j`) would use an older one and
+drop a job enqueued meanwhile: it would stay in `claimed` and never run until the lock reaper released it.

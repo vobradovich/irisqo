@@ -652,3 +652,150 @@ async fn the_app_creates_and_uses_its_own_schema(pool: PgPool) -> anyhow::Result
     assert_eq!(jobs.iter().map(|j| j.job.id).collect::<Vec<_>>(), [id]);
     Ok(())
 }
+
+/// `claim_v1` takes a fresh snapshot of its own: a job enqueued while a claim runs can be
+/// claimed although the snapshot of the caller does not see its row in `jobs` yet.
+#[sqlx::test(migrations = "./sql/migrations")]
+async fn a_job_enqueued_during_a_claim_is_not_lost(pool: PgPool) -> anyhow::Result<()> {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let state = common::state(pool.clone());
+    let stop = Arc::new(AtomicBool::new(false));
+    let writers: Vec<_> = (0..4)
+        .map(|_| {
+            let (pool, stop) = (pool.clone(), Arc::clone(&stop));
+            tokio::spawn(async move {
+                while !stop.load(Ordering::Relaxed) {
+                    sqlx::query("SELECT enqueue_v1('{\"url\": \"http://localhost/x\"}')")
+                        .execute(&pool)
+                        .await
+                        .expect("enqueue_v1");
+                }
+            })
+        })
+        .collect();
+
+    let mut returned = 0;
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    while std::time::Instant::now() < deadline {
+        returned += common::fetch(&state, 16).await.len();
+    }
+    stop.store(true, Ordering::Relaxed);
+    for writer in writers {
+        writer.await?;
+    }
+
+    let claimed = common::count(&pool, "SELECT count(*) FROM claimed").await;
+    assert!(returned > 0);
+    assert_eq!(
+        i64::try_from(returned)?,
+        claimed,
+        "every claimed job is handed to a worker"
+    );
+    Ok(())
+}
+
+#[sqlx::test(migrations = "./sql/migrations")]
+async fn jobs_without_a_queue_come_first_and_the_queues_get_the_rest(
+    pool: PgPool,
+) -> anyhow::Result<()> {
+    let state = common::state(pool.clone());
+    let queued = enqueue_in_queue(&pool, "q").await;
+    let plain = common::insert_enqueued(&pool, 2).await;
+    let urgent: i64 = sqlx::query_scalar(
+        "SELECT enqueue_v1('{\"url\": \"http://localhost/x\", \"priority\": 5}')",
+    )
+    .fetch_one(&pool)
+    .await?;
+
+    // the batch is full of jobs without a queue: by priority, then by id; the queue waits
+    let ids =
+        |jobs: Vec<irisqo::models::JobWithRetry>| jobs.iter().map(|j| j.job.id).collect::<Vec<_>>();
+    assert_eq!(
+        ids(common::fetch(&state, 3).await),
+        [urgent, plain[0], plain[1]]
+    );
+    assert_eq!(
+        common::count(&pool, "SELECT count(*) FROM claimed WHERE queue = 'q'").await,
+        0
+    );
+
+    // the queue gets the room that is left
+    let more = enqueue_in_queue(&pool, "other").await;
+    assert_eq!(ids(common::fetch(&state, 5).await), [queued, more]);
+    Ok(())
+}
+
+#[sqlx::test(migrations = "./sql/migrations")]
+async fn a_held_head_of_an_ordered_queue_does_not_cost_the_backlog(
+    pool: PgPool,
+) -> anyhow::Result<()> {
+    let state = common::state(pool.clone());
+    sqlx::query("INSERT INTO queues(queue_id, parallelism) VALUES ('q', 8)")
+        .execute(&pool)
+        .await?;
+    sqlx::query(
+        "WITH a AS (INSERT INTO jobs(meta) SELECT jsonb_build_object('retry', 'none', 'timeout', 10000, 'sink', 'none') FROM generate_series(1, 100000) RETURNING id)
+         INSERT INTO enqueued(id, queue) SELECT id, 'q' FROM a",
+    )
+    .execute(&pool)
+    .await?;
+    sqlx::query("ANALYZE enqueued").execute(&pool).await?;
+    // the head is a retry with a delay: it holds its place, the backlog waits for it
+    sqlx::query("UPDATE enqueued SET at = now() + interval '1 hour' WHERE id = (SELECT min(id) FROM enqueued)")
+        .execute(&pool)
+        .await?;
+
+    let started = std::time::Instant::now();
+    assert!(common::fetch(&state, 64).await.is_empty());
+    assert!(
+        started.elapsed() < Duration::from_millis(100),
+        "the claim read the backlog: {:?}",
+        started.elapsed()
+    );
+
+    // the head is due: the queue gives its jobs again (parallelism 8)
+    sqlx::query("UPDATE enqueued SET at = now() WHERE id = (SELECT min(id) FROM enqueued)")
+        .execute(&pool)
+        .await?;
+    assert_eq!(common::fetch(&state, 64).await.len(), 8);
+    Ok(())
+}
+
+#[sqlx::test(migrations = "./sql/migrations")]
+async fn an_ordered_queue_gives_the_rows_before_a_held_one(pool: PgPool) -> anyhow::Result<()> {
+    let state = common::state(pool.clone());
+    sqlx::query("INSERT INTO queues(queue_id, parallelism) VALUES ('q', 8)")
+        .execute(&pool)
+        .await?;
+    let mut jobs = Vec::new();
+    for _ in 0..4 {
+        jobs.push(enqueue_in_queue(&pool, "q").await);
+    }
+    sqlx::query("UPDATE enqueued SET at = now() + interval '1 hour' WHERE id = $1")
+        .bind(jobs[2])
+        .execute(&pool)
+        .await?;
+    let got: Vec<i64> = common::fetch(&state, 10)
+        .await
+        .iter()
+        .map(|j| j.job.id)
+        .collect();
+    assert_eq!(
+        got,
+        [jobs[0], jobs[1]],
+        "the rows after the held one wait for it"
+    );
+
+    // an unordered queue skips the held row
+    sqlx::query("UPDATE queues SET ordered = false WHERE queue_id = 'q'")
+        .execute(&pool)
+        .await?;
+    let got: Vec<i64> = common::fetch(&state, 10)
+        .await
+        .iter()
+        .map(|j| j.job.id)
+        .collect();
+    assert_eq!(got, [jobs[3]]);
+    Ok(())
+}
