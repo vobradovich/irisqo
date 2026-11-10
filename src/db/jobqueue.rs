@@ -187,7 +187,11 @@ where
     const SQL: &str = "
     WITH a AS (
         INSERT INTO jobs(meta, headers, body, schedule_id, key)
-        SELECT j.meta, j.headers, j.body, j.schedule_id, j.schedule_id || '-' || extract(epoch FROM $2::timestamptz)::bigint
+        SELECT j.meta, j.headers, j.body, j.schedule_id,
+            -- `{schedule_id}-{secs}`; the next run can fall in the second of the previous one: then `-{previous id}`
+            CASE WHEN EXISTS (SELECT 1 FROM jobs AS k WHERE k.key = j.schedule_id || '-' || extract(epoch FROM $2::timestamptz)::bigint)
+                 THEN j.schedule_id || '-' || extract(epoch FROM $2::timestamptz)::bigint || '-' || j.id
+                 ELSE j.schedule_id || '-' || extract(epoch FROM $2::timestamptz)::bigint END
         FROM jobs AS j
         -- only the latest run continues the schedule (a manually retried old run does not)
         INNER JOIN schedules AS s ON s.schedule_id = j.schedule_id AND NOT s.paused AND s.next_id = j.id
