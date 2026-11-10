@@ -398,7 +398,7 @@ async fn schedule_next_at(
     if row.paused {
         return Ok(None);
     }
-    let Ok(schedule) = JobSchedule::from_row(&row.rule, &row.tz).inspect_err(|err| {
+    let Ok(schedule) = JobSchedule::from_row(&row.rule, &row.tz, row.until).inspect_err(|err| {
         error!({ instance_id = app_state.instance_id, schedule_id }, "JobSchedule::parse error {:?}", err);
     }) else {
         return Ok(None);
@@ -406,7 +406,7 @@ async fn schedule_next_at(
     // after the current run's time too: a run done early (enqueued by hand) must not
     // schedule the next one at its own time
     let after = row.next_at.map_or_else(Utc::now, |at| at.max(Utc::now()));
-    Ok(schedule.next(after, row.until))
+    Ok(schedule.next(after))
 }
 
 /// Schedules a retry when the error is worth one; returns the final result otherwise.

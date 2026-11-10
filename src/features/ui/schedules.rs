@@ -17,7 +17,7 @@ use super::{
 };
 use crate::{
     db::jobview::JobStatus,
-    features::schedules::{self, JobSchedule, ScheduleView},
+    features::schedules::{self, JobSchedule, ScheduleRule, ScheduleView},
     models::{AppState, Error, JobSink},
 };
 
@@ -38,14 +38,17 @@ pub struct ScheduleRowView {
 }
 
 fn rule_hint(rule: &str, tz: &str, until: Option<DateTime<Utc>>) -> String {
-    let base = match JobSchedule::from_row(rule, tz) {
-        Ok(JobSchedule::Interval { interval }) => match interval {
+    let base = match JobSchedule::from_row(rule, tz, until) {
+        Ok(JobSchedule {
+            rule: ScheduleRule::Interval(interval),
+            ..
+        }) => match interval {
             i if i % 86_400 == 0 => format!("every {} d", i / 86_400),
             i if i % 3600 == 0 => format!("every {} h", i / 3600),
             i if i % 60 == 0 => format!("every {} min", i / 60),
             i => format!("every {i} s"),
         },
-        Ok(JobSchedule::Cron { tz, .. }) => format!("cron, {}", tz.name()),
+        Ok(JobSchedule { tz, .. }) => format!("cron, {}", tz.name()),
         Err(_) => "invalid".into(),
     };
     match until {

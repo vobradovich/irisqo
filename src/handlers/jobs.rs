@@ -108,7 +108,6 @@ pub(crate) fn prepare_spec(
         body,
         at,
         schedule: None,
-        until: None,
         key: spec.key,
     })
 }

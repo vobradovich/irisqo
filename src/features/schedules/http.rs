@@ -1,4 +1,4 @@
-use super::JobSchedule;
+use super::{JobSchedule, ScheduleRule};
 use crate::handlers::{
     http::{KEY_RULE, TIME_RULE, TZ_RULE, is_key, job_headers, parse_body},
     jobs::{JobSpec, prepare_spec},
@@ -56,18 +56,18 @@ struct ScheduleSpec {
 }
 
 /// `cron` or `interval`, one of them.
-fn parse_schedule(cron: Option<&str>, interval: Option<u32>) -> Result<JobSchedule, ParamError> {
+fn parse_rule(cron: Option<&str>, interval: Option<u32>) -> Result<ScheduleRule, ParamError> {
     match (cron, interval) {
         (Some(_), Some(_)) => Err(ParamError::new(
             "cron",
             "cannot be set together with interval",
         )),
-        (Some(cron), None) => JobSchedule::parse_cron(cron),
+        (Some(cron), None) => ScheduleRule::parse_cron(cron),
         (None, Some(0)) => Err(ParamError::new(
             "interval",
             "must be a positive number of seconds",
         )),
-        (None, Some(interval)) => Ok(JobSchedule::Interval { interval }),
+        (None, Some(interval)) => Ok(ScheduleRule::Interval(interval)),
         (None, None) => Err(ParamError::new("cron", "cron or interval is required")),
     }
 }
@@ -83,7 +83,7 @@ fn prepare_schedule(
     if !is_key(schedule_id) {
         errors.push(ParamError::new("id", KEY_RULE));
     }
-    let schedule = parse_schedule(spec.cron.as_deref(), spec.interval)
+    let rule = parse_rule(spec.cron.as_deref(), spec.interval)
         .map_err(|err| errors.push(err))
         .ok();
     let tz = spec
@@ -94,11 +94,6 @@ fn prepare_schedule(
             errors.push(ParamError::new("tz", TZ_RULE));
             Tz::UTC
         });
-    if spec.tz.is_some() && matches!(schedule, Some(JobSchedule::Interval { .. })) {
-        errors.push(ParamError::new("tz", "applies to cron, not to interval"));
-    }
-    // the zone belongs to the cron expression
-    let schedule = schedule.map(|schedule| schedule.in_zone(tz));
     let until = spec.until.as_deref().and_then(|until| {
         let until = JobSchedule::parse_time(until);
         if until.is_none() {
@@ -106,6 +101,7 @@ fn prepare_schedule(
         }
         until
     });
+    let schedule = rule.map(|rule| JobSchedule { rule, tz, until });
     let job = prepare_spec(
         options,
         JobSpec {
@@ -122,7 +118,7 @@ fn prepare_schedule(
         return Err(errors);
     };
     // a schedule runs at least once
-    if schedule.next(job.at.unwrap_or(now), until).is_none() {
+    if schedule.next(job.at.unwrap_or(now)).is_none() {
         let parameter = if until.is_some() { "until" } else { "cron" };
         return Err(vec![ParamError::new(
             parameter,
@@ -130,7 +126,6 @@ fn prepare_schedule(
         )]);
     }
     job.schedule = Some(schedule);
-    job.until = until;
     // the key of the schedule's job is the id of the schedule
     job.key = Some(schedule_id.to_owned());
     Ok(job)
@@ -255,8 +250,17 @@ mod tests {
             r#"{{{META},"cron":"*/5 * * * *","until":"2100-01-01T00:00:00Z"}}"#
         ))
         .expect("valid schedule");
-        assert!(matches!(job.schedule, Some(JobSchedule::Cron { .. })));
-        assert_eq!(job.until, JobSchedule::from_unix_secs(4_102_444_800));
+        assert!(matches!(
+            job.schedule,
+            Some(JobSchedule {
+                rule: ScheduleRule::Cron(_),
+                ..
+            })
+        ));
+        assert_eq!(
+            job.schedule.as_ref().and_then(|s| s.until),
+            JobSchedule::from_unix_secs(4_102_444_800)
+        );
         assert_eq!(
             JobSchedule::parse_time("2100-01-01T00:00:00Z"),
             JobSchedule::parse_time("4102444800"),
@@ -265,7 +269,14 @@ mod tests {
         assert_eq!(job.key.as_deref(), Some("nightly"));
 
         let job = prepare(&format!(r#"{{{META},"interval":300}}"#)).expect("valid schedule");
-        assert_eq!(job.schedule, Some(JobSchedule::Interval { interval: 300 }));
+        assert_eq!(
+            job.schedule,
+            Some(JobSchedule {
+                rule: ScheduleRule::Interval(300),
+                tz: Tz::UTC,
+                until: None
+            })
+        );
         assert_eq!(
             job.key.as_deref(),
             Some("nightly"),
@@ -302,21 +313,16 @@ mod tests {
             r#"{{{META},"cron":"0 9 * * *","tz":"Europe/Berlin"}}"#
         ))
         .expect("valid schedule");
-        assert_eq!(
-            job.schedule.map(|s| s.tz()),
-            Some(chrono_tz::Europe::Berlin)
-        );
+        assert_eq!(job.schedule.map(|s| s.tz), Some(chrono_tz::Europe::Berlin));
         let job = prepare(&format!(r#"{{{META},"cron":"0 9 * * *"}}"#)).expect("valid schedule");
-        assert_eq!(job.schedule.map(|s| s.tz()), Some(Tz::UTC));
+        assert_eq!(job.schedule.map(|s| s.tz), Some(Tz::UTC));
 
-        for (schedule, detail) in [
-            (r#""cron":"0 9 * * *","tz":"Mars/Base""#, "an IANA"),
-            (r#""interval":60,"tz":"Europe/Berlin""#, "not to interval"),
-        ] {
-            let errors = prepare(&format!("{{{META},{schedule}}}")).expect_err("invalid");
-            assert_eq!(parameters(&errors), ["tz"], "{schedule}");
-            assert!(errors[0].detail.contains(detail), "{schedule}");
-        }
+        let errors = prepare(&format!(
+            r#"{{{META},"cron":"0 9 * * *","tz":"Mars/Base"}}"#
+        ))
+        .expect_err("no such zone");
+        assert_eq!(parameters(&errors), ["tz"]);
+        assert!(errors[0].detail.contains("an IANA"));
     }
 
     #[test]

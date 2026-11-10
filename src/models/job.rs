@@ -44,7 +44,6 @@ pub struct JobCreate {
     pub body: Bytes,
     pub at: Option<DateTime<Utc>>,
     pub schedule: Option<JobSchedule>,
-    pub until: Option<DateTime<Utc>>,
     pub key: Option<String>,
 }
 

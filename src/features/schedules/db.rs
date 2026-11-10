@@ -69,20 +69,25 @@ pub async fn upsert(
     let (Some(schedule_id), Some(schedule)) = (job.key.as_deref(), job.schedule.as_ref()) else {
         return Err(Error::invalid("schedule", "needs an id and a rule"));
     };
-    let Some(at) = schedule.next(job.at.unwrap_or_else(Utc::now), job.until) else {
+    let Some(at) = schedule.next(job.at.unwrap_or_else(Utc::now)) else {
         return Err(Error::invalid(
             "until",
             "the schedule has no run before it ends",
         ));
     };
-    let (schedule_id, rule, tz) = (schedule_id.to_owned(), schedule.to_string(), schedule.tz());
+    let (schedule_id, rule, tz, until) = (
+        schedule_id.to_owned(),
+        schedule.rule.to_string(),
+        schedule.tz,
+        schedule.until,
+    );
 
     let mut tx = pool.begin().await?;
     let next_id = sqlx::query_scalar::<_, Option<i64>>(SQL_SCHEDULE)
         .bind(&schedule_id)
         .bind(&rule)
         .bind(tz.name())
-        .bind(job.until)
+        .bind(until)
         .fetch_one(&mut *tx)
         .await?;
     if let Some(next_id) = next_id {
@@ -224,9 +229,9 @@ pub async fn resume(
     };
     if !pending
         && let Some(next_id) = next_id
-        && let Some(at) = JobSchedule::from_row(&rule, &tz)
+        && let Some(at) = JobSchedule::from_row(&rule, &tz, until)
             .map_err(|e| Error::InvalidParams(vec![e]))?
-            .next(next_at.map_or(now, |at| at.max(now)), until)
+            .next(next_at.map_or(now, |at| at.max(now)))
     {
         clone_schedule_at(&mut *tx, next_id, at, instance_id).await?;
     }

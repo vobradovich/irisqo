@@ -1,7 +1,7 @@
 use crate::models::Problem;
 use crate::{
     db,
-    features::schedules::JobSchedule,
+    features::schedules::{JobSchedule, ScheduleRule},
     models::{
         AppState, Error, HttpMeta, JobCreate, JobCreateRow, JobMeta, JobRetry, JobSink, ParamError,
         WorkerOptions, headers::forwarded_headers,
@@ -101,7 +101,7 @@ pub fn prepare_job(
     let mut at: Option<DateTime<Utc>> = None;
     let mut timeout: Option<u32> = None;
     let mut retry = JobRetry::None;
-    let mut schedule: Option<(JobSchedule, &'static str)> = None;
+    let mut rule: Option<(ScheduleRule, &'static str)> = None;
     let mut until: Option<DateTime<Utc>> = None;
     let mut key: Option<String> = None;
     let mut tz: Option<chrono_tz::Tz> = None;
@@ -128,11 +128,11 @@ pub fn prepare_job(
                 Err(_) => bad("_retry", "must be N, N|fixed|S or N|fibonacci|S"),
             },
             "_interval" => match value.parse() {
-                Ok(parsed @ JobSchedule::Interval { .. }) => schedule = Some((parsed, "_interval")),
+                Ok(parsed @ ScheduleRule::Interval(_)) => rule = Some((parsed, "_interval")),
                 _ => bad("_interval", "must be a positive number of seconds"),
             },
-            "_cron" => match JobSchedule::parse_cron(&value) {
-                Ok(parsed) => schedule = Some((parsed, "_cron")),
+            "_cron" => match ScheduleRule::parse_cron(&value) {
+                Ok(parsed) => rule = Some((parsed, "_cron")),
                 Err(err) => bad("_cron", &err.detail),
             },
             "_tz" => match value.parse() {
@@ -156,15 +156,23 @@ pub fn prepare_job(
             }
         }
     }
-    if tz.is_some() && !matches!(schedule, Some((JobSchedule::Cron { .. }, _))) {
-        errors.push(ParamError::new("_tz", "applies to _cron only"));
+    if until.is_some() && rule.is_none() {
+        errors.push(ParamError::new(
+            "_until",
+            "applies to _cron and _interval only",
+        ));
     }
-    // the zone belongs to the cron expression
-    let schedule =
-        schedule.map(|(schedule, parameter)| (schedule.in_zone(tz.unwrap_or_default()), parameter));
+    let schedule = rule.map(|(rule, parameter)| {
+        let schedule = JobSchedule {
+            rule,
+            tz: tz.unwrap_or_default(),
+            until,
+        };
+        (schedule, parameter)
+    });
     // a schedule runs at least once
     if let Some((schedule, parameter)) = &schedule
-        && schedule.next(at.unwrap_or(now), until).is_none()
+        && schedule.next(at.unwrap_or(now)).is_none()
     {
         let parameter = if until.is_some() { "_until" } else { parameter };
         errors.push(ParamError::new(
@@ -203,7 +211,6 @@ pub fn prepare_job(
         body: request.body,
         at,
         schedule: schedule.map(|(schedule, _)| schedule),
-        until,
         key,
     })
 }
@@ -254,6 +261,34 @@ pub(crate) fn is_key(value: &str) -> bool {
 mod tests {
     use super::*;
 
+    fn prepare_query(query: &str) -> Result<JobCreate, Vec<ParamError>> {
+        prepare_job(
+            &WorkerOptions::for_tests(),
+            JobRequest {
+                method: Method::GET,
+                url: "https://example.com",
+                query: Some(query),
+                headers: HashMap::new(),
+                body: Bytes::new(),
+            },
+            Utc::now(),
+        )
+    }
+
+    #[test]
+    fn until_belongs_to_a_schedule() {
+        let until = JobSchedule::parse_time("2100-01-01T00:00:00Z");
+        for query in ["_interval=60", "_cron=0+9+*+*+*"] {
+            let job =
+                prepare_query(&format!("{query}&_until=2100-01-01T00:00:00Z")).expect("valid");
+            assert_eq!(job.schedule.and_then(|s| s.until), until, "{query}");
+        }
+        // an end without a schedule is not a job that ends
+        let errors = prepare_query("_until=2100-01-01T00:00:00Z").expect_err("no schedule");
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].parameter, "_until");
+    }
+
     #[test]
     fn a_target_is_an_http_url() {
         let options = WorkerOptions::for_tests();
@@ -280,40 +315,14 @@ mod tests {
 
     #[test]
     fn tz_is_the_zone_of_cron() {
-        let options = WorkerOptions::for_tests();
-        let prepare = |query| {
-            prepare_job(
-                &options,
-                JobRequest {
-                    method: Method::GET,
-                    url: "https://example.com",
-                    query: Some(query),
-                    headers: HashMap::new(),
-                    body: Bytes::new(),
-                },
-                Utc::now(),
-            )
-        };
-        let job = prepare("_cron=0+9+*+*+*&_tz=Europe/Berlin").expect("valid");
+        let zone = |query| prepare_query(query).expect("valid").schedule.map(|s| s.tz);
         assert_eq!(
-            job.schedule.map(|s| s.tz()),
+            zone("_cron=0+9+*+*+*&_tz=Europe/Berlin"),
             Some(chrono_tz::Europe::Berlin)
         );
-        assert_eq!(
-            prepare("_cron=0+9+*+*+*")
-                .expect("valid")
-                .schedule
-                .map(|s| s.tz()),
-            Some(chrono_tz::Tz::UTC)
-        );
-        for query in [
-            "_interval=60&_tz=Europe/Berlin",
-            "_tz=Europe/Berlin",
-            "_cron=0+9+*+*+*&_tz=Mars/Base",
-        ] {
-            let errors = prepare(query).expect_err(query);
-            assert_eq!(errors.len(), 1, "{query}");
-            assert_eq!(errors[0].parameter, "_tz", "{query}");
-        }
+        assert_eq!(zone("_cron=0+9+*+*+*"), Some(chrono_tz::Tz::UTC));
+        let errors = prepare_query("_cron=0+9+*+*+*&_tz=Mars/Base").expect_err("no such zone");
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].parameter, "_tz");
     }
 }
