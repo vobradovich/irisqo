@@ -12,7 +12,7 @@ async fn job_without_sink_completes(pool: PgPool) -> anyhow::Result<()> {
     let state = common::state(pool.clone());
     let job = JobCreate {
         meta: JobMeta {
-            timeout: 1000,
+            timeout: Some(1000),
             ..JobMeta::default()
         },
         ..JobCreate::default()

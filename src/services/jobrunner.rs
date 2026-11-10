@@ -119,7 +119,7 @@ async fn job_attempt(app_state: &AppState, job_with_retry: JobWithRetry) -> Opti
     let job_retry = job.meta.retry;
     let schedule_id = job.schedule_id.clone();
     let job_result = match job.meta.sink {
-        JobSink::None => Ok(JobResult::default()),
+        JobSink::Noop => Ok(JobResult::default()),
         JobSink::Http(_) => job_run_http(app_state, job, retry).await,
     };
     let result = match job_result {
@@ -200,7 +200,12 @@ pub async fn complete(app_state: &AppState, completions: Vec<Completion>) {
 async fn job_run_http(app_state: &AppState, job: JobRow, retry: i32) -> Result<JobResult, Error> {
     let job_id = job.id;
     // jobs stored before the limit existed may carry a bigger timeout
-    let timeout_ms = job.meta.timeout.min(app_state.worker_options.max_timeout);
+    let options = &app_state.worker_options;
+    let timeout_ms = job
+        .meta
+        .timeout
+        .unwrap_or(options.timeout)
+        .min(options.max_timeout);
     let schedule_id = job.schedule_id.clone();
     let mut req = hyper::Request::<Full<Bytes>>::try_from(job)?;
     add_delivery_headers(req.headers_mut(), job_id, retry, schedule_id.as_deref());
@@ -370,7 +375,7 @@ async fn processed_scheduled(app_state: &AppState, completion: &Completion) -> R
     if let Some(next_at) = next_at {
         // `None`: the schedule was deleted or deactivated meanwhile
         if let Some(next_id) =
-            db::jobqueue::clone_schedule_at(&mut *tx, job_id, next_at, instance_id).await?
+            features::schedules::clone_schedule_at(&mut *tx, job_id, next_at, instance_id).await?
         {
             debug!({ instance_id, job_id, next_id, next_at = %next_at }, "==> clone and schedule");
         }
@@ -393,7 +398,7 @@ async fn schedule_next_at(
     if row.paused {
         return Ok(None);
     }
-    let Ok(schedule) = row.schedule.parse::<JobSchedule>().inspect_err(|err| {
+    let Ok(schedule) = JobSchedule::from_row(&row.rule, &row.tz).inspect_err(|err| {
         error!({ instance_id = app_state.instance_id, schedule_id }, "JobSchedule::parse error {:?}", err);
     }) else {
         return Ok(None);

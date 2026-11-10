@@ -7,11 +7,13 @@
 use std::collections::{BTreeMap, HashMap};
 
 use axum::body::Bytes;
-use chrono::{DateTime, NaiveDateTime, Utc};
+use chrono::{DateTime, NaiveDateTime, SecondsFormat, TimeZone, Utc, offset::LocalResult};
+use chrono_tz::Tz;
 use hyper::Method;
 use url::form_urlencoded;
 
 use crate::{
+    features::schedules::JobSchedule,
     handlers::http::{JobRequest, prepare_job},
     models::{
         JobCreate, ParamError, WorkerOptions,
@@ -21,8 +23,25 @@ use crate::{
 
 pub(super) const METHODS: [&str; 5] = ["GET", "POST", "PUT", "PATCH", "DELETE"];
 
-/// `datetime-local` values, read as UTC (the browser does not send its time zone).
+/// `datetime-local` values: the local time of the browser, read in its zone (the `tz` field), UTC
+/// when it is not known. A time with its own zone (RFC 3339) is taken as it is.
 const DATETIME_FORMATS: [&str; 2] = ["%Y-%m-%dT%H:%M", "%Y-%m-%dT%H:%M:%S"];
+
+/// A time of the form: RFC 3339 as it is, a `datetime-local` value in the zone of the browser.
+fn local_time(zone: Tz, value: &str) -> Result<DateTime<Utc>, &'static str> {
+    if let Some(at) = JobSchedule::parse_time(value) {
+        return Ok(at);
+    }
+    let local = DATETIME_FORMATS
+        .iter()
+        .find_map(|f| NaiveDateTime::parse_from_str(value, f).ok())
+        .ok_or("must be a date and time")?;
+    match zone.from_local_datetime(&local) {
+        // a time that exists twice is the first one
+        LocalResult::Single(at) | LocalResult::Ambiguous(at, _) => Ok(at.with_timezone(&Utc)),
+        LocalResult::None => Err("does not exist in your time zone: clocks go forward"),
+    }
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct HeaderRow {
@@ -54,6 +73,8 @@ pub struct JobForm {
     pub interval: String,
     pub cron: String,
     pub until: String,
+    /// The time zone of the browser (IANA name), filled by `tz.js`; UTC when it is not known.
+    pub tz: String,
     /// `none` | `immediate` | `fixed` | `fibonacci`
     pub retry: String,
     pub retry_count: String,
@@ -83,6 +104,7 @@ impl Default for JobForm {
             interval: String::new(),
             cron: String::new(),
             until: String::new(),
+            tz: String::new(),
             retry: "none".into(),
             retry_count: String::new(),
             retry_delay: String::new(),
@@ -135,6 +157,7 @@ impl JobForm {
                 "interval" => form.interval = value,
                 "cron" => form.cron = value,
                 "until" => form.until = value,
+                "tz" => form.tz = value,
                 "retry" => form.retry = value,
                 "retry_count" => form.retry_count = value,
                 "retry_delay" => form.retry_delay = value,
@@ -167,23 +190,18 @@ impl JobForm {
     fn job_params(&self) -> (Vec<(&'static str, String)>, BTreeMap<&'static str, String>) {
         let mut params = Vec::new();
         let mut errors = BTreeMap::new();
-        let mut unix = |field: &'static str, value: &str| -> Option<String> {
-            let parsed = DATETIME_FORMATS
-                .iter()
-                .find_map(|f| NaiveDateTime::parse_from_str(value.trim(), f).ok());
-            match parsed {
-                Some(dt) => Some(dt.and_utc().timestamp().to_string()),
-                None => {
-                    errors.insert(field, "must be a date and time".into());
-                    None
-                }
-            }
+        let zone = JobSchedule::zone(self.tz.trim());
+        let mut time = |field: &'static str, value: &str| {
+            local_time(zone, value.trim())
+                .map(|at| at.to_rfc3339_opts(SecondsFormat::Secs, true))
+                .map_err(|detail| errors.insert(field, detail.into()))
+                .ok()
         };
         let filled = |value: &str| (!value.trim().is_empty()).then(|| value.trim().to_owned());
         match self.when.as_str() {
             "delay" => params.push(("_delay", self.delay.trim().to_owned())),
             "at" => {
-                if let Some(t) = unix("at", &self.at) {
+                if let Some(t) = time("at", &self.at) {
                     params.push(("_delay_until", t));
                 }
             }
@@ -191,11 +209,16 @@ impl JobForm {
         }
         match self.repeat.as_str() {
             "interval" => params.push(("_interval", self.interval.trim().to_owned())),
-            "cron" => params.push(("_cron", self.cron.trim().to_owned())),
+            "cron" => {
+                params.push(("_cron", self.cron.trim().to_owned()));
+                if zone != chrono_tz::Tz::UTC {
+                    params.push(("_tz", zone.name().to_owned()));
+                }
+            }
             _ => {}
         }
         if self.repeat != "once"
-            && let Some(t) = filled(&self.until).and_then(|until| unix("until", &until))
+            && let Some(t) = filled(&self.until).and_then(|until| time("until", &until))
         {
             params.push(("_until", t));
         }
@@ -333,6 +356,7 @@ fn field_of(param: &str) -> &'static str {
         "_interval" => "interval",
         "_cron" => "cron",
         "_until" => "until",
+        "_tz" => "cron",
         "_retry" => "retry_count",
         "_timeout" => "timeout",
         "_key" => "key",
@@ -345,16 +369,7 @@ mod tests {
     use super::*;
 
     fn options() -> WorkerOptions {
-        WorkerOptions {
-            workers: 1,
-            poll_interval: std::time::Duration::from_secs(1),
-            max_poll_interval: std::time::Duration::from_secs(1),
-            prefetch: 1,
-            timeout: 3000,
-            max_timeout: 300_000,
-            shutdown_timeout: std::time::Duration::from_secs(1),
-            targets: std::sync::Arc::new(crate::models::TargetPolicy::allow_all()),
-        }
+        WorkerOptions::for_tests()
     }
 
     #[test]
@@ -417,7 +432,7 @@ mod tests {
             )
             .expect("valid");
         assert_eq!(job.at, DateTime::from_timestamp(1_893_553_440, 0));
-        assert_eq!(job.meta.timeout, 2000);
+        assert_eq!(job.meta.timeout, Some(2000));
         assert_eq!(job.key.as_deref(), Some("order-1"));
         let headers = job.headers.expect("headers");
         assert_eq!(
@@ -432,6 +447,72 @@ mod tests {
             form.preview()
                 .contains("Irisqo-Forward-authorization: ••••")
         );
-        assert!(form.preview().contains("?_delay_until=1893553440"));
+        assert!(
+            form.preview()
+                .contains("?_delay_until=2030-01-02T03:04:00Z")
+        );
+    }
+
+    #[test]
+    fn a_time_with_its_zone_is_taken_as_it_is() {
+        let form = JobForm::from_pairs(
+            b"method=GET&url=https%3A%2F%2Fexample.com&repeat=interval&interval=60&until=2030-01-02T03%3A04%3A00%2B03%3A00",
+        );
+        // 03:04 in +03:00 is 00:04 UTC
+        assert!(form.preview().contains("&_until=2030-01-02T00:04:00Z"));
+        let form = JobForm::from_pairs(
+            b"method=GET&url=https%3A%2F%2Fexample.com&repeat=interval&interval=60&until=2030-01-02T03%3A04",
+        );
+        assert!(
+            form.preview().contains("&_until=2030-01-02T03:04:00Z"),
+            "no zone: UTC"
+        );
+    }
+
+    #[test]
+    fn a_local_time_is_read_in_the_zone_of_the_browser() {
+        let preview = |query: &str| {
+            let form = JobForm::from_pairs(
+                format!(
+                    "method=GET&url=https%3A%2F%2Fexample.com&when=at&at=2030-01-02T03%3A04{query}"
+                )
+                .as_bytes(),
+            );
+            form.preview()
+        };
+        // Berlin is UTC+1 in January
+        assert!(preview("&tz=Europe%2FBerlin").contains("?_delay_until=2030-01-02T02:04:00Z"));
+        // no zone, or one that does not exist: UTC
+        for query in ["", "&tz=", "&tz=Mars%2FBase"] {
+            assert!(
+                preview(query).contains("?_delay_until=2030-01-02T03:04:00Z"),
+                "{query}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_time_that_the_clocks_skip_is_a_field_error() {
+        // 2030-03-31: 2:00 -> 3:00 in Berlin
+        let form = JobForm::from_pairs(
+            b"method=GET&url=https%3A%2F%2Fexample.com&when=at&at=2030-03-31T02%3A30&tz=Europe%2FBerlin",
+        );
+        let (_, errors) = form.job_params();
+        assert!(errors["at"].contains("clocks go forward"), "{errors:?}");
+    }
+
+    #[test]
+    fn cron_runs_in_the_zone_of_the_browser() {
+        let preview = |tz: &str| {
+            JobForm::from_pairs(
+                format!(
+                    "method=GET&url=https%3A%2F%2Fexample.com&repeat=cron&cron=0+9+*+*+*&tz={tz}"
+                )
+                .as_bytes(),
+            )
+            .preview()
+        };
+        assert!(preview("Europe%2FBerlin").contains("&_tz=Europe/Berlin"));
+        assert!(!preview("").contains("_tz"), "UTC is the default");
     }
 }

@@ -735,7 +735,7 @@ async fn a_held_head_of_an_ordered_queue_does_not_cost_the_backlog(
         .execute(&pool)
         .await?;
     sqlx::query(
-        "WITH a AS (INSERT INTO jobs(meta) SELECT jsonb_build_object('retry', 'none', 'timeout', 10000, 'sink', 'none') FROM generate_series(1, 100000) RETURNING id)
+        "WITH a AS (INSERT INTO jobs(meta) SELECT jsonb_build_object('retry', 'none', 'timeout', 10000, 'sink', 'noop') FROM generate_series(1, 100000) RETURNING id)
          INSERT INTO enqueued(id, queue) SELECT id, 'q' FROM a",
     )
     .execute(&pool)

@@ -19,7 +19,7 @@ select status::text::history_status as name, count(*) as count from public.proce
 WITH a AS (
 	INSERT INTO jobs( meta, headers, body)		
 		SELECT
-			'{"retry": "none", "timeout": 3000, "sink": "none"}'::jsonb as meta,
+			'{"retry": "none", "timeout": 3000, "sink": "noop"}'::jsonb as meta,
 			'{}'::jsonb as headers,
 			null as body
 		from generate_Series(1, 1000) s

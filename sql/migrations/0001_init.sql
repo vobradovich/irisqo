@@ -26,8 +26,8 @@ CREATE TABLE queues (
 
 CREATE TABLE schedules (
     schedule_id text PRIMARY KEY,
-    schedule    text NOT NULL,
-    timezone    text NOT NULL DEFAULT 'UTC',
+    rule        text NOT NULL,
+    tz          text NOT NULL DEFAULT 'UTC',
     next_id     bigint NULL,
     next_at     timestamptz NULL,
     until       timestamptz NULL,

@@ -37,15 +37,15 @@ pub struct ScheduleRowView {
     pub active: bool,
 }
 
-fn rule_hint(schedule: &str, until: Option<DateTime<Utc>>) -> String {
-    let base = match schedule.parse::<JobSchedule>() {
+fn rule_hint(rule: &str, tz: &str, until: Option<DateTime<Utc>>) -> String {
+    let base = match JobSchedule::from_row(rule, tz) {
         Ok(JobSchedule::Interval { interval }) => match interval {
             i if i % 86_400 == 0 => format!("every {} d", i / 86_400),
             i if i % 3600 == 0 => format!("every {} h", i / 3600),
             i if i % 60 == 0 => format!("every {} min", i / 60),
             i => format!("every {i} s"),
         },
-        Ok(JobSchedule::Cron { .. }) => "cron, UTC".into(),
+        Ok(JobSchedule::Cron { tz, .. }) => format!("cron, {}", tz.name()),
         Err(_) => "invalid".into(),
     };
     match until {
@@ -58,7 +58,7 @@ impl ScheduleRowView {
     fn new(view: &ScheduleView, now: DateTime<Utc>) -> Self {
         let (method, url) = match view.meta.as_ref().map(|m| &m.sink) {
             Some(JobSink::Http(http)) => (http.method.to_string(), http.url.to_string()),
-            Some(JobSink::None) | None => ("-".into(), "no sink".into()),
+            Some(JobSink::Noop) | None => ("-".into(), "noop".into()),
         };
         let (next, next_title) = match (view.pending, view.next_at) {
             // overdue: how long ago it was due, until the scheduler picks it up
@@ -75,8 +75,8 @@ impl ScheduleRowView {
             id: view.schedule_id.clone(),
             method,
             url,
-            rule: view.schedule.clone(),
-            rule_hint: rule_hint(&view.schedule, view.until),
+            rule: view.rule.clone(),
+            rule_hint: rule_hint(&view.rule, &view.tz, view.until),
             next,
             next_title,
             last_status,

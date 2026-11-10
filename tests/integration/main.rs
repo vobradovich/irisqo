@@ -7,8 +7,10 @@
 //! DATABASE_URL=postgres://postgres@localhost/postgres cargo test --features integration-tests
 //! ```
 
+mod api_v1;
 mod common;
 mod delivery;
+mod limits;
 mod otel;
 mod reliability;
 mod security;

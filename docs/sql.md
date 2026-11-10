@@ -55,13 +55,13 @@ CREATE TABLE queues (
 
 ### Schedules
 
-`next_id` is the waiting job, which is the template of the next run. `schedule`: digits only is an interval in seconds, otherwise cron. `miss_policy`: what to do with the runs missed in downtime: none | one | all.
+`next_id` is the waiting job, which is the template of the next run. `rule`: digits only is an interval in seconds, otherwise cron. `miss_policy`: what to do with the runs missed in downtime: none | one | all.
 
 ```sql
 CREATE TABLE schedules (
     schedule_id text PRIMARY KEY,
-    schedule    text NOT NULL,                -- '300' or '0 9 * * 1-5'
-    timezone    text NOT NULL DEFAULT 'UTC',  -- of a cron schedule
+    rule        text NOT NULL,                -- '300' or '0 9 * * 1-5'
+    tz          text NOT NULL DEFAULT 'UTC',  -- of a cron schedule
     next_id     bigint NULL,                  -- the waiting run
     next_at     timestamptz NULL,
     until       timestamptz NULL,

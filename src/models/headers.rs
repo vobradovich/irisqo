@@ -4,8 +4,6 @@
 use std::collections::HashMap;
 
 use http::HeaderMap;
-#[cfg(test)]
-use http::HeaderValue;
 
 /// Prefix of the request headers forwarded to the target, without the prefix.
 pub const FORWARD_PREFIX: &str = "irisqo-forward-";
@@ -94,49 +92,55 @@ pub fn is_reserved_header(name: &str) -> bool {
     ) || name.starts_with("irisqo-")
 }
 
-#[test]
-fn forwarded_headers_allowlist() {
-    let mut headers = HeaderMap::new();
-    for (name, value) in [
-        ("content-type", "application/json"),
-        ("authorization", "Bearer caller"),
-        ("cookie", "session=caller"),
-        ("x-custom", "dropped"),
-        ("irisqo-forward-authorization", "Bearer target"),
-        ("irisqo-forward-x-custom", "kept"),
-        ("irisqo-forward-host", "evil.example"),
-        ("irisqo-forward-irisqo-job-id", "spoofed"),
-        ("irisqo-forward-", "empty"),
-        (
-            "traceparent",
-            "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
-        ),
-    ] {
-        headers.insert(
-            http::HeaderName::from_static(name),
-            HeaderValue::from_static(value),
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use http::HeaderValue;
+
+    #[test]
+    fn forwarded_headers_allowlist() {
+        let mut headers = HeaderMap::new();
+        for (name, value) in [
+            ("content-type", "application/json"),
+            ("authorization", "Bearer caller"),
+            ("cookie", "session=caller"),
+            ("x-custom", "dropped"),
+            ("irisqo-forward-authorization", "Bearer target"),
+            ("irisqo-forward-x-custom", "kept"),
+            ("irisqo-forward-host", "evil.example"),
+            ("irisqo-forward-irisqo-job-id", "spoofed"),
+            ("irisqo-forward-", "empty"),
+            (
+                "traceparent",
+                "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+            ),
+        ] {
+            headers.insert(
+                http::HeaderName::from_static(name),
+                HeaderValue::from_static(value),
+            );
+        }
+        let forwarded = forwarded_headers(&headers);
+        assert_eq!(
+            forwarded,
+            HashMap::from([
+                ("content-type".into(), "application/json".into()),
+                ("authorization".into(), "Bearer target".into()),
+                ("x-custom".into(), "kept".into()),
+            ])
         );
     }
-    let forwarded = forwarded_headers(&headers);
-    assert_eq!(
-        forwarded,
-        HashMap::from([
-            ("content-type".into(), "application/json".into()),
-            ("authorization".into(), "Bearer target".into()),
-            ("x-custom".into(), "kept".into()),
-        ])
-    );
-}
 
-#[test]
-fn only_open_headers_are_shown() {
-    assert_eq!(
-        shown_value("Content-Type", "application/json"),
-        "application/json"
-    );
-    assert_eq!(shown_value("accept", "text/plain"), "text/plain");
-    for secret in ["authorization", "x-api-key", "x-signature", "x-anything"] {
-        assert_eq!(shown_value(secret, "value"), HIDDEN, "{secret}");
+    #[test]
+    fn only_open_headers_are_shown() {
+        assert_eq!(
+            shown_value("Content-Type", "application/json"),
+            "application/json"
+        );
+        assert_eq!(shown_value("accept", "text/plain"), "text/plain");
+        for secret in ["authorization", "x-api-key", "x-signature", "x-anything"] {
+            assert_eq!(shown_value(secret, "value"), HIDDEN, "{secret}");
+        }
+        assert_eq!(shown_value("x-empty", ""), "");
     }
-    assert_eq!(shown_value("x-empty", ""), "");
 }

@@ -3,8 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
-#[serde(tag = "retry")]
-#[serde(rename_all = "snake_case")]
+#[serde(tag = "retry", rename_all = "snake_case")]
 pub enum JobRetry {
     #[default]
     None,
@@ -123,146 +122,151 @@ impl FromStr for JobRetry {
     }
 }
 
-#[tokio::test]
-async fn job_retry_from_str_err() -> anyhow::Result<()> {
-    // arrange
-    let s = "test";
-    // act
-    let job_retry: Result<JobRetry, _> = s.parse();
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-    // assert
-    assert!(job_retry.is_err());
-    Ok(())
-}
+    #[tokio::test]
+    async fn job_retry_from_str_err() -> anyhow::Result<()> {
+        // arrange
+        let s = "test";
+        // act
+        let job_retry: Result<JobRetry, _> = s.parse();
 
-#[tokio::test]
-async fn job_retry_from_str_empty() -> anyhow::Result<()> {
-    // arrange
-    let s = "";
-    // act
-    let job_retry: Result<JobRetry, _> = s.parse();
-
-    // assert
-    assert!(job_retry.is_ok());
-    assert_eq!(JobRetry::None, job_retry.unwrap());
-    Ok(())
-}
-
-#[tokio::test]
-async fn job_retry_from_str_fixed() -> anyhow::Result<()> {
-    // arrange
-    let s = "3";
-    // act
-    let job_retry: Result<JobRetry, _> = s.parse();
-
-    // assert
-    assert!(job_retry.is_ok());
-    assert_eq!(JobRetry::Immediate { retry_count: 3 }, job_retry.unwrap());
-    Ok(())
-}
-
-#[tokio::test]
-async fn job_retry_from_str_fibonacci() -> anyhow::Result<()> {
-    // arrange
-    let s = "3|fibonacci|15";
-    // act
-    let job_retry: Result<JobRetry, _> = s.parse();
-
-    // assert
-    assert!(job_retry.is_ok());
-    assert_eq!(
-        JobRetry::Fibonacci {
-            retry_count: 3,
-            retry_delay: 15
-        },
-        job_retry.unwrap()
-    );
-    Ok(())
-}
-
-#[tokio::test]
-async fn job_retry_immediate_until_exhausted() -> anyhow::Result<()> {
-    // arrange
-    let retry = JobRetry::Immediate { retry_count: 3 };
-
-    // act & assert
-    assert_eq!(Some(0), retry.next_retry_in(0));
-    assert_eq!(Some(0), retry.next_retry_in(1));
-    assert_eq!(Some(0), retry.next_retry_in(2));
-    assert_eq!(None, retry.next_retry_in(3));
-    Ok(())
-}
-
-#[tokio::test]
-async fn job_retry_fixed_until_exhausted() -> anyhow::Result<()> {
-    // arrange
-    let retry = JobRetry::Fixed {
-        retry_count: 2,
-        retry_delay: 5,
-    };
-
-    // act & assert
-    assert_eq!(Some(5), retry.next_retry_in(0));
-    assert_eq!(Some(5), retry.next_retry_in(1));
-    assert_eq!(None, retry.next_retry_in(2));
-    Ok(())
-}
-
-#[tokio::test]
-async fn job_retry_fibonacci_until_exhausted() -> anyhow::Result<()> {
-    // arrange
-    let retry = JobRetry::Fibonacci {
-        retry_count: 4,
-        retry_delay: 2,
-    };
-
-    // act & assert
-    assert_eq!(Some(2 * JobRetry::fibonacci(0)), retry.next_retry_in(0));
-    assert_eq!(Some(2 * JobRetry::fibonacci(1)), retry.next_retry_in(1));
-    assert_eq!(Some(2 * JobRetry::fibonacci(2)), retry.next_retry_in(2));
-    assert_eq!(Some(2 * JobRetry::fibonacci(3)), retry.next_retry_in(3));
-    assert_eq!(None, retry.next_retry_in(4));
-    Ok(())
-}
-
-#[test]
-fn next_retry_in_is_capped() {
-    let fib = JobRetry::Fibonacci {
-        retry_count: u16::MAX,
-        retry_delay: u32::MAX,
-    };
-    assert_eq!(fib.next_retry_in(40), Some(MAX_RETRY_DELAY));
-    let fib = JobRetry::Fibonacci {
-        retry_count: 100,
-        retry_delay: 2_000,
-    };
-    assert_eq!(fib.next_retry_in(31), Some(MAX_RETRY_DELAY));
-    let fixed = JobRetry::Fixed {
-        retry_count: 1,
-        retry_delay: u32::MAX,
-    };
-    assert_eq!(fixed.next_retry_in(0), Some(MAX_RETRY_DELAY));
-}
-
-#[test]
-fn jitter_bounds() {
-    assert_eq!(with_jitter(0), 0);
-    assert_eq!(with_jitter(4), 4);
-    for _ in 0..1000 {
-        let d = with_jitter(100);
-        assert!((80..=120).contains(&d), "{d}");
+        // assert
+        assert!(job_retry.is_err());
+        Ok(())
     }
-    assert!(with_jitter(u32::MAX) >= u32::MAX - u32::MAX / 5);
-}
 
-#[test]
-fn job_retry_from_str_rejects_unknown_kind() {
-    assert!("3|fibonaci|15".parse::<JobRetry>().is_err());
-    assert_eq!(
-        Ok(JobRetry::Fixed {
-            retry_count: 3,
-            retry_delay: 15
-        }),
-        "3|fixed|15".parse::<JobRetry>().map_err(|e| e.to_string())
-    );
+    #[tokio::test]
+    async fn job_retry_from_str_empty() -> anyhow::Result<()> {
+        // arrange
+        let s = "";
+        // act
+        let job_retry: Result<JobRetry, _> = s.parse();
+
+        // assert
+        assert!(job_retry.is_ok());
+        assert_eq!(JobRetry::None, job_retry.unwrap());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn job_retry_from_str_fixed() -> anyhow::Result<()> {
+        // arrange
+        let s = "3";
+        // act
+        let job_retry: Result<JobRetry, _> = s.parse();
+
+        // assert
+        assert!(job_retry.is_ok());
+        assert_eq!(JobRetry::Immediate { retry_count: 3 }, job_retry.unwrap());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn job_retry_from_str_fibonacci() -> anyhow::Result<()> {
+        // arrange
+        let s = "3|fibonacci|15";
+        // act
+        let job_retry: Result<JobRetry, _> = s.parse();
+
+        // assert
+        assert!(job_retry.is_ok());
+        assert_eq!(
+            JobRetry::Fibonacci {
+                retry_count: 3,
+                retry_delay: 15
+            },
+            job_retry.unwrap()
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn job_retry_immediate_until_exhausted() -> anyhow::Result<()> {
+        // arrange
+        let retry = JobRetry::Immediate { retry_count: 3 };
+
+        // act & assert
+        assert_eq!(Some(0), retry.next_retry_in(0));
+        assert_eq!(Some(0), retry.next_retry_in(1));
+        assert_eq!(Some(0), retry.next_retry_in(2));
+        assert_eq!(None, retry.next_retry_in(3));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn job_retry_fixed_until_exhausted() -> anyhow::Result<()> {
+        // arrange
+        let retry = JobRetry::Fixed {
+            retry_count: 2,
+            retry_delay: 5,
+        };
+
+        // act & assert
+        assert_eq!(Some(5), retry.next_retry_in(0));
+        assert_eq!(Some(5), retry.next_retry_in(1));
+        assert_eq!(None, retry.next_retry_in(2));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn job_retry_fibonacci_until_exhausted() -> anyhow::Result<()> {
+        // arrange
+        let retry = JobRetry::Fibonacci {
+            retry_count: 4,
+            retry_delay: 2,
+        };
+
+        // act & assert
+        assert_eq!(Some(2 * JobRetry::fibonacci(0)), retry.next_retry_in(0));
+        assert_eq!(Some(2 * JobRetry::fibonacci(1)), retry.next_retry_in(1));
+        assert_eq!(Some(2 * JobRetry::fibonacci(2)), retry.next_retry_in(2));
+        assert_eq!(Some(2 * JobRetry::fibonacci(3)), retry.next_retry_in(3));
+        assert_eq!(None, retry.next_retry_in(4));
+        Ok(())
+    }
+
+    #[test]
+    fn next_retry_in_is_capped() {
+        let fib = JobRetry::Fibonacci {
+            retry_count: u16::MAX,
+            retry_delay: u32::MAX,
+        };
+        assert_eq!(fib.next_retry_in(40), Some(MAX_RETRY_DELAY));
+        let fib = JobRetry::Fibonacci {
+            retry_count: 100,
+            retry_delay: 2_000,
+        };
+        assert_eq!(fib.next_retry_in(31), Some(MAX_RETRY_DELAY));
+        let fixed = JobRetry::Fixed {
+            retry_count: 1,
+            retry_delay: u32::MAX,
+        };
+        assert_eq!(fixed.next_retry_in(0), Some(MAX_RETRY_DELAY));
+    }
+
+    #[test]
+    fn jitter_bounds() {
+        assert_eq!(with_jitter(0), 0);
+        assert_eq!(with_jitter(4), 4);
+        for _ in 0..1000 {
+            let d = with_jitter(100);
+            assert!((80..=120).contains(&d), "{d}");
+        }
+        assert!(with_jitter(u32::MAX) >= u32::MAX - u32::MAX / 5);
+    }
+
+    #[test]
+    fn job_retry_from_str_rejects_unknown_kind() {
+        assert!("3|fibonaci|15".parse::<JobRetry>().is_err());
+        assert_eq!(
+            Ok(JobRetry::Fixed {
+                retry_count: 3,
+                retry_delay: 15
+            }),
+            "3|fixed|15".parse::<JobRetry>().map_err(|e| e.to_string())
+        );
+    }
 }

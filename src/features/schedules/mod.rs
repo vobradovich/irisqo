@@ -1,4 +1,4 @@
-pub use db::{ScheduleView, get_by_id, list_view, pause, resume};
+pub use db::{ScheduleView, clone_schedule_at, get_by_id, list_view, pause, resume};
 pub use http::routes;
 pub use job_schedule::JobSchedule;
 pub use schedule_row::ScheduleRow;
