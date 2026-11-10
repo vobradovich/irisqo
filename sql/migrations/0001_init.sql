@@ -58,6 +58,9 @@ CREATE TABLE scheduled (
     queue    text NULL,
     priority smallint NOT NULL DEFAULT 0,
     CONSTRAINT ck_scheduled_queue_priority CHECK (queue IS NULL OR priority = 0)
+) WITH (
+    autovacuum_vacuum_scale_factor = 0, autovacuum_vacuum_threshold = 1000,
+    autovacuum_analyze_scale_factor = 0, autovacuum_analyze_threshold = 1000
 );
 CREATE INDEX ix_scheduled_at ON scheduled (at);
 
@@ -69,6 +72,9 @@ CREATE TABLE enqueued (
     queue    text NULL,
     priority smallint NOT NULL DEFAULT 0,
     CONSTRAINT ck_enqueued_queue_priority CHECK (queue IS NULL OR priority = 0)
+) WITH (
+    autovacuum_vacuum_scale_factor = 0, autovacuum_vacuum_threshold = 1000,
+    autovacuum_analyze_scale_factor = 0, autovacuum_analyze_threshold = 1000
 );
 CREATE INDEX ix_enqueued_candidates ON enqueued (priority DESC, retry, id)
     WHERE queue IS NULL;
@@ -82,6 +88,9 @@ CREATE TABLE claimed (
     priority    smallint NOT NULL DEFAULT 0,
     instance_id text NOT NULL,
     at          timestamptz NOT NULL DEFAULT now()
+) WITH (
+    autovacuum_vacuum_scale_factor = 0, autovacuum_vacuum_threshold = 1000,
+    autovacuum_analyze_scale_factor = 0, autovacuum_analyze_threshold = 1000
 );
 CREATE INDEX ix_claimed_queue       ON claimed (queue) WHERE queue IS NOT NULL;
 CREATE INDEX ix_claimed_instance_id ON claimed (instance_id);
@@ -262,123 +271,162 @@ BEGIN
 
     INSERT INTO stats (name, value, at)
     SELECT v.name, v.value, clock_timestamp()
-    FROM (VALUES
-        ('scheduled', (SELECT count(*) FROM scheduled)),
-        ('enqueued',  (SELECT count(*) FROM enqueued)),
-        ('claimed',   (SELECT count(*) FROM claimed)),
-        ('lag_seconds',
-            (SELECT coalesce(floor(extract(epoch FROM clock_timestamp() - min(d.at))), 0)::bigint
-             FROM (SELECT min(e.at) AS at FROM enqueued e WHERE e.at <= clock_timestamp()
-                   UNION ALL
-                   SELECT min(s.at) FROM scheduled s WHERE s.at <= clock_timestamp()) d)),
-        ('processed_24h',
-            (SELECT count(*) FROM processed p WHERE p.at > now() - interval '24 hours')),
-        ('failed_24h',
-            (SELECT count(*) FROM processed p
-             WHERE p.at > now() - interval '24 hours' AND p.status = 'failed')),
-        ('instances', (SELECT count(*) FROM instances i WHERE i.stopped_at IS NULL))
-    ) AS v(name, value)
+    FROM (SELECT count(*) AS n, min(at) FILTER (WHERE at <= clock_timestamp()) AS due
+          FROM enqueued) AS e,
+         (SELECT count(*) AS n, count(*) FILTER (WHERE status = 'failed') AS failed
+          FROM processed
+          WHERE at > now() - interval '24 hours') AS p,
+         LATERAL (VALUES
+            ('scheduled', (SELECT count(*) FROM scheduled)),
+            ('enqueued',  e.n),
+            ('claimed',   (SELECT count(*) FROM claimed)),
+            ('lag_seconds',
+                (SELECT coalesce(floor(extract(epoch FROM clock_timestamp() - min(d.at))), 0)::bigint
+                 FROM (SELECT e.due AS at
+                       UNION ALL
+                       SELECT min(s.at) FROM scheduled s WHERE s.at <= clock_timestamp()) d)),
+            ('processed_24h', p.n),
+            ('failed_24h', p.failed),
+            ('instances', (SELECT count(*) FROM instances i WHERE i.stopped_at IS NULL))
+         ) AS v(name, value)
     ON CONFLICT (name) DO UPDATE SET value = EXCLUDED.value, at = EXCLUDED.at;
     RETURN true;
 END $$;
 
-CREATE FUNCTION claim_v1(
+CREATE FUNCTION claim_plain_v1(p_instance_id text, p_limit int)
+RETURNS TABLE (
+    id          bigint,
+    meta        jsonb,
+    headers     jsonb,
+    body        bytea,
+    schedule_id text,
+    key         text,
+    retry       int
+)
+LANGUAGE sql SET search_path FROM CURRENT AS $$
+    WITH b AS (
+        DELETE FROM enqueued
+        WHERE id IN (SELECT e.id
+                     FROM enqueued AS e
+                     WHERE e.queue IS NULL AND e.at <= now()
+                     ORDER BY e.priority DESC, e.retry, e.id
+                     LIMIT p_limit
+                     FOR UPDATE SKIP LOCKED)
+        RETURNING id, retry, queue, priority
+    ), hist AS (
+        INSERT INTO history (id, retry, kind, instance_id)
+        SELECT b.id, b.retry, 'claimed', p_instance_id
+        FROM b
+    ), c AS (
+        INSERT INTO claimed (id, retry, queue, priority, instance_id)
+        SELECT b.id, b.retry, b.queue, b.priority, p_instance_id
+        FROM b
+        RETURNING claimed.id, claimed.retry, claimed.priority
+    )
+    SELECT j.id, j.meta, j.headers, j.body, j.schedule_id, j.key, c.retry
+    FROM c
+    INNER JOIN jobs AS j ON j.id = c.id
+    ORDER BY c.priority DESC, c.retry, c.id
+$$;
+
+CREATE FUNCTION claim_queued_v1(
     p_instance_id text,
     p_limit       int,
-    p_unqueued    boolean DEFAULT true,
-    p_queues      text[]  DEFAULT NULL
+    p_queues      text[] DEFAULT NULL
 )
-RETURNS TABLE (id bigint, retry int)
-ROWS 64
+RETURNS TABLE (
+    id          bigint,
+    meta        jsonb,
+    headers     jsonb,
+    body        bytea,
+    schedule_id text,
+    key         text,
+    retry       int
+)
 LANGUAGE plpgsql SET search_path FROM CURRENT SET jit = off AS $$
 #variable_conflict use_column
 DECLARE
     v_queues text[] := '{}';
 BEGIN
-    IF NOT (
-        p_unqueued
-        AND (SELECT count(*)
-             FROM (SELECT 1
-                   FROM enqueued e
-                   WHERE e.queue IS NULL AND e.at <= now()
-                   LIMIT p_limit) f) >= p_limit
-    ) THEN
-        WITH RECURSIVE qs(queue) AS (
-            (SELECT e.queue
-             FROM enqueued e
-             WHERE p_queues IS NULL AND e.queue IS NOT NULL
-             ORDER BY e.queue
-             LIMIT 1)
-            UNION ALL
-            SELECT (SELECT e.queue
-                    FROM enqueued e
-                    WHERE e.queue > qs.queue
-                    ORDER BY e.queue
-                    LIMIT 1)
-            FROM qs
-            WHERE qs.queue IS NOT NULL
-        ), src AS (
-            SELECT qs.queue FROM qs WHERE qs.queue IS NOT NULL
-            UNION ALL
-            SELECT u FROM unnest(p_queues) AS u
-        ), ready AS MATERIALIZED (
-            SELECT src.queue
-            FROM src
-            LEFT JOIN queues q ON q.queue_id = src.queue
-            WHERE NOT coalesce(q.paused, false)
-              AND (q.next_at IS NULL OR q.next_at <= now())
-              AND EXISTS (SELECT 1
-                          FROM enqueued e
-                          WHERE e.queue = src.queue AND e.at <= now())
-              AND (SELECT count(*)
-                   FROM claimed c
-                   WHERE c.queue = src.queue) < coalesce(q.parallelism, 1)
-        )
-        SELECT coalesce(array_agg(l.queue), '{}')
-        INTO v_queues
-        FROM (SELECT ready.queue
-              FROM ready
-              WHERE pg_try_advisory_xact_lock(hashtextextended(current_schema() || ':' || ready.queue, 0))
-              LIMIT p_limit) l;
-    END IF;
+    WITH RECURSIVE qs(queue) AS (
+        (SELECT e.queue
+         FROM enqueued e
+         WHERE p_queues IS NULL AND e.queue IS NOT NULL
+         ORDER BY e.queue
+         LIMIT 1)
+        UNION ALL
+        SELECT (SELECT e.queue
+                FROM enqueued e
+                WHERE e.queue > qs.queue
+                ORDER BY e.queue
+                LIMIT 1)
+        FROM qs
+        WHERE qs.queue IS NOT NULL
+    ), src AS (
+        SELECT qs.queue FROM qs WHERE qs.queue IS NOT NULL
+        UNION ALL
+        SELECT u FROM unnest(p_queues) AS u
+    ), ready AS MATERIALIZED (
+        SELECT src.queue
+        FROM src
+        LEFT JOIN queues q ON q.queue_id = src.queue
+        WHERE NOT coalesce(q.paused, false)
+          AND (q.next_at IS NULL OR q.next_at <= now())
+          AND CASE WHEN coalesce(q.ordered, true)
+                   THEN coalesce((SELECT e.at <= now()
+                                  FROM enqueued e
+                                  WHERE e.queue = src.queue
+                                  ORDER BY e.id
+                                  LIMIT 1), false)
+                   ELSE EXISTS (SELECT 1
+                                FROM enqueued e
+                                WHERE e.queue = src.queue AND e.at <= now())
+              END
+          AND (SELECT count(*)
+               FROM claimed c
+               WHERE c.queue = src.queue) < coalesce(q.parallelism, 1)
+    )
+    SELECT coalesce(array_agg(l.queue), '{}')
+    INTO v_queues
+    FROM (SELECT ready.queue
+          FROM ready
+          WHERE pg_try_advisory_xact_lock(hashtextextended(current_schema() || ':' || ready.queue, 0))
+          LIMIT p_limit) l;
 
     RETURN QUERY
-    WITH a AS (
-        SELECT u.id, u.retry, u.priority, false AS queued
-        FROM (SELECT e.id, e.retry, e.priority
-              FROM enqueued e
-              WHERE p_unqueued AND e.queue IS NULL AND e.at <= now()
-              ORDER BY e.priority DESC, e.retry, e.id
-              LIMIT p_limit
-              FOR UPDATE SKIP LOCKED) u
-        UNION ALL
-        (SELECT s.id, s.retry, s.priority, true
-         FROM unnest(v_queues) AS u(name)
-         LEFT JOIN queues q ON q.queue_id = u.name
-         CROSS JOIN LATERAL (
-             SELECT e.id, e.retry, e.priority
+    WITH slots AS (
+        SELECT u.name,
+               coalesce(q.ordered, true) AS ordered,
+               least(greatest(coalesce(q.parallelism, 1)
+                              - (SELECT count(*) FROM claimed c WHERE c.queue = u.name), 0),
+                     coalesce(q.rate, 2147483647)) AS n
+        FROM unnest(v_queues) AS u(name)
+        LEFT JOIN queues q ON q.queue_id = u.name
+        WHERE NOT coalesce(q.paused, false)
+          AND (q.next_at IS NULL OR q.next_at <= now())
+    ), a AS (
+        SELECT s.id
+        FROM slots
+        CROSS JOIN LATERAL (
+            (SELECT w.id
+             FROM (SELECT f.id, bool_or(f.at > now()) OVER (ORDER BY f.id) AS held
+                   FROM (SELECT e.id, e.at
+                         FROM enqueued e
+                         WHERE e.queue = slots.name
+                         ORDER BY e.id
+                         LIMIT slots.n) f) w
+             WHERE slots.ordered AND NOT w.held)
+            UNION ALL
+            (SELECT e.id
              FROM enqueued e
-             WHERE e.queue = u.name
-               AND e.at <= now()
-               AND NOT coalesce(q.paused, false)
-               AND (q.next_at IS NULL OR q.next_at <= now())
-               AND (NOT coalesce(q.ordered, true)
-                    OR NOT EXISTS (SELECT 1
-                                   FROM enqueued h
-                                   WHERE h.queue = u.name AND h.id < e.id AND h.at > now()))
+             WHERE NOT slots.ordered AND e.queue = slots.name AND e.at <= now()
              ORDER BY e.id
-             LIMIT least(
-                 greatest(coalesce(q.parallelism, 1)
-                          - (SELECT count(*) FROM claimed c WHERE c.queue = u.name), 0),
-                 coalesce(q.rate, 2147483647))
-         ) s)
+             LIMIT slots.n)
+        ) s
     ), b AS (
         DELETE FROM enqueued
-        WHERE id IN (SELECT a.id
-                     FROM a
-                     ORDER BY a.queued, a.priority DESC, CASE WHEN a.queued THEN 0 ELSE a.retry END, a.id
-                     LIMIT p_limit)
-        RETURNING id, retry, queue, priority
+        WHERE id IN (SELECT a.id FROM a ORDER BY a.id LIMIT p_limit)
+        RETURNING id, retry, queue
     ), hist AS (
         INSERT INTO history (id, retry, kind, instance_id)
         SELECT b.id, b.retry, 'claimed', p_instance_id
@@ -390,9 +438,39 @@ BEGIN
               FROM b
               GROUP BY b.queue) x
         WHERE q.queue_id = x.queue AND q.rate IS NOT NULL
+    ), c AS (
+        INSERT INTO claimed (id, retry, queue, instance_id)
+        SELECT b.id, b.retry, b.queue, p_instance_id
+        FROM b
+        RETURNING claimed.id, claimed.retry
     )
-    INSERT INTO claimed (id, retry, queue, priority, instance_id)
-    SELECT b.id, b.retry, b.queue, b.priority, p_instance_id
-    FROM b
-    RETURNING claimed.id, claimed.retry;
+    SELECT j.id, j.meta, j.headers, j.body, j.schedule_id, j.key, c.retry
+    FROM c
+    INNER JOIN jobs AS j ON j.id = c.id
+    ORDER BY c.id;
+END $$;
+
+CREATE FUNCTION claim_v1(
+    p_instance_id text,
+    p_limit       int,
+    p_queues      text[] DEFAULT NULL
+)
+RETURNS TABLE (
+    id          bigint,
+    meta        jsonb,
+    headers     jsonb,
+    body        bytea,
+    schedule_id text,
+    key         text,
+    retry       int
+)
+LANGUAGE plpgsql SET search_path FROM CURRENT SET jit = off AS $$
+DECLARE
+    v_plain bigint;
+BEGIN
+    RETURN QUERY SELECT * FROM claim_plain_v1(p_instance_id, p_limit);
+    GET DIAGNOSTICS v_plain = ROW_COUNT;
+    IF v_plain < p_limit THEN
+        RETURN QUERY SELECT * FROM claim_queued_v1(p_instance_id, p_limit - v_plain::int, p_queues);
+    END IF;
 END $$;
