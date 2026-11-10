@@ -68,7 +68,7 @@ pub async fn resume(
     const SQL: &str = "
     UPDATE schedules AS s SET paused = false
     WHERE schedule_id = $1
-    RETURNING s.schedule, s.until, s.next_id,
+    RETURNING s.schedule, s.until, s.next_id, s.next_at,
         EXISTS (SELECT 1 FROM scheduled WHERE id = s.next_id)
             OR EXISTS (SELECT 1 FROM enqueued WHERE id = s.next_id)
             OR EXISTS (SELECT 1 FROM claimed WHERE id = s.next_id) AS pending";
@@ -77,6 +77,7 @@ pub async fn resume(
         schedule: String,
         until: Option<DateTime<Utc>>,
         next_id: Option<i64>,
+        next_at: Option<DateTime<Utc>>,
         pending: bool,
     }
     let mut tx = pool.begin().await?;
@@ -84,6 +85,7 @@ pub async fn resume(
         schedule,
         until,
         next_id,
+        next_at,
         pending,
     }) = sqlx::query_as::<_, Resumed>(SQL)
         .bind(schedule_id)
@@ -97,7 +99,7 @@ pub async fn resume(
         && let Some(at) = schedule
             .parse::<JobSchedule>()
             .map_err(|e| Error::InvalidParams(vec![e]))?
-            .next(now, until)
+            .next(next_at.map_or(now, |at| at.max(now)), until)
     {
         db::jobqueue::clone_schedule_at(&mut *tx, next_id, at, instance_id).await?;
     }

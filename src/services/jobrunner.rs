@@ -398,7 +398,10 @@ async fn schedule_next_at(
     }) else {
         return Ok(None);
     };
-    Ok(schedule.next(Utc::now(), row.until))
+    // after the current run's time too: a run done early (enqueued by hand) must not
+    // schedule the next one at its own time
+    let after = row.next_at.map_or_else(Utc::now, |at| at.max(Utc::now()));
+    Ok(schedule.next(after, row.until))
 }
 
 /// Schedules a retry when the error is worth one; returns the final result otherwise.
