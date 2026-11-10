@@ -66,9 +66,9 @@ async fn job_create(
         }
     };
     put("location", Some(&format!("/api/v1/jobs/{}", job.id)));
-    put("job-id", Some(&job.id.to_string()));
-    put("schedule-id", job.schedule_id.as_deref());
-    put("key", job.key.as_deref());
+    put("irisqo-job-id", Some(&job.id.to_string()));
+    put("irisqo-schedule-id", job.schedule_id.as_deref());
+    put("irisqo-key", job.key.as_deref());
     Ok((StatusCode::CREATED, headers))
 }
 

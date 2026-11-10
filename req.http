@@ -14,8 +14,8 @@ content-type: application/json
 }
 
 ###
-@job-id = {{req.response.headers.job-id}}
-@schedule-id = {{req.response.headers.schedule-id}}
+@job-id = {{req.response.headers.irisqo-job-id}}
+@schedule-id = {{req.response.headers.irisqo-schedule-id}}
 
 ###
 GET {{host}}/api/v1/jobs/{{job-id}}

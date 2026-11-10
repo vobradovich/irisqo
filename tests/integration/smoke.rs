@@ -42,7 +42,7 @@ async fn http_job_is_queued_and_delivered(pool: PgPool) -> anyhow::Result<()> {
     assert_eq!(response.status(), StatusCode::CREATED);
     let job_id: i64 = response
         .headers()
-        .get("job-id")
+        .get("irisqo-job-id")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.parse().ok())
         .expect("job-id header");

@@ -61,9 +61,9 @@ GET {{host}}/to/https://postman-echo.com/get
 ```
 
 Response Headers
-- `job-id` - this is the ID of the request job
-- `schedule-id` - ID of the new schedule
-- `key` - optional idempotency key of the request from `_key` query parameter.
+- `irisqo-job-id` - this is the ID of the request job
+- `irisqo-schedule-id` - ID of the new schedule
+- `irisqo-key` - the key of the job: `_key` as given, or `{schedule-id}-{unix secs}` for a schedule run (with `_key`, the schedule id is `_key`).
 
 ### Headers
 The target gets only the body headers (`Content-Type`, `Content-Encoding`, `Content-Language`) and the

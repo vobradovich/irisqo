@@ -192,7 +192,7 @@ async fn run_echo(state: &Arc<irisqo::AppState>, query: &str) -> i64 {
     let addr = common::spawn_app(state).await;
     let response = common::create(state, addr, &format!("http://{addr}/echo?{query}")).await;
     assert_eq!(response.status(), StatusCode::CREATED, "{query}");
-    let id = common::header(&response, "job-id")
+    let id = common::header(&response, "irisqo-job-id")
         .and_then(|v| v.parse().ok())
         .expect("job-id");
     assert_eq!(common::run_enqueued(state).await, 1);
@@ -354,7 +354,7 @@ async fn schedule_runs_and_is_deleted(pool: PgPool) -> anyhow::Result<()> {
 
     let response = common::create(&state, addr, &format!("http://{addr}/echo?_interval=60")).await;
     assert_eq!(response.status(), StatusCode::CREATED);
-    let schedule_id = common::header(&response, "schedule-id").expect("schedule-id");
+    let schedule_id = common::header(&response, "irisqo-schedule-id").expect("schedule-id");
 
     // first run: completes and schedules the next one
     assert_eq!(common::enqueue_all_scheduled(&state).await, 1);
@@ -401,7 +401,7 @@ async fn running_job_of_deleted_schedule_is_not_cloned(pool: PgPool) -> anyhow::
     let addr = common::spawn_app(&state).await;
 
     let response = common::create(&state, addr, &format!("http://{addr}/echo?_interval=60")).await;
-    let schedule_id = common::header(&response, "schedule-id").expect("schedule-id");
+    let schedule_id = common::header(&response, "irisqo-schedule-id").expect("schedule-id");
     assert_eq!(common::enqueue_all_scheduled(&state).await, 1);
 
     // the run is already assigned to a worker when the schedule is deleted
@@ -467,7 +467,7 @@ async fn resume_does_not_clone_a_running_run(pool: PgPool) -> anyhow::Result<()>
     let addr = common::spawn_app(&state).await;
     let target = format!("http://{addr}/echo?_interval=3600");
     let response = common::create(&state, addr, &target).await;
-    let schedule_id = common::header(&response, "schedule-id").expect("schedule-id");
+    let schedule_id = common::header(&response, "irisqo-schedule-id").expect("schedule-id");
     common::enqueue_all_scheduled(&state).await;
     assert_eq!(
         common::fetch(&state, 10).await.len(),

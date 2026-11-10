@@ -28,7 +28,7 @@ async fn missing_objects_are_404(pool: PgPool) -> anyhow::Result<()> {
     let state = common::state(pool);
     let addr = common::spawn_app(&state).await;
     let pending = common::create(&state, addr, &format!("http://{addr}/echo?_delay=600")).await;
-    let pending = common::header(&pending, "job-id").expect("job-id");
+    let pending = common::header(&pending, "irisqo-job-id").expect("job-id");
 
     for (path, detail) in [
         (
@@ -157,7 +157,7 @@ async fn worker_refuses_private_targets(pool: PgPool) -> anyhow::Result<()> {
     ] {
         let response = common::create(&dev, dev_addr, &target).await;
         ids.push(
-            common::header(&response, "job-id")
+            common::header(&response, "irisqo-job-id")
                 .expect("job-id")
                 .parse::<i64>()?,
         );
@@ -267,7 +267,7 @@ async fn api_token_opens_the_api(pool: PgPool) -> anyhow::Result<()> {
     )
     .await;
     assert_eq!(response.status(), StatusCode::CREATED);
-    let id = common::header(&response, "job-id").expect("job-id");
+    let id = common::header(&response, "irisqo-job-id").expect("job-id");
     let headers: serde_json::Value = sqlx::query_scalar("SELECT headers FROM jobs")
         .fetch_one(&pool)
         .await?;
@@ -490,7 +490,7 @@ async fn ui_refuses_cross_site_posts(pool: PgPool) -> anyhow::Result<()> {
     let state = common::state(pool.clone());
     let addr = common::spawn_app(&state).await;
     let response = common::create(&state, addr, &format!("http://{addr}/echo?_delay=600")).await;
-    let id = common::header(&response, "job-id").expect("job-id");
+    let id = common::header(&response, "irisqo-job-id").expect("job-id");
     let cancel = format!("http://{addr}/ui/jobs/{id}/cancel");
     let pending = || common::count(&pool, "SELECT count(*) FROM scheduled");
 
@@ -551,7 +551,7 @@ async fn forwarded_values_are_hidden(pool: PgPool) -> anyhow::Result<()> {
         ],
     )
     .await;
-    let id = common::header(&response, "job-id").expect("job-id");
+    let id = common::header(&response, "irisqo-job-id").expect("job-id");
 
     // the API: names, and the values of the open headers only
     let response = common::request(

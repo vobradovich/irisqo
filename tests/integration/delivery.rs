@@ -32,9 +32,9 @@ async fn only_allowed_headers_are_forwarded(pool: PgPool) -> anyhow::Result<()> 
         .body(Full::new(Bytes::from_static(b"hello")))?;
     let response = state.client.request(req).await?;
     assert_eq!(response.status(), StatusCode::CREATED);
-    let job_id: i64 = common::header(&response, "job-id")
+    let job_id: i64 = common::header(&response, "irisqo-job-id")
         .and_then(|v| v.parse().ok())
-        .expect("job-id");
+        .expect("irisqo-job-id");
 
     common::run_enqueued(&state).await;
 
@@ -66,9 +66,9 @@ async fn redelivery_has_the_same_job_id_and_the_next_retry(pool: PgPool) -> anyh
         &format!("http://{addr}/echo?headers=1&status=503&_retry=1"),
     )
     .await;
-    let job_id: i64 = common::header(&response, "job-id")
+    let job_id: i64 = common::header(&response, "irisqo-job-id")
         .and_then(|v| v.parse().ok())
-        .expect("job-id");
+        .expect("irisqo-job-id");
 
     // first attempt: 503, retried at once; second one: 503 again, failed
     assert_eq!(common::run_enqueued(&state).await, 1);
@@ -103,9 +103,9 @@ async fn history_keeps_the_error_of_a_failed_connection(pool: PgPool) -> anyhow:
     let addr = common::spawn_app(&state).await;
     // nothing listens on port 9
     let response = common::create(&state, addr, "http://127.0.0.1:9/hook").await;
-    let job_id: i64 = common::header(&response, "job-id")
+    let job_id: i64 = common::header(&response, "irisqo-job-id")
         .and_then(|v| v.parse().ok())
-        .expect("job-id");
+        .expect("irisqo-job-id");
     assert_eq!(common::run_enqueued(&state).await, 1);
 
     let (kind, message) = common::history(&pool, job_id).await.pop().expect("history");
@@ -127,10 +127,10 @@ async fn schedule_run_has_its_schedule_id(pool: PgPool) -> anyhow::Result<()> {
         &format!("http://{addr}/echo?headers=1&_interval=60"),
     )
     .await;
-    let job_id: i64 = common::header(&response, "job-id")
+    let job_id: i64 = common::header(&response, "irisqo-job-id")
         .and_then(|v| v.parse().ok())
         .expect("job-id");
-    let schedule_id = common::header(&response, "schedule-id").expect("schedule-id");
+    let schedule_id = common::header(&response, "irisqo-schedule-id").expect("irisqo-schedule-id");
     common::enqueue_all_scheduled(&state).await;
     common::run_enqueued(&state).await;
 
@@ -150,9 +150,9 @@ async fn shutdown_timeout_abandons_running_jobs(pool: PgPool) -> anyhow::Result<
         &format!("http://{addr}/echo?sleep_ms=30000&_timeout=60000"),
     )
     .await;
-    let job_id: i64 = common::header(&response, "job-id")
+    let job_id: i64 = common::header(&response, "irisqo-job-id")
         .and_then(|v| v.parse().ok())
-        .expect("job-id");
+        .expect("irisqo-job-id");
 
     let worker = tokio::spawn({
         let state = Arc::clone(&state);

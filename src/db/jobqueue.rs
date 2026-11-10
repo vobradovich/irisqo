@@ -130,24 +130,26 @@ async fn create_with_schedule(
     let after = job.at.unwrap_or_else(Utc::now);
     let at = schedule.next(after, job.until);
     // prepare_job checks it first: a schedule must run at least once
-    if at.is_none() {
+    let Some(at) = at else {
         return Err(Error::invalid(
             "_until",
             "the schedule has no run before it",
         ));
-    }
+    };
     let schedule = schedule.to_string();
 
     // a petname (`bold-lazy-heron`) is short, so a taken one is tried again with another
+    // the given key is the schedule id, and a run's key is `{schedule_id}-{run time, secs}`
     let mut attempt = 0;
-    let (job_id, schedule_id) = loop {
+    let (job_id, schedule_id, key) = loop {
         attempt += 1;
-        let schedule_id = new_schedule_id();
+        let schedule_id = job.key.clone().unwrap_or_else(new_schedule_id);
+        let key = format!("{schedule_id}-{}", at.timestamp());
         let res = sqlx::query_scalar::<_, i64>(SQL)
             .bind(Json(&job.meta))
             .bind(Json(&job.headers))
             .bind(body)
-            .bind(&job.key)
+            .bind(&key)
             .bind(at)
             .bind(&schedule_id)
             .bind(&schedule)
@@ -155,16 +157,18 @@ async fn create_with_schedule(
             .fetch_one(pool)
             .await;
         match res {
-            Ok(job_id) => break (job_id, schedule_id),
+            Ok(job_id) => break (job_id, schedule_id, key),
             Err(sqlx::Error::Database(err))
-                if attempt < 5 && err.constraint() == Some("schedules_pkey") => {}
+                if job.key.is_none()
+                    && attempt < 5
+                    && err.constraint() == Some("schedules_pkey") => {}
             Err(err) => return Err(err.into()),
         }
     };
     Ok(JobCreateRow {
         id: job_id,
         schedule_id: Some(schedule_id),
-        key: job.key,
+        key: Some(key),
     })
 }
 
@@ -182,8 +186,8 @@ where
 {
     const SQL: &str = "
     WITH a AS (
-        INSERT INTO jobs(meta, headers, body, schedule_id)
-        SELECT j.meta, j.headers, j.body, j.schedule_id
+        INSERT INTO jobs(meta, headers, body, schedule_id, key)
+        SELECT j.meta, j.headers, j.body, j.schedule_id, j.schedule_id || '-' || extract(epoch FROM $2::timestamptz)::bigint
         FROM jobs AS j
         -- only the latest run continues the schedule (a manually retried old run does not)
         INNER JOIN schedules AS s ON s.schedule_id = j.schedule_id AND NOT s.paused AND s.next_id = j.id
@@ -222,7 +226,7 @@ pub async fn get_id_by_key(
     pool: &Pool<Postgres>,
     key: &str,
 ) -> Result<Option<JobCreateRow>, Error> {
-    const SQL: &str = "SELECT id, schedule_id, key FROM jobs WHERE key = $1";
+    const SQL: &str = "SELECT id, schedule_id, key FROM jobs WHERE key = $1 OR schedule_id = $1 ORDER BY id LIMIT 1";
     let job = sqlx::query_as::<_, JobCreateRow>(SQL)
         .bind(key)
         .fetch_optional(pool)
