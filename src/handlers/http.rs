@@ -3,8 +3,8 @@ use crate::{
     db,
     features::schedules::{JobSchedule, ScheduleRule},
     models::{
-        AppState, Error, HttpMeta, JobCreate, JobCreateRow, JobMeta, JobRetry, JobSink, ParamError,
-        WorkerOptions, headers::forwarded_headers,
+        AppState, Error, HttpMeta, JobCreate, JobCreateRow, JobMeta, JobRetry, JobSink,
+        PRIORITY_RULE, ParamError, QUEUE_RULE, WorkerOptions, headers::forwarded_headers, is_queue,
     },
     otel::metrics::metrics,
 };
@@ -105,6 +105,8 @@ pub fn prepare_job(
     let mut until: Option<DateTime<Utc>> = None;
     let mut key: Option<String> = None;
     let mut tz: Option<chrono_tz::Tz> = None;
+    let mut queue: Option<String> = None;
+    let mut priority: Option<i16> = None;
     let mut url = Url::parse(request.url).ok();
 
     let mut bad = |parameter, detail: &str| errors.push(ParamError::new(parameter, detail));
@@ -142,6 +144,12 @@ pub fn prepare_job(
                 Some(t) => until = Some(t),
                 None => bad("_until", TIME_RULE),
             },
+            "_queue" if !value.is_empty() && !is_queue(&value) => bad("_queue", QUEUE_RULE),
+            "_queue" => queue = (!value.is_empty()).then(|| value.into_owned()),
+            "_priority" => match value.parse::<i16>() {
+                Ok(parsed) => priority = Some(parsed),
+                Err(_) => bad("_priority", "must be an integer from -32768 to 32767"),
+            },
             "_key" if !value.is_empty() && !is_key(&value) => bad("_key", KEY_RULE),
             "_key" => key = (!value.is_empty()).then(|| value.into_owned()),
             _ => {
@@ -160,6 +168,9 @@ pub fn prepare_job(
             "_until",
             "applies to _cron and _interval only",
         ));
+    }
+    if queue.is_some() && priority.is_some_and(|p| p != 0) {
+        errors.push(ParamError::new("_priority", PRIORITY_RULE));
     }
     let rule_parameter = rule.as_ref().map(|(_, parameter)| *parameter);
     let schedule = rule.map(|(rule, _)| JobSchedule {
@@ -186,8 +197,8 @@ pub fn prepare_job(
                 sink,
                 retry,
                 timeout,
-                queue: None,
-                priority: None,
+                queue,
+                priority,
                 traceparent: None,
                 tracestate: None,
             },
@@ -285,6 +296,25 @@ mod tests {
         let errors = prepare_query("_until=2100-01-01T00:00:00Z").expect_err("no schedule");
         assert_eq!(errors.len(), 1);
         assert_eq!(errors[0].parameter, "_until");
+    }
+
+    #[test]
+    fn queue_and_priority_are_the_jobs() {
+        let meta = |query| prepare_query(query).expect("valid").meta;
+        let m = meta("_queue=order-42");
+        assert_eq!((m.queue.as_deref(), m.priority), (Some("order-42"), None));
+        let m = meta("_priority=5");
+        assert_eq!((m.queue, m.priority), (None, Some(5)));
+        assert_eq!(meta("_queue=").queue, None);
+        for (query, parameter) in [
+            ("_queue=Bad+Name", "_queue"),
+            ("_priority=high", "_priority"),
+            ("_queue=a&_priority=1", "_priority"),
+        ] {
+            let errors = prepare_query(query).expect_err(query);
+            assert_eq!(errors.len(), 1, "{query}");
+            assert_eq!(errors[0].parameter, parameter, "{query}");
+        }
     }
 
     #[test]

@@ -62,7 +62,7 @@ pub async fn upsert(
     ), hist AS (
         INSERT INTO history(id, retry, kind, instance_id) SELECT id, 0, 'scheduled', $7 FROM a
     )
-    INSERT INTO scheduled(id, at) SELECT id, $6::timestamptz FROM a RETURNING id";
+    INSERT INTO scheduled(id, at, queue, priority) SELECT id, $6::timestamptz, $8, $9 FROM a RETURNING id";
 
     let (Some(schedule_id), Some(schedule)) = (job.key.as_deref(), job.schedule.as_ref()) else {
         return Err(Error::invalid("schedule", "needs an id and a rule"));
@@ -94,6 +94,7 @@ pub async fn upsert(
     // the key of a run is `{schedule_id}-{run time, secs}`: a schedule has at most one run in a
     // second, and the run that was cancelled above gave its key back
     let key = format!("{schedule_id}-{}", at.timestamp());
+    let (queue, priority) = job.meta.queue_priority();
     let id = sqlx::query_scalar::<_, i64>(SQL_RUN)
         .bind(Json(&job.meta))
         .bind(Json(&job.headers))
@@ -102,6 +103,8 @@ pub async fn upsert(
         .bind(&schedule_id)
         .bind(at)
         .bind(instance_id)
+        .bind(queue)
+        .bind(priority)
         .fetch_one(&mut *tx)
         .await?;
     tx.commit().await?;
@@ -139,7 +142,8 @@ where
         -- only the latest run continues the schedule (a manually retried old run does not)
         WHERE j.id = $1 AND s.next_id = j.id AND NOT s.paused
         FOR UPDATE OF s
-        RETURNING id, schedule_id
+        RETURNING id, schedule_id, meta->>'queue' AS queue,
+            coalesce((meta->>'priority')::smallint, 0) AS priority
     ), b AS (
         UPDATE schedules
         SET next_id = a.id, next_at = $2::timestamptz
@@ -148,7 +152,8 @@ where
     ), hist AS (
         INSERT INTO history(id, retry, kind, instance_id) SELECT id, 0, 'scheduled', $3 FROM a
     )
-    INSERT INTO scheduled(id, at) SELECT id, $2::timestamptz FROM a RETURNING id
+    INSERT INTO scheduled(id, at, queue, priority)
+    SELECT a.id, $2::timestamptz, a.queue, a.priority FROM a RETURNING id
     ";
 
     let job_id = sqlx::query_scalar::<_, i64>(SQL)

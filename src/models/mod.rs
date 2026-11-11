@@ -10,6 +10,7 @@ pub use job::JobMeta;
 pub use job::JobRow;
 pub use job::JobSink;
 pub use job::JobWithRetry;
+pub use job::{PRIORITY_RULE, QUEUE_RULE, is_queue};
 pub use jobretry::JobRetry;
 pub use problem::Problem;
 pub use state::{AppState, Options, SchedulerOptions, WorkerOptions, new_instance_id, new_ulid};

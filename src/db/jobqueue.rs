@@ -46,15 +46,18 @@ async fn create_enqueue(
     ), hist AS (
         INSERT INTO history(id, retry, kind, instance_id) SELECT id, 0, 'enqueued', $5 FROM a
     )
-    INSERT INTO enqueued(id) SELECT id FROM a RETURNING id";
+    INSERT INTO enqueued(id, queue, priority) SELECT id, $6, $7 FROM a RETURNING id";
 
     let body = job.body_bytes();
+    let (queue, priority) = job.meta.queue_priority();
     let job_id = sqlx::query_scalar::<_, i64>(SQL)
         .bind(Json(&job.meta))
         .bind(Json(&job.headers))
         .bind(body)
         .bind(&job.key)
         .bind(instance_id)
+        .bind(queue)
+        .bind(priority)
         .fetch_one(pool)
         .await?;
     Ok(JobCreateRow {
@@ -76,10 +79,11 @@ async fn create_at(
     ), hist AS (
         INSERT INTO history(id, retry, kind, instance_id) SELECT id, 0, 'scheduled', $6 FROM a
     )
-    INSERT INTO scheduled(id, at) SELECT id, $5::timestamptz FROM a RETURNING id
+    INSERT INTO scheduled(id, at, queue, priority) SELECT id, $5::timestamptz, $7, $8 FROM a RETURNING id
     ";
 
     let body = job.body_bytes();
+    let (queue, priority) = job.meta.queue_priority();
 
     let job_id = sqlx::query_scalar::<_, i64>(SQL)
         .bind(Json(&job.meta))
@@ -88,6 +92,8 @@ async fn create_at(
         .bind(&job.key)
         .bind(at)
         .bind(instance_id)
+        .bind(queue)
+        .bind(priority)
         .fetch_one(pool)
         .await?;
     Ok(JobCreateRow {

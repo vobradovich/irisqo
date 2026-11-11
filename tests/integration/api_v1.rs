@@ -44,6 +44,59 @@ async fn request(
 }
 
 #[sqlx::test(migrations = "./sql/migrations")]
+async fn queue_and_priority_reach_the_tables(pool: PgPool) -> anyhow::Result<()> {
+    let state = common::state(pool.clone());
+    let addr = common::spawn_app(&state).await;
+    let job = |extra: &str| format!(r#"{{"sink":"noop",{extra}"key":"k"}}"#);
+    let sql =
+        "SELECT queue, priority FROM enqueued UNION ALL SELECT queue, priority FROM scheduled";
+    let stored = || async {
+        sqlx::query_as::<_, (Option<String>, i16)>(sql)
+            .fetch_all(&pool)
+            .await
+    };
+    let clear = || async { sqlx::query("DELETE FROM jobs").execute(&pool).await };
+
+    // enqueued now, from JSON and from `/to/`
+    let r = post_job(&state, addr, &job(r#""priority":5,"#)).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    assert_eq!(stored().await?, [(None, 5)]);
+    clear().await?;
+    let uri = format!("http://{addr}/to/http://{addr}/echo?_queue=order-42");
+    let r = common::send(&state, Method::POST, &uri, &[], "").await;
+    assert_eq!(r.status(), StatusCode::CREATED);
+    assert_eq!(stored().await?, [(Some("order-42".to_owned()), 0)]);
+    clear().await?;
+
+    // delayed
+    post_job(&state, addr, &job(r#""queue":"q","delay":3600,"#)).await;
+    assert_eq!(stored().await?, [(Some("q".to_owned()), 0)]);
+    clear().await?;
+
+    // a queue and a priority do not go together; a bad queue name
+    for extra in [r#""queue":"q","priority":1,"#, r#""queue":"Bad Name","#] {
+        let r = post_job(&state, addr, &job(extra)).await;
+        assert_eq!(r.status(), StatusCode::BAD_REQUEST, "{extra}");
+    }
+
+    // every run of a schedule has them
+    let json = r#"{"sink":"noop","interval":3600,"priority":3}"#;
+    assert_eq!(
+        put_schedule(&state, addr, "s", json).await.status(),
+        StatusCode::OK
+    );
+    assert_eq!(stored().await?, [(None, 3)]);
+    let (id,): (i64,) = sqlx::query_as("SELECT next_id FROM schedules")
+        .fetch_one(&pool)
+        .await?;
+    let at = chrono::Utc::now() + chrono::Duration::hours(2);
+    let next = irisqo::features::schedules::db::clone_schedule_at(&pool, id, at, "t").await?;
+    assert!(next.is_some());
+    assert_eq!(stored().await?, [(None, 3), (None, 3)]);
+    Ok(())
+}
+
+#[sqlx::test(migrations = "./sql/migrations")]
 async fn json_job_is_queued_and_delivered(pool: PgPool) -> anyhow::Result<()> {
     let state = common::state(pool.clone());
     let addr = common::spawn_app(&state).await;

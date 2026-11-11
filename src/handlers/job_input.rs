@@ -1,7 +1,9 @@
 use super::http::{KEY_RULE, is_key};
 use crate::features::schedules::JobSchedule;
 use crate::models::headers::is_reserved_header;
-use crate::models::{JobCreate, JobMeta, ParamError, WorkerOptions};
+use crate::models::{
+    JobCreate, JobMeta, PRIORITY_RULE, ParamError, QUEUE_RULE, WorkerOptions, is_queue,
+};
 use axum::body::Bytes;
 use base64::Engine as _;
 use chrono::{DateTime, Utc};
@@ -55,10 +57,17 @@ pub(crate) fn prepare_input(
     let mut errors = Vec::new();
     let mut bad = |parameter, detail: &str| errors.push(ParamError::new(parameter, detail));
 
-    let meta = serde_json::from_value::<JobMeta>(Value::Object(spec.meta))
+    let mut meta = serde_json::from_value::<JobMeta>(Value::Object(spec.meta))
         .map_err(|err| bad("job", &err.to_string()))
         .ok();
-    if let Some(meta) = &meta {
+    if let Some(meta) = &mut meta {
+        // an empty queue is none, as in `enqueue_v1`
+        meta.queue = meta.queue.take().filter(|queue| !queue.is_empty());
+        match &meta.queue {
+            Some(queue) if !is_queue(queue) => bad("queue", QUEUE_RULE),
+            Some(_) if meta.priority.is_some_and(|p| p != 0) => bad("priority", PRIORITY_RULE),
+            _ => {}
+        }
         // none: the server's default when the job runs
         if meta.timeout == Some(0) {
             bad("timeout", "must be a positive number of milliseconds");

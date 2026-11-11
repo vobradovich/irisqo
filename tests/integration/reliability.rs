@@ -525,6 +525,29 @@ async fn a_queue_gives_its_jobs_in_id_order(pool: PgPool) -> anyhow::Result<()> 
 }
 
 #[sqlx::test(migrations = "./sql/migrations")]
+async fn enqueue_v1_priority_is_a_smallint_and_not_for_a_queue(pool: PgPool) -> anyhow::Result<()> {
+    for (extra, message) in [
+        (r#""priority": 99999"#, "priority must be from"),
+        (r#""queue": "q", "priority": 1"#, "without a queue only"),
+    ] {
+        let job = format!(r#"{{"sink": "noop", {extra}}}"#);
+        let err = sqlx::query_scalar::<_, i64>("SELECT enqueue_v1($1::jsonb)")
+            .bind(job)
+            .fetch_one(&pool)
+            .await
+            .expect_err("rejected");
+        assert!(err.to_string().contains(message), "{err}");
+    }
+    // a zero priority is no priority
+    sqlx::query_scalar::<_, i64>(
+        r#"SELECT enqueue_v1('{"sink": "noop", "queue": "q", "priority": 0}')"#,
+    )
+    .fetch_one(&pool)
+    .await?;
+    Ok(())
+}
+
+#[sqlx::test(migrations = "./sql/migrations")]
 async fn enqueue_v1_checks_the_form_of_key_and_queue(pool: PgPool) -> anyhow::Result<()> {
     for (field, bad) in [("key", "two\nlines"), ("queue", "no spaces")] {
         let job = serde_json::json!({ "sink": "http", "url": "http://localhost/x", field: bad })
