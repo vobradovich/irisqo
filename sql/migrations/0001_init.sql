@@ -169,6 +169,10 @@ BEGIN
             THEN 'queue must be 1 to 128 characters of a-z, 0-9, . _ : - and start with a letter or a digit'
         WHEN job->>'priority' !~ '^-?[0-9]{1,5}$'
             THEN 'priority must be an integer'
+        WHEN (job->>'priority')::int NOT BETWEEN -32768 AND 32767
+            THEN 'priority must be from -32768 to 32767'
+        WHEN v_queue IS NOT NULL AND (job->>'priority')::int <> 0
+            THEN 'priority applies to a job without a queue only'
         WHEN job->>'timeout' !~ '^[1-9][0-9]{0,8}$'
             THEN 'timeout must be a positive number of milliseconds'
         WHEN v_retry NOT IN ('none', 'fixed', 'fibonacci', 'exponential')

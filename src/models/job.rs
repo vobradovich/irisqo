@@ -86,10 +86,10 @@ pub struct JobMeta {
     /// Milliseconds; the API stores `--timeout` (default 3000) when the request has none.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub timeout: Option<u32>,
-    /// Flow key of the job; not used yet.
+    /// Flow key of the job (see [`is_queue`]).
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub queue: Option<String>,
-    /// Higher runs first; not used yet.
+    /// Higher runs first; only for a job without a queue (0 when absent).
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub priority: Option<i16>,
     /// W3C trace context of the request that created the job: the parent of every
@@ -99,6 +99,31 @@ pub struct JobMeta {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub tracestate: Option<String>,
 }
+
+impl JobMeta {
+    /// The `queue` and `priority` columns of `scheduled` and `enqueued`.
+    pub fn queue_priority(&self) -> (Option<&str>, i16) {
+        (self.queue.as_deref(), self.priority.unwrap_or(0))
+    }
+}
+
+/// A queue name, as `enqueue_v1` checks it: 1 to 128 characters of `a-z 0-9 . _ : -`, the first
+/// a letter or a digit.
+pub fn is_queue(value: &str) -> bool {
+    let mut chars = value.chars();
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+        && value.len() <= 128
+        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || ".:_-".contains(c))
+}
+
+/// What is wrong with a queue name that [`is_queue`] refuses.
+pub const QUEUE_RULE: &str =
+    "must be 1 to 128 characters of a-z, 0-9, . _ : - and start with a letter or a digit";
+
+/// Why a job with a queue has no priority: the queue orders its jobs.
+pub const PRIORITY_RULE: &str = "applies to a job without a queue only";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(tag = "sink")]

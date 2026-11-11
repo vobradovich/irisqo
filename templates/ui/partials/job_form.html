@@ -29,6 +29,10 @@
           {{ note(form, "url", "url-error", "URL", "") }}
         </label>
       </div>
+      <label for="key">Key (optional)
+        <input id="key" name="key" class="mono" maxlength="255" value="{{ form.key }}"{{ invalid(form, "key", "key-error") }}>
+        {{ note(form, "key", "key-error", "Key", "The same id returns the existing job instead of a new one.") }}
+      </label>
       <label for="content_type">Content-Type
         <input id="content_type" name="content_type" class="mono" value="{{ form.content_type }}">
       </label>
@@ -123,10 +127,16 @@
       {% if let Some(e) = form.error("retry_count") %}<p><small id="retry-error" class="error">Retry policy {{ e }}</small></p>{% endif %}
       {% if let Some(e) = form.error("timeout") %}<p><small id="timeout-error" class="error">Timeout {{ e }}</small></p>{% endif %}
       <p><small class="hint">Network errors, timeouts, 408, 425, 429 and 5xx are retried, with ±20 % jitter and never sooner than Retry-After. Timeout: up to {{ form.max_timeout }} ms.</small></p>
-      <label for="key">Key (optional)
-        <input id="key" name="key" class="mono" maxlength="255" value="{{ form.key }}"{{ invalid(form, "key", "key-error") }}>
-        {{ note(form, "key", "key-error", "Key", "The same id returns the existing job instead of a new one.") }}
-      </label>
+      <div class="row">
+        <label for="queue">Queue (optional)
+          <input id="queue" name="queue" class="mono" maxlength="128" value="{{ form.queue }}"{{ invalid(form, "queue", "queue-error") }}>
+          {{ note(form, "queue", "queue-error", "Queue", "Jobs of one queue run one at a time, in order.") }}
+        </label>
+        <label for="priority" class="narrow">Priority
+          <input id="priority" name="priority" type="number" min="-32768" max="32767" placeholder="0" value="{{ form.priority }}"{{ invalid(form, "priority", "priority-error") }}>
+          {{ note(form, "priority", "priority-error", "Priority", "Higher runs first; jobs without a queue only.") }}
+        </label>
+      </div>
     </fieldset>
 
     <p class="actions">

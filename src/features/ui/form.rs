@@ -83,6 +83,8 @@ pub struct JobForm {
     pub retry_max_delay: String,
     pub timeout: String,
     pub key: String,
+    pub queue: String,
+    pub priority: String,
     /// Field id -> message; `form` for errors of the whole form.
     pub errors: BTreeMap<&'static str, String>,
     pub created: Option<Created>,
@@ -113,6 +115,8 @@ impl Default for JobForm {
             retry_max_delay: String::new(),
             timeout: String::new(),
             key: String::new(),
+            queue: String::new(),
+            priority: String::new(),
             errors: BTreeMap::new(),
             created: None,
             default_timeout: 3000,
@@ -167,6 +171,8 @@ impl JobForm {
                 "retry_max_delay" => form.retry_max_delay = value,
                 "timeout" => form.timeout = value,
                 "key" => form.key = value,
+                "queue" => form.queue = value,
+                "priority" => form.priority = value,
                 "op" => op = value,
                 "index" => index = value,
                 _ => {}
@@ -246,6 +252,12 @@ impl JobForm {
         }
         if let Some(id) = filled(&self.key) {
             params.push(("_key", id));
+        }
+        if let Some(queue) = filled(&self.queue) {
+            params.push(("_queue", queue));
+        }
+        if let Some(priority) = filled(&self.priority) {
+            params.push(("_priority", priority));
         }
         (params, errors)
     }
@@ -367,6 +379,8 @@ fn field_of(param: &str) -> &'static str {
         "_retry" => "retry_count",
         "_timeout" => "timeout",
         "_key" => "key",
+        "_queue" => "queue",
+        "_priority" => "priority",
         _ => "url",
     }
 }
@@ -457,6 +471,34 @@ mod tests {
         assert!(
             form.preview()
                 .contains("?_delay_until=2030-01-02T03:04:00Z")
+        );
+    }
+
+    #[test]
+    fn queue_and_priority_go_to_the_job() {
+        let form = |extra: &str| {
+            JobForm::from_pairs(
+                format!("method=GET&url=https%3A%2F%2Fexample.com{extra}").as_bytes(),
+            )
+        };
+        let now = DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+        let job = form("&queue=order-42")
+            .prepare(&options(), now)
+            .expect("valid");
+        assert_eq!(job.meta.queue.as_deref(), Some("order-42"));
+        assert!(
+            form("&queue=order-42")
+                .preview()
+                .contains("?_queue=order-42")
+        );
+        let job = form("&priority=7").prepare(&options(), now).expect("valid");
+        assert_eq!(job.meta.priority, Some(7));
+        let errors = form("&queue=A&priority=x")
+            .prepare(&options(), now)
+            .expect_err("invalid");
+        assert_eq!(
+            errors.keys().copied().collect::<Vec<_>>(),
+            ["priority", "queue"]
         );
     }
 
