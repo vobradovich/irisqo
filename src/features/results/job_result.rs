@@ -8,10 +8,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::models::Error;
 
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default, Serialize, utoipa::ToSchema)]
 pub struct JobResult {
     pub meta: JobResultMeta,
     pub headers: Option<HashMap<String, String>>,
+    /// The body of the response: a list of bytes.
+    #[schema(value_type = Vec<u8>)]
     pub body: Bytes,
 }
 
@@ -35,7 +37,7 @@ impl From<JobResultRow> for JobResult {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, utoipa::ToSchema)]
 pub struct JobResultMeta {
     #[serde(flatten, default)]
     pub result: JobResultType,
@@ -46,7 +48,7 @@ pub struct JobResultMeta {
     pub span_id: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, utoipa::ToSchema)]
 #[serde(tag = "result")]
 #[serde(rename_all = "snake_case")]
 pub enum JobResultType {
@@ -63,11 +65,13 @@ pub enum JobResultType {
     // RabbitMq,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct HttpResponseMeta {
     #[serde(with = "http_serde::status_code")]
+    #[schema(value_type = u16, example = 200)]
     pub status_code: hyper::StatusCode,
     #[serde(with = "http_serde::version")]
+    #[schema(value_type = String, example = "HTTP/1.1")]
     pub version: hyper::Version,
 }
 

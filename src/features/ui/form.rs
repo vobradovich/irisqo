@@ -15,7 +15,7 @@ use url::form_urlencoded;
 
 use crate::{
     features::schedules::JobSchedule,
-    handlers::http::{JobRequest, prepare_job},
+    handlers::{http::prepare_job, job_request::JobRequest},
     models::{
         JobCreate, ParamError, WorkerOptions,
         headers::{is_reserved_header, shown_value},
@@ -212,7 +212,7 @@ impl JobForm {
             "delay" => params.push(("_delay", self.delay.trim().to_owned())),
             "at" => {
                 if let Some(t) = time("at", &self.at) {
-                    params.push(("_delay_until", t));
+                    params.push(("_at", t));
                 }
             }
             _ => {}
@@ -304,14 +304,14 @@ impl JobForm {
         let query = form_urlencoded::Serializer::new(String::new())
             .extend_pairs(&params)
             .finish();
-        let request = JobRequest {
-            method: Method::from_bytes(self.method.as_bytes()).unwrap_or(Method::POST),
-            url: self.url.trim(),
-            query: Some(&query),
+        let method = Method::from_bytes(self.method.as_bytes()).unwrap_or(Method::POST);
+        let request = JobRequest::http(
+            &method,
+            self.url.trim(),
             headers,
-            body: Bytes::from(self.body.clone()),
-        };
-        match prepare_job(options, request, now) {
+            Bytes::from(self.body.clone()),
+        );
+        match prepare_job(options, request, Some(&query), now) {
             Ok(job) if errors.is_empty() => Ok(job),
             Ok(_) => Err(errors),
             Err(param_errors) => {
@@ -371,7 +371,7 @@ impl JobForm {
 fn field_of(param: &str) -> &'static str {
     match param {
         "_delay" => "delay",
-        "_delay_until" => "at",
+        "_at" => "at",
         "_interval" => "interval",
         "_cron" => "cron",
         "_until" => "until",
@@ -468,10 +468,7 @@ mod tests {
             form.preview()
                 .contains("Irisqo-Forward-authorization: ••••")
         );
-        assert!(
-            form.preview()
-                .contains("?_delay_until=2030-01-02T03:04:00Z")
-        );
+        assert!(form.preview().contains("?_at=2030-01-02T03:04:00Z"));
     }
 
     #[test]
@@ -530,11 +527,11 @@ mod tests {
             form.preview()
         };
         // Berlin is UTC+1 in January
-        assert!(preview("&tz=Europe%2FBerlin").contains("?_delay_until=2030-01-02T02:04:00Z"));
+        assert!(preview("&tz=Europe%2FBerlin").contains("?_at=2030-01-02T02:04:00Z"));
         // no zone, or one that does not exist: UTC
         for query in ["", "&tz=", "&tz=Mars%2FBase"] {
             assert!(
-                preview(query).contains("?_delay_until=2030-01-02T03:04:00Z"),
+                preview(query).contains("?_at=2030-01-02T03:04:00Z"),
                 "{query}"
             );
         }

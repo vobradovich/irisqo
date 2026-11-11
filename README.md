@@ -30,23 +30,23 @@ Like QStash or Zeplo, but on **your** Postgres, calling **your** services.
 - [x] Persistent queue on Postgres
 - [x] Multi-instance scaling (heartbeats, lock reaping, graceful shutdown)
 - [x] Retries with backoff, delays, timeouts
-- [x] Schedules: interval and cron
+- [x] Schedules: interval and cron, time zones, `until`; declared by `PUT /api/v1/schedules/{id}`
 - [x] Proxy enqueue via `/to/{url}`, idempotency with `_key`
-- [x] Jobs and schedules API (cancel, retry)
+- [x] Jobs and schedules API (cancel, retry); a job as JSON (`POST /api/v1/jobs`), described by OpenAPI (`/api/v1/openapi.json`)
+- [x] Transactional enqueue: `enqueue_v1(job jsonb)` in the service transaction ([docs/sql.md](docs/sql.md))
 - [x] Server-rendered UI (htmx, Pico CSS, no CDN)
 - [x] OpenTelemetry (traces, metrics, logs over OTLP)
 - [x] SSRF protections, bearer auth, `problem+json` errors
 
 #### Planned
 
-- [ ] Job format v1 (JSON): `POST /api/v1/jobs`, batch, OpenAPI
-- [ ] Transactional enqueue: `enqueue_v1(job jsonb)` in the service transaction ([docs/sql.md](docs/sql.md); format not stable yet)
 - [ ] Flow keys: per-key parallelism, rate, pause; dynamic keys default to N = 1; per-host limit; Queues UI and metrics
-- [ ] Named schedules: upsert `PUT /api/v1/schedules/{name}`, time zones, run now, miss policy; human ids (`bold-lazy-heron`)
+- [ ] Named schedules: run now, miss policy
 - [ ] Callbacks / `then` as child jobs (`parent_id`)
 - [ ] Signed deliveries (`Irisqo-Signature`, HMAC, key rotation)
 - [ ] Run modes: `irisqo serve` / `irisqo worker`; Docker image, Helm chart
-- [ ] Batches, bulk actions, richer search, optional partitioning for large histories
+- [ ] SDKs generated from the OpenAPI description
+- [ ] Batches (`POST /api/v1/jobs/batch`: an array in one transaction), bulk actions, richer search, optional partitioning for large histories
 
 
 ## API
@@ -104,7 +104,7 @@ GET {{host}}/to/https://postman-echo.com/get?_retry=3|fibonacci|5
 GET {{host}}/to/https://postman-echo.com/get?_retry=8|exponential|2|300
 ```
 
-In JSON (`meta` of `POST /api/v1/jobs`, `enqueue_v1`): `retry` (`fixed`, `fibonacci`, `exponential`),
+In JSON (`POST /api/v1/jobs`, `PUT /api/v1/schedules/{id}`, `enqueue_v1`): `retry` (`fixed`, `fibonacci`, `exponential`),
 `retry_count`, `retry_delay`, `retry_max_delay`.
 
 Retried: network errors, timeouts, `408`, `425`, `429` and `5xx`. Any other `4xx` fails the job at once.
@@ -115,14 +115,14 @@ and are capped at 24 hours unless the policy sets them (`retry_delay` of `fixed`
 `_timeout` sets the request timeout in milliseconds (default `--timeout`, 3000), capped by `--max-timeout` (default 300000).
 
 ### Delay
-Delay a request by adding the `_delay` or `_delay_until` [Unix Time] query parameter.
+Delay a request by adding the `_delay` (seconds) or `_at` (RFC 3339 or Unix time) query parameter.
 ```
 GET {{host}}/to/https://postman-echo.com/get?_delay=5
 ```
 
 ### Jobs and schedules
 ```
-POST   {{host}}/api/v1/jobs                       a job as JSON: {meta, headers, body, key} (200, the job's id)
+POST   {{host}}/api/v1/jobs                       a job as JSON: sink, method, url, retry*, timeout, delay | at, queue, priority, headers, body | body_base64, key (200, the job's id)
 GET    {{host}}/api/v1/jobs/{id}                  the job
 GET    {{host}}/api/v1/jobs/{id}/result           its result
 GET    {{host}}/api/v1/jobs/{id}/history          its history
@@ -131,9 +131,10 @@ POST   {{host}}/api/v1/jobs/{id}/retry            a processed job runs once more
 DELETE {{host}}/api/v1/jobs/{id}
 POST   {{host}}/api/v1/schedules/{id}/pause       no more runs, the pending one is cancelled
 POST   {{host}}/api/v1/schedules/{id}/resume      the next run is scheduled
-PUT    {{host}}/api/v1/schedules/{id}             declare a schedule (a new one, or replace its rule and job): {meta, headers, body, cron | interval, tz, until}
+PUT    {{host}}/api/v1/schedules/{id}             declare a schedule (a new one, or replace its rule and job): the fields of a job and cron | interval, tz, until
 DELETE {{host}}/api/v1/schedules/{id}
 ```
+All endpoints, with their fields and responses, are in the OpenAPI description: `GET {{host}}/api/v1/openapi.json`.
 
 ### Errors
 Errors are `application/problem+json` ([RFC 9457](https://www.rfc-editor.org/rfc/rfc9457)).

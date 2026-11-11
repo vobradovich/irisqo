@@ -57,6 +57,7 @@ bytes = { version = "1", features = ["serde"] }
 ulid = { version = "3" }
 cron = { version = "0.17" }
 fastrand = "2"
+utoipa = { version = "6", features = ["chrono"] }
 
 [features]
 # Integration tests need a Postgres server: DATABASE_URL=postgres://... cargo test --features integration-tests

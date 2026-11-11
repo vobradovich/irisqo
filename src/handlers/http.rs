@@ -2,9 +2,10 @@ use crate::models::Problem;
 use crate::{
     db,
     features::schedules::{JobSchedule, ScheduleRule},
+    handlers::job_request::{JobRequest, SinkKind},
     models::{
-        AppState, Error, HttpMeta, JobCreate, JobCreateRow, JobMeta, JobRetry, JobSink,
-        PRIORITY_RULE, ParamError, QUEUE_RULE, WorkerOptions, headers::forwarded_headers, is_queue,
+        AppState, Error, JobCreate, JobCreateRow, ParamError, WorkerOptions,
+        headers::forwarded_headers,
     },
     otel::metrics::metrics,
 };
@@ -17,10 +18,10 @@ use axum::{
     routing::get,
 };
 use chrono::{DateTime, Utc};
-use hyper::{Method, Uri};
+use hyper::Method;
 use opentelemetry::KeyValue;
 
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 #[allow(unused_imports)]
 use tracing::{debug, error, info, warn};
 use url::{Url, form_urlencoded};
@@ -47,15 +48,9 @@ async fn job_create(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<impl IntoResponse, Problem> {
-    let request = JobRequest {
-        method,
-        url: &url,
-        query: query.as_deref(),
-        headers: forwarded_headers(&headers),
-        body,
-    };
-    let job =
-        prepare_job(&state.worker_options, request, Utc::now()).map_err(Error::InvalidParams)?;
+    let request = JobRequest::http(&method, &url, forwarded_headers(&headers), body);
+    let job = prepare_job(&state.worker_options, request, query.as_deref(), Utc::now())
+        .map_err(Error::InvalidParams)?;
     let job = create_job(&state, job).await?;
     Ok((StatusCode::CREATED, job_headers(&job)))
 }
@@ -78,56 +73,24 @@ pub fn job_headers(job: &JobCreateRow) -> HeaderMap {
     headers
 }
 
-/// A job as requested through `/to/{url}?{query}`; the UI form builds the same.
-pub struct JobRequest<'a> {
-    pub method: Method,
-    /// The target URL, without the query string.
-    pub url: &'a str,
-    /// The `_*` job parameters mixed with the target's own query parameters.
-    pub query: Option<&'a str>,
-    /// The headers for the target (see [`forwarded_headers`]).
-    pub headers: HashMap<String, String>,
-    pub body: Bytes,
-}
-
-/// Validates a job request and builds the job: every invalid parameter is reported,
-/// not only the first one. `_*` parameters are the job's, the others stay on the URL.
+/// Validates a job requested through `/to/{url}?{query}` (`input` is [`JobRequest::http`], the UI
+/// form builds the same) and builds the job: every invalid parameter is reported, not only the
+/// first one. `_*` parameters are the job's, the others stay on the URL.
 pub fn prepare_job(
     options: &WorkerOptions,
-    request: JobRequest<'_>,
+    mut input: JobRequest,
+    query: Option<&str>,
     now: DateTime<Utc>,
 ) -> Result<JobCreate, Vec<ParamError>> {
     let mut errors = Vec::new();
-    let mut at: Option<DateTime<Utc>> = None;
-    let mut timeout: Option<u32> = None;
-    let mut retry: Option<JobRetry> = None;
     let mut rule: Option<(ScheduleRule, &'static str)> = None;
     let mut until: Option<DateTime<Utc>> = None;
-    let mut key: Option<String> = None;
     let mut tz: Option<chrono_tz::Tz> = None;
-    let mut queue: Option<String> = None;
-    let mut priority: Option<i16> = None;
-    let mut url = Url::parse(request.url).ok();
+    let mut url = input.url.as_deref().and_then(|url| Url::parse(url).ok());
 
     let mut bad = |parameter, detail: &str| errors.push(ParamError::new(parameter, detail));
-    for (name, value) in form_urlencoded::parse(request.query.unwrap_or_default().as_bytes()) {
+    for (name, value) in form_urlencoded::parse(query.unwrap_or_default().as_bytes()) {
         match name.as_ref() {
-            "_delay" => match value.parse::<u32>() {
-                Ok(secs) => at = Some(now + chrono::Duration::seconds(i64::from(secs))),
-                Err(_) => bad("_delay", "must be a number of seconds"),
-            },
-            "_delay_until" => match JobSchedule::parse_time(&value) {
-                Some(t) => at = Some(t),
-                None => bad("_delay_until", TIME_RULE),
-            },
-            "_timeout" => match value.parse::<u32>() {
-                Ok(ms) if ms > 0 => timeout = Some(ms),
-                _ => bad("_timeout", "must be a positive number of milliseconds"),
-            },
-            "_retry" => match JobRetry::parse(&value) {
-                Ok(parsed) => retry = parsed,
-                Err(_) => bad("_retry", JobRetry::RULE),
-            },
             "_interval" => match value.parse() {
                 Ok(parsed @ ScheduleRule::Interval(_)) => rule = Some((parsed, "_interval")),
                 _ => bad("_interval", "must be a positive number of seconds"),
@@ -144,23 +107,20 @@ pub fn prepare_job(
                 Some(t) => until = Some(t),
                 None => bad("_until", TIME_RULE),
             },
-            "_queue" if !value.is_empty() && !is_queue(&value) => bad("_queue", QUEUE_RULE),
-            "_queue" => queue = (!value.is_empty()).then(|| value.into_owned()),
-            "_priority" => match value.parse::<i16>() {
-                Ok(parsed) => priority = Some(parsed),
-                Err(_) => bad("_priority", "must be an integer from -32768 to 32767"),
-            },
-            "_key" if !value.is_empty() && !is_key(&value) => bad("_key", KEY_RULE),
-            "_key" => key = (!value.is_empty()).then(|| value.into_owned()),
-            _ => {
-                if let Some(url) = url.as_mut() {
-                    if value.is_empty() {
-                        url.query_pairs_mut().append_key_only(&name);
-                    } else {
-                        url.query_pairs_mut().append_pair(&name, &value);
+            _ => match input.set_param(&name, &value) {
+                Ok(true) => {}
+                Err(err) => bad(err.parameter, &err.detail),
+                // the target's own query parameter
+                Ok(false) => {
+                    if let Some(url) = url.as_mut() {
+                        if value.is_empty() {
+                            url.query_pairs_mut().append_key_only(&name);
+                        } else {
+                            url.query_pairs_mut().append_pair(&name, &value);
+                        }
                     }
                 }
-            }
+            },
         }
     }
     if until.is_some() && rule.is_none() {
@@ -169,47 +129,29 @@ pub fn prepare_job(
             "applies to _cron and _interval only",
         ));
     }
-    if queue.is_some() && priority.is_some_and(|p| p != 0) {
-        errors.push(ParamError::new("_priority", PRIORITY_RULE));
-    }
     let rule_parameter = rule.as_ref().map(|(_, parameter)| *parameter);
     let schedule = rule.map(|(rule, _)| JobSchedule {
         rule,
         tz: tz.unwrap_or_default(),
         until,
     });
-    let sink = url
-        .and_then(|url| Uri::try_from(url.as_str()).ok())
-        .map(|url| {
-            JobSink::Http(HttpMeta {
-                method: request.method,
-                url,
-            })
-        });
-    match sink.as_ref().map(|sink| sink.check(options)) {
-        None => errors.push(ParamError::new("url", "is not a valid URL")),
-        Some(Err(detail)) => errors.push(ParamError::new("url", detail)),
-        Some(Ok(())) => {}
+    // `noop://…` is the `noop` sink: nothing is called
+    if url.as_ref().is_some_and(|url| url.scheme() == "noop") {
+        input.sink = Some(SinkKind::Noop);
     }
-    let job = sink.map(|sink| {
-        JobCreate {
-            meta: JobMeta {
-                sink,
-                retry,
-                timeout,
-                queue,
-                priority,
-                traceparent: None,
-                tracestate: None,
-            },
-            headers: Some(request.headers),
-            body: request.body,
-            at,
-            schedule,
-            key,
-        }
-        .normalized(options, now)
-    });
+    // a URL that does not parse stays empty: `validate` says it is not a valid one
+    input.url = Some(url.map(String::from).unwrap_or_default());
+    let job = input
+        .validate(options, now)
+        .map_err(|found| {
+            errors.extend(
+                found
+                    .into_iter()
+                    .map(|err| ParamError::new(query_parameter(err.parameter), err.detail)),
+            );
+        })
+        .ok()
+        .map(|job| JobCreate { schedule, ..job });
     // a schedule runs at least once
     if let Some(job) = &job
         && let Some((schedule, parameter)) = job.schedule.as_ref().zip(rule_parameter)
@@ -222,6 +164,17 @@ pub fn prepare_job(
         ));
     }
     job.filter(|_| errors.is_empty()).ok_or(errors)
+}
+
+/// The job parameters of `/to/`: `_` and the name of the field of [`JobRequest`].
+const JOB_PARAMETERS: [&str; 6] = ["_delay", "_at", "_timeout", "_queue", "_priority", "_key"];
+
+/// The `/to/` parameter of a job field; the field itself when it has none (`url`, `headers`).
+fn query_parameter(field: &'static str) -> &'static str {
+    JOB_PARAMETERS
+        .into_iter()
+        .find(|parameter| parameter.strip_prefix('_') == Some(field))
+        .unwrap_or(field)
 }
 
 /// Stores a prepared job (or returns the existing one with the same key).
@@ -269,17 +222,18 @@ pub(crate) fn is_key(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
     fn prepare_query(query: &str) -> Result<JobCreate, Vec<ParamError>> {
         prepare_job(
             &WorkerOptions::for_tests(),
-            JobRequest {
-                method: Method::GET,
-                url: "https://example.com",
-                query: Some(query),
-                headers: HashMap::new(),
-                body: Bytes::new(),
-            },
+            JobRequest::http(
+                &Method::GET,
+                "https://example.com",
+                HashMap::new(),
+                Bytes::new(),
+            ),
+            Some(query),
             Utc::now(),
         )
     }
@@ -318,18 +272,25 @@ mod tests {
     }
 
     #[test]
+    fn noop_is_a_target_scheme() {
+        let options = WorkerOptions::for_tests();
+        let prepare = |url| {
+            let request = JobRequest::http(&Method::POST, url, HashMap::new(), Bytes::new());
+            prepare_job(&options, request, None, Utc::now())
+        };
+        let job = prepare("noop://bench").expect("valid");
+        assert_eq!(job.meta.sink, crate::models::JobSink::Noop);
+        assert!(prepare("none://bench").is_err(), "an unknown scheme");
+    }
+
+    #[test]
     fn a_target_is_an_http_url() {
         let options = WorkerOptions::for_tests();
         let prepare = |url| {
             prepare_job(
                 &options,
-                JobRequest {
-                    method: Method::GET,
-                    url,
-                    query: None,
-                    headers: HashMap::new(),
-                    body: Bytes::new(),
-                },
+                JobRequest::http(&Method::GET, url, HashMap::new(), Bytes::new()),
+                None,
                 Utc::now(),
             )
         };

@@ -5,5 +5,5 @@ pub use job_result::{
 };
 
 mod db;
-mod http;
+pub(crate) mod http;
 mod job_result;

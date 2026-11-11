@@ -317,7 +317,7 @@ async fn invalid_schedule_params_are_rejected(pool: PgPool) -> anyhow::Result<()
 
     for query in [
         "_interval=0",
-        "_delay_until=99999999999999",
+        "_at=99999999999999",
         "_interval=60&_until=99999999999999",
     ] {
         let response = common::create(&state, addr, &format!("{target}?{query}")).await;

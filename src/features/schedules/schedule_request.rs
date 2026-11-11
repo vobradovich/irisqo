@@ -1,27 +1,17 @@
 use super::{JobSchedule, ScheduleRule};
 use crate::handlers::{
     http::{KEY_RULE, TIME_RULE, TZ_RULE, is_key},
-    job_input::{JobInput, prepare_input},
+    job_request::JobRequest,
 };
 use crate::models::{JobCreate, ParamError, WorkerOptions};
 use chrono::{DateTime, Utc};
 use chrono_tz::Tz;
 use serde::Deserialize;
-use serde_json::{Map, Value, value::RawValue};
-use std::collections::HashMap;
 
-/// A schedule in JSON: the job of every run (as for `POST /api/v1/jobs`) and when it runs.
-/// Its id is in the path.
-#[derive(Debug, Deserialize)]
-pub(super) struct ScheduleInput {
-    /// The fields of the job, as for `POST /api/v1/jobs`.
-    #[serde(flatten)]
-    meta: Map<String, Value>,
-    headers: Option<HashMap<String, String>>,
-    body: Option<Box<RawValue>>,
-    body_base64: Option<String>,
-    at: Option<Value>,
-    delay: Option<u32>,
+/// When a schedule runs: the body of `PUT /api/v1/schedules/{id}` has these next to the fields of
+/// the job of every run ([`JobRequest`]). The id is in the path.
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub(crate) struct ScheduleRequest {
     /// A cron expression of 5 fields (or 6 with seconds first), or `interval`, not both.
     cron: Option<String>,
     /// Seconds.
@@ -53,7 +43,8 @@ fn parse_rule(cron: Option<&str>, interval: Option<u32>) -> Result<ScheduleRule,
 pub(super) fn prepare_schedule(
     options: &WorkerOptions,
     schedule_id: &str,
-    spec: ScheduleInput,
+    mut job: JobRequest,
+    spec: ScheduleRequest,
     now: DateTime<Utc>,
 ) -> Result<JobCreate, Vec<ParamError>> {
     let mut errors = Vec::new();
@@ -79,21 +70,12 @@ pub(super) fn prepare_schedule(
         until
     });
     let schedule = rule.map(|rule| JobSchedule { rule, tz, until });
-    let job = prepare_input(
-        options,
-        JobInput {
-            meta: spec.meta,
-            headers: spec.headers,
-            body: spec.body,
-            body_base64: spec.body_base64,
-            at: spec.at,
-            delay: spec.delay,
-            key: None,
-        },
-        now,
-    )
-    .map_err(|found| errors.extend(found))
-    .ok();
+    // the key of the schedule's job is the id of the schedule
+    job.key = None;
+    let job = job
+        .validate(options, now)
+        .map_err(|found| errors.extend(found))
+        .ok();
     let (Some(mut job), Some(schedule), true) = (job, schedule, errors.is_empty()) else {
         return Err(errors);
     };
@@ -123,6 +105,7 @@ mod tests {
         prepare_schedule(
             &WorkerOptions::for_tests(),
             schedule_id,
+            serde_json::from_str(json).expect("job"),
             serde_json::from_str(json).expect("spec"),
             Utc::now(),
         )
@@ -181,7 +164,7 @@ mod tests {
                 "cron":"* * * * *","interval":60,"until":"soon"}"#,
         )
         .expect_err("invalid schedule");
-        assert_eq!(parameters(&errors), ["cron", "until", "sink"]);
+        assert_eq!(parameters(&errors), ["cron", "until", "url"]);
     }
 
     #[test]

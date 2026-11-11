@@ -11,7 +11,7 @@ use crate::features::schedules::JobSchedule;
 
 use super::{Error, JobRetry, WorkerOptions};
 
-#[derive(Debug, Clone, sqlx::FromRow, Serialize)]
+#[derive(Debug, Clone, sqlx::FromRow, Serialize, utoipa::ToSchema)]
 pub struct JobRow {
     pub id: i64,
     #[sqlx(json)]
@@ -19,6 +19,7 @@ pub struct JobRow {
     #[sqlx(json(nullable))]
     #[serde(serialize_with = "super::headers::serialize_shown")]
     pub headers: Option<HashMap<String, String>>,
+    /// The body as it is stored: a list of bytes.
     pub body: Option<Vec<u8>>,
     pub schedule_id: Option<String>,
     pub key: Option<String>,
@@ -67,7 +68,7 @@ impl JobCreate {
     }
 }
 
-#[derive(Debug, sqlx::FromRow, Serialize)]
+#[derive(Debug, sqlx::FromRow, Serialize, utoipa::ToSchema)]
 pub struct JobCreateRow {
     pub id: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -76,12 +77,13 @@ pub struct JobCreateRow {
     pub key: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, utoipa::ToSchema)]
 pub struct JobMeta {
     #[serde(flatten, default)]
     pub sink: JobSink,
     /// No retries when absent.
     #[serde(flatten)]
+    #[schema(schema_with = crate::handlers::job_request::retry_schema)]
     pub retry: Option<JobRetry>,
     /// Milliseconds; the API stores `--timeout` (default 3000) when the request has none.
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -125,7 +127,7 @@ pub const QUEUE_RULE: &str =
 /// Why a job with a queue has no priority: the queue orders its jobs.
 pub const PRIORITY_RULE: &str = "applies to a job without a queue only";
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, utoipa::ToSchema)]
 #[serde(tag = "sink")]
 #[serde(rename_all = "snake_case")]
 pub enum JobSink {
@@ -154,11 +156,13 @@ impl JobSink {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct HttpMeta {
     #[serde(with = "http_serde::method")]
+    #[schema(value_type = String, example = "POST")]
     pub method: hyper::Method,
     #[serde(with = "http_serde::uri")]
+    #[schema(value_type = String)]
     pub url: hyper::Uri,
 }
 

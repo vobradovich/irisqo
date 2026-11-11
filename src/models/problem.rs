@@ -9,13 +9,14 @@ use super::ParamError;
 /// RFC 9457 problem details, sent as `application/problem+json`.
 ///
 /// Without `type` the problem is `about:blank`: `title` is then the status reason phrase.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
 pub struct Problem {
     #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
     pub kind: Option<&'static str>,
     pub title: &'static str,
     /// Advisory in RFC 9457, but handy for clients and logs.
     #[serde(serialize_with = "status_code")]
+    #[schema(value_type = u16)]
     pub status: StatusCode,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,

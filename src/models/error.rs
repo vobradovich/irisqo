@@ -10,7 +10,7 @@ pub const INVALID_PARAMS_TYPE: &str =
 
 /// A rejected request parameter (`url`, `_delay`, `_cron`...): the API returns them all
 /// at once (RFC 9457 `errors` extension), the UI form shows each one next to its field.
-#[derive(Debug, serde::Serialize)]
+#[derive(Debug, serde::Serialize, utoipa::ToSchema)]
 pub struct ParamError {
     /// The query parameter (`_delay`) or `url`.
     pub parameter: &'static str,

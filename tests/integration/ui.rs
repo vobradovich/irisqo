@@ -290,7 +290,7 @@ async fn api_reports_every_invalid_parameter(pool: PgPool) -> anyhow::Result<()>
         .iter()
         .filter_map(|e| e["parameter"].as_str())
         .collect();
-    assert_eq!(params, ["_delay", "_timeout", "_interval", "_key"]);
+    assert_eq!(params, ["_delay", "_interval", "_timeout", "_key"]);
     assert_eq!(errors[0]["detail"], "must be a number of seconds");
 
     // a schedule that would never run
