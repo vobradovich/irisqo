@@ -1,6 +1,6 @@
 use super::{JobSchedule, ScheduleRule};
 use crate::handlers::{
-    http::{KEY_RULE, TIME_RULE, TZ_RULE, is_key, job_headers, parse_body},
+    http::{KEY_RULE, TIME_RULE, TZ_RULE, create_job, is_key, job_headers, parse_body},
     jobs::{JobSpec, prepare_spec},
 };
 use crate::models::{Error, JobCreate, ParamError, Problem, WorkerOptions};
@@ -142,7 +142,7 @@ async fn upsert(
     let spec: ScheduleSpec = parse_body(&body, "schedule")?;
     let job = prepare_schedule(&state.worker_options, &schedule_id, spec, Utc::now())
         .map_err(Error::InvalidParams)?;
-    let run = super::db::upsert(&state.pool, job, &state.instance_id).await?;
+    let run = create_job(&state, job).await?;
     let mut headers = job_headers(&run);
     // the schedule is what was declared
     if let Ok(location) = HeaderValue::from_str(&format!("/api/v1/schedules/{schedule_id}")) {

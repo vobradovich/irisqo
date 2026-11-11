@@ -1,11 +1,9 @@
 use crate::{
     db,
     models::{Error, JobCreate, JobCreateRow, JobMeta},
-    otel::metrics::metrics,
 };
 
 use chrono::{DateTime, Utc};
-use opentelemetry::KeyValue;
 use sqlx::{Pool, Postgres, types::Json};
 
 use super::{JobSchedule, ScheduleRow};
@@ -107,9 +105,6 @@ pub async fn upsert(
         .fetch_one(&mut *tx)
         .await?;
     tx.commit().await?;
-    metrics()
-        .jobs_created
-        .add(1, &[KeyValue::new("job.type", "scheduled")]);
     Ok(JobCreateRow {
         id,
         schedule_id: Some(schedule_id),

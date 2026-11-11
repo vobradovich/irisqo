@@ -1,9 +1,9 @@
 use std::{fmt::Display, str::FromStr};
 
 use crate::models::ParamError;
-use chrono::{DateTime, Datelike, DurationRound, TimeDelta, Utc};
+use chrono::{DateTime, Datelike, DurationRound, TimeDelta, TimeZone, Utc};
 use chrono_tz::Tz;
-use cron::Schedule;
+use cron::{Schedule, TimeUnitSpec};
 
 /// When a job repeats: the fields of the `schedules` table (`rule`, `tz`, `until`).
 #[derive(Debug, Clone, PartialEq)]
@@ -83,11 +83,27 @@ impl JobSchedule {
                     .ok()?
                     .checked_add_signed(interval)?
             }
-            ScheduleRule::Cron(cron) => Schedule::from_str(cron)
-                .ok()?
-                .after(&after.with_timezone(&self.tz))
-                .next()?
-                .with_timezone(&Utc),
+            ScheduleRule::Cron(cron) => {
+                let schedule = Schedule::from_str(cron).ok()?;
+                // A time of day (fixed hour and minute) that exists twice runs once, at its
+                // first offset. A frequent rule (any hour or any minute) runs at both,
+                // so the clock change does not leave a gap in real time.
+                let once = !schedule.hours().is_all() && !schedule.minutes().is_all();
+                schedule
+                    .after(&after.with_timezone(&self.tz))
+                    // the iterator yields both offsets, and the first may already be past
+                    .find(|at| {
+                        at.with_timezone(&Utc) > after
+                            && (!once
+                                || self
+                                    .tz
+                                    .from_local_datetime(&at.naive_local())
+                                    .earliest()
+                                    .as_ref()
+                                    == Some(at))
+                    })?
+                    .with_timezone(&Utc)
+            }
         };
         (Self::in_range(next) && self.until.is_none_or(|u| next <= u)).then_some(next)
     }
@@ -153,7 +169,6 @@ impl Display for ScheduleRule {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use chrono::TimeZone;
 
     fn at(secs: i64) -> DateTime<Utc> {
         DateTime::from_timestamp(secs, 0).expect("in range")
@@ -283,6 +298,25 @@ mod tests {
                 .tz,
             Tz::UTC
         );
+    }
+
+    #[test]
+    fn cron_next_stays_in_the_future_when_clocks_go_back() {
+        // 02:15 in Berlin's second occurrence of the repeated hour.
+        let after = Utc.with_ymd_and_hms(2025, 10, 26, 1, 15, 0).unwrap();
+        for (rule, expected) in [
+            ("0 30 2 * * *", "2025-10-27T01:30:00Z"),
+            // a frequent rule has no gap: it runs in the repeated hour again
+            ("0 * * * * *", "2025-10-26T01:16:00Z"),
+            ("0 0 * * * *", "2025-10-26T02:00:00Z"),
+        ] {
+            let schedule = JobSchedule::from_row(rule, "Europe/Berlin", None).unwrap();
+            assert_eq!(
+                schedule.next(after),
+                JobSchedule::parse_time(expected),
+                "{rule}"
+            );
+        }
     }
 
     #[test]
