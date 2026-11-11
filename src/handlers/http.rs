@@ -6,7 +6,7 @@ use crate::{
         AppState, Error, HttpMeta, JobCreate, JobCreateRow, JobMeta, JobRetry, JobSink, ParamError,
         WorkerOptions, headers::forwarded_headers,
     },
-    otel::{self, metrics::metrics},
+    otel::metrics::metrics,
 };
 use axum::{
     Router,
@@ -114,13 +114,12 @@ pub fn prepare_job(
                 Ok(secs) => at = Some(now + chrono::Duration::seconds(i64::from(secs))),
                 Err(_) => bad("_delay", "must be a number of seconds"),
             },
-            // a time in the past runs the job now
             "_delay_until" => match JobSchedule::parse_time(&value) {
-                Some(t) => at = (t > now).then_some(t),
+                Some(t) => at = Some(t),
                 None => bad("_delay_until", TIME_RULE),
             },
             "_timeout" => match value.parse::<u32>() {
-                Ok(ms) if ms > 0 => timeout = Some(ms.min(options.max_timeout)),
+                Ok(ms) if ms > 0 => timeout = Some(ms),
                 _ => bad("_timeout", "must be a positive number of milliseconds"),
             },
             "_retry" => match JobRetry::parse(&value) {
@@ -162,24 +161,12 @@ pub fn prepare_job(
             "applies to _cron and _interval only",
         ));
     }
-    let schedule = rule.map(|(rule, parameter)| {
-        let schedule = JobSchedule {
-            rule,
-            tz: tz.unwrap_or_default(),
-            until,
-        };
-        (schedule, parameter)
+    let rule_parameter = rule.as_ref().map(|(_, parameter)| *parameter);
+    let schedule = rule.map(|(rule, _)| JobSchedule {
+        rule,
+        tz: tz.unwrap_or_default(),
+        until,
     });
-    // a schedule runs at least once
-    if let Some((schedule, parameter)) = &schedule
-        && schedule.next(at.unwrap_or(now)).is_none()
-    {
-        let parameter = if until.is_some() { "_until" } else { parameter };
-        errors.push(ParamError::new(
-            parameter,
-            "the schedule has no run before it ends",
-        ));
-    }
     let sink = url
         .and_then(|url| Uri::try_from(url.as_str()).ok())
         .map(|url| {
@@ -193,26 +180,37 @@ pub fn prepare_job(
         Some(Err(detail)) => errors.push(ParamError::new("url", detail)),
         Some(Ok(())) => {}
     }
-    let Some(sink) = sink.filter(|_| errors.is_empty()) else {
-        return Err(errors);
-    };
-    // Trace context of this request: the parent of every attempt
-    let (traceparent, tracestate) = otel::current_trace_headers();
-    Ok(JobCreate {
-        meta: JobMeta {
-            sink,
-            retry,
-            delay: at.and_then(|t| u32::try_from((t - now).num_seconds()).ok()),
-            timeout,
-            traceparent,
-            tracestate,
-        },
-        headers: Some(request.headers),
-        body: request.body,
-        at,
-        schedule: schedule.map(|(schedule, _)| schedule),
-        key,
-    })
+    let job = sink.map(|sink| {
+        JobCreate {
+            meta: JobMeta {
+                sink,
+                retry,
+                timeout,
+                queue: None,
+                priority: None,
+                traceparent: None,
+                tracestate: None,
+            },
+            headers: Some(request.headers),
+            body: request.body,
+            at,
+            schedule,
+            key,
+        }
+        .normalized(options, now)
+    });
+    // a schedule runs at least once
+    if let Some(job) = &job
+        && let Some((schedule, parameter)) = job.schedule.as_ref().zip(rule_parameter)
+        && schedule.next(job.at.unwrap_or(now)).is_none()
+    {
+        let parameter = if until.is_some() { "_until" } else { parameter };
+        errors.push(ParamError::new(
+            parameter,
+            "the schedule has no run before it ends",
+        ));
+    }
+    job.filter(|_| errors.is_empty()).ok_or(errors)
 }
 
 /// Stores a prepared job (or returns the existing one with the same key).

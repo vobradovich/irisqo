@@ -49,8 +49,8 @@ async fn json_job_is_queued_and_delivered(pool: PgPool) -> anyhow::Result<()> {
     let addr = common::spawn_app(&state).await;
 
     let json = format!(
-        r#"{{"meta":{{"sink":"http","method":"PUT","url":"http://{addr}/echo",
-              "retry":"fixed","retry_count":2,"retry_delay":1,"timeout":5000}},
+        r#"{{"sink":"http","method":"PUT","url":"http://{addr}/echo",
+              "retry":"fixed","retry_count":2,"retry_delay":1,"timeout":5000,
             "headers":{{"x-a":"b"}},"body":{{"n":1}},"key":"v1-job"}}"#
     );
     let response = post_job(&state, addr, &json).await;
@@ -87,9 +87,8 @@ async fn json_job_with_delay_is_scheduled(pool: PgPool) -> anyhow::Result<()> {
     let state = common::state(pool.clone());
     let addr = common::spawn_app(&state).await;
 
-    let json = format!(
-        r#"{{"meta":{{"sink":"http","method":"POST","url":"http://{addr}/echo","delay":3600}}}}"#
-    );
+    let json =
+        format!(r#"{{"sink":"http","method":"POST","url":"http://{addr}/echo","delay":3600}}"#);
     let response = post_job(&state, addr, &json).await;
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
@@ -105,15 +104,15 @@ async fn an_invalid_job_is_a_problem_and_is_not_stored(pool: PgPool) -> anyhow::
     let addr = common::spawn_app(&state).await;
 
     // every invalid field is reported
-    let json = r#"{"meta":{"sink":"http","method":"GET","url":"ftp://a.example/"},
+    let json = r#"{"sink":"http","method":"GET","url":"ftp://a.example/",
                    "headers":{"host":"x"},"key":"a\u0001b"}"#;
     let response = post_job(&state, addr, json).await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let body = common::text(response).await;
-    assert!(body.contains("\"parameter\":\"meta.sink\""), "{body}");
+    assert!(body.contains("\"parameter\":\"sink\""), "{body}");
 
-    // not JSON, an unknown field of the request, no meta
-    for bad in ["nope", r#"{"meta":{"sink":"noop"},"bogus":1}"#, "{}"] {
+    // not JSON, an unknown sink, no sink
+    for bad in ["nope", r#"{"sink":"smtp"}"#, "{}"] {
         let response = post_job(&state, addr, bad).await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST, "{bad}");
     }
@@ -127,7 +126,7 @@ async fn a_schedule_is_declared_with_put(pool: PgPool) -> anyhow::Result<()> {
     let addr = common::spawn_app(&state).await;
     let job = |interval: u32, path: &str| {
         format!(
-            r#"{{"meta":{{"sink":"http","method":"POST","url":"http://{addr}/{path}"}},"interval":{interval}}}"#
+            r#"{{"sink":"http","method":"POST","url":"http://{addr}/{path}","interval":{interval}}}"#
         )
     };
 
@@ -200,8 +199,7 @@ async fn a_schedule_is_declared_with_put(pool: PgPool) -> anyhow::Result<()> {
     );
 
     // not a schedule (no cron or interval), not an id
-    let no_rule =
-        format!(r#"{{"meta":{{"sink":"http","method":"POST","url":"http://{addr}/echo"}}}}"#);
+    let no_rule = format!(r#"{{"sink":"http","method":"POST","url":"http://{addr}/echo"}}"#);
     assert_eq!(
         put_schedule(&state, addr, "nightly", &no_rule)
             .await
@@ -221,7 +219,7 @@ async fn a_cron_schedule_runs_in_its_time_zone(pool: PgPool) -> anyhow::Result<(
         let state = state.clone();
         async move {
             let json = format!(
-                r#"{{"meta":{{"sink":"http","method":"POST","url":"http://{addr}/echo"}},
+                r#"{{"sink":"http","method":"POST","url":"http://{addr}/echo",
                     "cron":"0 0 9 * * *","tz":"{tz}"}}"#
             );
             put_schedule(&state, addr, "morning", &json).await
@@ -299,9 +297,8 @@ async fn a_schedule_through_to_is_declared_the_same_way(pool: PgPool) -> anyhow:
 async fn a_cancelled_run_gives_its_key_back(pool: PgPool) -> anyhow::Result<()> {
     let state = common::state(pool.clone());
     let addr = common::spawn_app(&state).await;
-    let json = format!(
-        r#"{{"meta":{{"sink":"http","method":"POST","url":"http://{addr}/echo"}},"interval":3600}}"#
-    );
+    let json =
+        format!(r#"{{"sink":"http","method":"POST","url":"http://{addr}/echo","interval":3600}}"#);
     let response = put_schedule(&state, addr, "nightly", &json).await;
     let run: i64 = common::header(&response, "irisqo-job-id")
         .and_then(|id| id.parse().ok())
@@ -338,9 +335,8 @@ async fn a_run_that_finishes_during_a_declaration_does_not_continue_the_old_sche
 ) -> anyhow::Result<()> {
     let state = common::state(pool.clone());
     let addr = common::spawn_app(&state).await;
-    let json = format!(
-        r#"{{"meta":{{"sink":"http","method":"POST","url":"http://{addr}/echo"}},"interval":3600}}"#
-    );
+    let json =
+        format!(r#"{{"sink":"http","method":"POST","url":"http://{addr}/echo","interval":3600}}"#);
     let response = put_schedule(&state, addr, "nightly", &json).await;
     let old_run: i64 = common::header(&response, "irisqo-job-id")
         .and_then(|id| id.parse().ok())

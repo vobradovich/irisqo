@@ -42,7 +42,7 @@ GET {{host}}/api/v1/schedules/{{schedule-id}}
 PUT {{host}}/api/v1/schedules/{{schedule-id}}
 Content-Type: application/json
 
-{"meta": {"sink": "http", "method": "POST", "url": "https://postman-echo.com/post"}, "interval": 3600}
+{"sink": "http", "method": "POST", "url": "https://postman-echo.com/post", "interval": 3600}
 
 ###
 GET {{host}}/error

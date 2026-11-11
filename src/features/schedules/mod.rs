@@ -6,4 +6,5 @@ pub use schedule_row::ScheduleRow;
 pub mod db;
 mod http;
 mod job_schedule;
+mod schedule_input;
 mod schedule_row;

@@ -1096,6 +1096,7 @@ dependencies = [
  "askama_web",
  "async-channel",
  "axum",
+ "base64 0.22.1",
  "bytes",
  "chrono",
  "chrono-tz",

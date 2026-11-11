@@ -12,6 +12,7 @@ futures = "0.3.34"
 async-channel = "2.5"
 # JSON libs
 serde = "1"
+base64 = "0.22"
 serde_json = { version = "1", features = ["raw_value"] }
 http-serde = "2.1"
 # Web libs

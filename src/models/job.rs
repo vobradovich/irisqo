@@ -48,6 +48,19 @@ pub struct JobCreate {
 }
 
 impl JobCreate {
+    /// The rules every way to create a job shares: the timeout is capped by `--max-timeout`, a
+    /// time that has passed means now, the trace context is the one of this request unless the
+    /// job brings its own.
+    #[must_use]
+    pub fn normalized(mut self, options: &WorkerOptions, now: DateTime<Utc>) -> Self {
+        self.meta.timeout = self.meta.timeout.map(|ms| ms.min(options.max_timeout));
+        self.at = self.at.filter(|at| *at > now);
+        if self.meta.traceparent.is_none() {
+            (self.meta.traceparent, self.meta.tracestate) = crate::otel::current_trace_headers();
+        }
+        self
+    }
+
     /// The body as it is stored: none when it is empty.
     pub fn body_bytes(&self) -> Option<&[u8]> {
         (!self.body.is_empty()).then_some(self.body.as_ref())
@@ -70,11 +83,15 @@ pub struct JobMeta {
     /// No retries when absent.
     #[serde(flatten)]
     pub retry: Option<JobRetry>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub delay: Option<u32>,
     /// Milliseconds; the API stores `--timeout` (default 3000) when the request has none.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub timeout: Option<u32>,
+    /// Flow key of the job; not used yet.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub queue: Option<String>,
+    /// Higher runs first; not used yet.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub priority: Option<i16>,
     /// W3C trace context of the request that created the job: the parent of every
     /// attempt (the link of every schedule run), copied to every run of a schedule.
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -200,7 +217,6 @@ mod tests {
                     retry_count: 3,
                     retry_delay: 1,
                 }),
-                delay: Some(300),
                 timeout: Some(2000),
                 ..JobMeta::default()
             },
