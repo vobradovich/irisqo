@@ -44,6 +44,18 @@ async fn request(
 }
 
 #[sqlx::test(migrations = "./sql/migrations")]
+async fn the_api_describes_itself(pool: PgPool) -> anyhow::Result<()> {
+    let state = common::state(pool.clone());
+    let addr = common::spawn_app(&state).await;
+    let uri = format!("http://{addr}/api/v1/openapi.json");
+    let response = common::send(&state, Method::GET, &uri, &[], "").await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let doc: serde_json::Value = serde_json::from_str(&common::text(response).await)?;
+    assert!(doc["paths"]["/api/v1/jobs"]["post"].is_object());
+    Ok(())
+}
+
+#[sqlx::test(migrations = "./sql/migrations")]
 async fn queue_and_priority_reach_the_tables(pool: PgPool) -> anyhow::Result<()> {
     let state = common::state(pool.clone());
     let addr = common::spawn_app(&state).await;
@@ -162,7 +174,7 @@ async fn an_invalid_job_is_a_problem_and_is_not_stored(pool: PgPool) -> anyhow::
     let response = post_job(&state, addr, json).await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let body = common::text(response).await;
-    assert!(body.contains("\"parameter\":\"sink\""), "{body}");
+    assert!(body.contains("\"parameter\":\"url\""), "{body}");
 
     // not JSON, an unknown sink, no sink
     for bad in ["nope", r#"{"sink":"smtp"}"#, "{}"] {

@@ -1,4 +1,4 @@
-#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize)]
+#[derive(Debug, Clone, sqlx::FromRow, serde::Serialize, utoipa::ToSchema)]
 pub struct JobHistoryRow {
     pub id: i64,
     pub retry: i32,
@@ -10,7 +10,9 @@ pub struct JobHistoryRow {
 }
 
 /// A step in the history of a job (`history.kind` in the database).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, utoipa::ToSchema,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum HistoryKind {
     Scheduled,

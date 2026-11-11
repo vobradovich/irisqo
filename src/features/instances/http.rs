@@ -1,3 +1,4 @@
+use super::db::InstanceRow;
 use crate::features::Paging;
 use crate::features::PagingResult;
 use crate::models::AppState;
@@ -13,7 +14,16 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .with_state(state)
 }
 
-async fn get_all(
+/// A page of the instances, newest id first.
+#[utoipa::path(
+    get,
+    path = "/api/v1/instances",
+    operation_id = "list_instances",
+    tag = "instances",
+    params(Paging),
+    responses((status = 200, description = "A page of instances", body = PagingResult<InstanceRow>))
+)]
+pub(crate) async fn get_all(
     State(state): State<Arc<AppState>>,
     Query(pagination): Query<Paging>,
 ) -> Result<impl IntoResponse, Problem> {

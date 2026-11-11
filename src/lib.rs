@@ -19,6 +19,7 @@ pub fn app(state: &Arc<AppState>) -> Router {
     let api = Router::new()
         .merge(handlers::http::routes(Arc::clone(state)))
         .nest("/api/v1", handlers::jobs::routes(Arc::clone(state)))
+        .nest("/api/v1", handlers::openapi::routes())
         .nest("/api/v1", features::history::routes(Arc::clone(state)))
         .nest("/api/v1", features::results::routes(Arc::clone(state)))
         .nest("/api/v1", features::schedules::routes(Arc::clone(state)))

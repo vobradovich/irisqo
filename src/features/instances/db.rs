@@ -36,7 +36,7 @@ pub(crate) async fn get_all(
 }
 
 /// Row entity for `instances` queries.
-#[derive(Debug, Clone, sqlx::FromRow, Serialize)]
+#[derive(Debug, Clone, sqlx::FromRow, Serialize, utoipa::ToSchema)]
 pub struct InstanceRow {
     pub instance_id: String,
     pub stopped_at: Option<chrono::DateTime<chrono::Utc>>,

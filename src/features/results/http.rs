@@ -17,7 +17,19 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .with_state(state)
 }
 
-async fn result_by_id(
+/// The result of the last attempt of a job: how it ended, the response headers and body.
+#[utoipa::path(
+    get,
+    path = "/api/v1/jobs/{id}/result",
+    operation_id = "get_job_result",
+    tag = "jobs",
+    params(("id" = i64, Path, description = "The id of the job")),
+    responses(
+        (status = 200, description = "The result", body = JobResult),
+        (status = 404, description = "No result (the job is not processed yet)", body = Problem, content_type = "application/problem+json"),
+    )
+)]
+pub(crate) async fn result_by_id(
     State(state): State<Arc<AppState>>,
     Path(id): Path<i64>,
 ) -> Result<Response, Problem> {
@@ -28,7 +40,21 @@ async fn result_by_id(
     Ok(Json(job_result).into_response())
 }
 
-async fn result_by_id_raw(
+/// The response of the target as it came: its status, the body and the `content-*` headers;
+/// `204` when the job did not get an HTTP response.
+#[utoipa::path(
+    get,
+    path = "/api/v1/jobs/{id}/result/raw",
+    operation_id = "get_job_result_raw",
+    tag = "jobs",
+    params(("id" = i64, Path, description = "The id of the job")),
+    responses(
+        (status = "default", description = "The status of the target's response, its body and `content-*` headers", content_type = "*/*"),
+        (status = 204, description = "The job did not get an HTTP response"),
+        (status = 404, description = "No result (the job is not processed yet)", body = Problem, content_type = "application/problem+json"),
+    )
+)]
+pub(crate) async fn result_by_id_raw(
     State(state): State<Arc<AppState>>,
     Path(id): Path<i64>,
 ) -> Result<Response, Problem> {

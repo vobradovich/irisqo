@@ -21,7 +21,16 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .with_state(state)
 }
 
-async fn get_history_by_id(
+/// The steps of a job, oldest first: scheduled, enqueued, claimed, completed...
+#[utoipa::path(
+    get,
+    path = "/api/v1/jobs/{id}/history",
+    operation_id = "get_job_history",
+    tag = "jobs",
+    params(("id" = i64, Path, description = "The id of the job"), Paging),
+    responses((status = 200, description = "A page of the history (100 rows when `limit` is absent)", body = PagingResult<JobHistoryRow>))
+)]
+pub(crate) async fn get_history_by_id(
     State(state): State<Arc<AppState>>,
     Path(id): Path<i64>,
     Query(pagination): Query<Paging>,
