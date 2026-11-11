@@ -74,27 +74,34 @@ pub fn short_id(id: &str) -> String {
 }
 
 /// Attempts a job may get: the first one and its retries.
-pub fn max_attempts(retry: &JobRetry) -> u32 {
-    match retry {
-        JobRetry::None => 1,
-        JobRetry::Immediate { retry_count }
-        | JobRetry::Fixed { retry_count, .. }
-        | JobRetry::Fibonacci { retry_count, .. } => u32::from(*retry_count) + 1,
-    }
+pub fn max_attempts(retry: Option<JobRetry>) -> u32 {
+    retry.map_or(1, |retry| u32::from(retry.retry_count()) + 1)
 }
 
-pub fn retry_policy(retry: &JobRetry) -> String {
+pub fn retry_policy(retry: Option<JobRetry>) -> String {
+    let up_to = |max: Option<u32>| max.map(|max| format!(" ≤ {max} s")).unwrap_or_default();
     match retry {
-        JobRetry::None => "none".into(),
-        JobRetry::Immediate { retry_count } => format!("immediate · {retry_count}"),
-        JobRetry::Fixed {
+        None => "none".into(),
+        Some(JobRetry::Fixed {
             retry_count,
             retry_delay,
-        } => format!("fixed · {retry_count} × {retry_delay} s"),
-        JobRetry::Fibonacci {
+        }) => format!("fixed · {retry_count} × {retry_delay} s"),
+        Some(JobRetry::Fibonacci {
             retry_count,
             retry_delay,
-        } => format!("fibonacci · {retry_count} × {retry_delay} s"),
+            retry_max_delay,
+        }) => format!(
+            "fibonacci · {retry_count} × {retry_delay} s{}",
+            up_to(retry_max_delay)
+        ),
+        Some(JobRetry::Exponential {
+            retry_count,
+            retry_delay,
+            retry_max_delay,
+        }) => format!(
+            "exponential · {retry_count} × {retry_delay} s{}",
+            up_to(retry_max_delay)
+        ),
     }
 }
 
@@ -146,7 +153,7 @@ impl JobRowView {
                 .map_or_else(Default::default, |at| (since(at), utc(at))),
         };
         let attempt = u32::try_from(job.retry).unwrap_or(0) + 1;
-        let max = max_attempts(&job.meta.retry);
+        let max = max_attempts(job.meta.retry);
         // manual retries go past the policy
         let attempt = if attempt > max {
             attempt.to_string()
@@ -273,7 +280,7 @@ impl JobDetailView {
         JobDetailView {
             row: JobRowView::new(view, now),
             created: utc(view.created_at),
-            retry_policy: retry_policy(&view.meta.retry),
+            retry_policy: retry_policy(view.meta.retry),
             timeout: view
                 .meta
                 .timeout
@@ -386,10 +393,10 @@ fn short_ids() {
     );
     assert_eq!(short_id("01JC8ZQ4V7M3N2K5R6T8W9XK7Q"), "01JC…K7Q");
     assert_eq!(
-        max_attempts(&JobRetry::Fixed {
+        max_attempts(Some(JobRetry::Fixed {
             retry_count: 3,
             retry_delay: 5
-        }),
+        })),
         4
     );
 }

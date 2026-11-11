@@ -102,16 +102,19 @@
         <label for="retry">Policy
           <select id="retry" name="retry">
             <option value="none"{% if form.retry == "none" %} selected{% endif %}>No retries</option>
-            <option value="immediate"{% if form.retry == "immediate" %} selected{% endif %}>Immediate</option>
             <option value="fixed"{% if form.retry == "fixed" %} selected{% endif %}>Fixed delay</option>
             <option value="fibonacci"{% if form.retry == "fibonacci" %} selected{% endif %}>Fibonacci backoff</option>
+            <option value="exponential"{% if form.retry == "exponential" %} selected{% endif %}>Exponential backoff</option>
           </select>
         </label>
         <label for="retry_count" class="narrow dep retry-any">Retries
           <input id="retry_count" name="retry_count" type="number" min="0" value="{{ form.retry_count }}"{{ invalid(form, "retry_count", "retry-error") }}>
         </label>
         <label for="retry_delay" class="narrow dep retry-delayed">Delay, s
-          <input id="retry_delay" name="retry_delay" type="number" min="1" value="{{ form.retry_delay }}"{{ invalid(form, "retry_count", "retry-error") }}>
+          <input id="retry_delay" name="retry_delay" type="number" min="0" value="{{ form.retry_delay }}"{{ invalid(form, "retry_count", "retry-error") }}>
+        </label>
+        <label for="retry_max_delay" class="narrow dep retry-backoff">Max delay, s
+          <input id="retry_max_delay" name="retry_max_delay" type="number" min="1" placeholder="86400" value="{{ form.retry_max_delay }}"{{ invalid(form, "retry_count", "retry-error") }}>
         </label>
         <label for="timeout" class="narrow">Timeout, ms
           <input id="timeout" name="timeout" type="number" min="1" max="{{ form.max_timeout }}" placeholder="{{ form.default_timeout }}" value="{{ form.timeout }}"{{ invalid(form, "timeout", "timeout-error") }}>

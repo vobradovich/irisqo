@@ -5,6 +5,7 @@
 //! accept exactly the same jobs, and the preview shows exactly what irisqo parses.
 
 use std::collections::{BTreeMap, HashMap};
+use std::fmt::Write as _;
 
 use axum::body::Bytes;
 use chrono::{DateTime, NaiveDateTime, SecondsFormat, TimeZone, Utc, offset::LocalResult};
@@ -75,10 +76,11 @@ pub struct JobForm {
     pub until: String,
     /// The time zone of the browser (IANA name), filled by `tz.js`; UTC when it is not known.
     pub tz: String,
-    /// `none` | `immediate` | `fixed` | `fibonacci`
+    /// `none` | `fixed` | `fibonacci` | `exponential`
     pub retry: String,
     pub retry_count: String,
     pub retry_delay: String,
+    pub retry_max_delay: String,
     pub timeout: String,
     pub key: String,
     /// Field id -> message; `form` for errors of the whole form.
@@ -108,6 +110,7 @@ impl Default for JobForm {
             retry: "none".into(),
             retry_count: String::new(),
             retry_delay: String::new(),
+            retry_max_delay: String::new(),
             timeout: String::new(),
             key: String::new(),
             errors: BTreeMap::new(),
@@ -161,6 +164,7 @@ impl JobForm {
                 "retry" => form.retry = value,
                 "retry_count" => form.retry_count = value,
                 "retry_delay" => form.retry_delay = value,
+                "retry_max_delay" => form.retry_max_delay = value,
                 "timeout" => form.timeout = value,
                 "key" => form.key = value,
                 "op" => op = value,
@@ -171,7 +175,7 @@ impl JobForm {
         form.method = one_of(form.method.to_uppercase(), &METHODS);
         form.when = one_of(form.when, &["now", "delay", "at"]);
         form.repeat = one_of(form.repeat, &["once", "interval", "cron"]);
-        form.retry = one_of(form.retry, &["none", "immediate", "fixed", "fibonacci"]);
+        form.retry = one_of(form.retry, &["none", "fixed", "fibonacci", "exponential"]);
         // after the loop: `index` may come after `op`
         let index = index
             .parse::<usize>()
@@ -222,17 +226,20 @@ impl JobForm {
         {
             params.push(("_until", t));
         }
-        match self.retry.as_str() {
-            "immediate" => params.push(("_retry", self.retry_count.trim().to_owned())),
-            kind @ ("fixed" | "fibonacci") => params.push((
-                "_retry",
-                format!(
-                    "{}|{kind}|{}",
-                    self.retry_count.trim(),
-                    self.retry_delay.trim()
-                ),
-            )),
-            _ => {}
+        // `retry` is one of the policies or `none`
+        if self.retry != "none" {
+            let kind = self.retry.as_str();
+            let mut retry = format!("{}|{kind}", self.retry_count.trim());
+            // `fixed` without a delay retries at once, a backoff needs one
+            if kind != "fixed" || filled(&self.retry_delay).is_some() {
+                let _ = write!(retry, "|{}", self.retry_delay.trim());
+            }
+            if kind != "fixed"
+                && let Some(max) = filled(&self.retry_max_delay)
+            {
+                let _ = write!(retry, "|{max}");
+            }
+            params.push(("_retry", retry));
         }
         if let Some(timeout) = filled(&self.timeout) {
             params.push(("_timeout", timeout));

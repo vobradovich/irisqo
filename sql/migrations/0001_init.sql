@@ -168,12 +168,14 @@ BEGIN
             THEN 'priority must be an integer'
         WHEN job->>'timeout' !~ '^[1-9][0-9]{0,8}$'
             THEN 'timeout must be a positive number of milliseconds'
-        WHEN v_retry NOT IN ('none', 'immediate', 'fixed', 'fibonacci')
-            THEN 'retry must be none, immediate, fixed or fibonacci'
+        WHEN v_retry NOT IN ('none', 'fixed', 'fibonacci', 'exponential')
+            THEN 'retry must be none, fixed, fibonacci or exponential'
         WHEN coalesce(job->>'retry_count', CASE WHEN v_retry <> 'none' THEN '' END) !~ '^[0-9]{1,4}$'
             THEN 'retry_count must be a number up to 9999'
-        WHEN coalesce(job->>'retry_delay', CASE WHEN v_retry IN ('fixed', 'fibonacci') THEN '' END) !~ '^[0-9]{1,5}$'
+        WHEN coalesce(job->>'retry_delay', CASE WHEN v_retry IN ('fibonacci', 'exponential') THEN '' END) !~ '^[0-9]{1,5}$'
             THEN 'retry_delay must be a number of seconds up to 99999'
+        WHEN job->>'retry_max_delay' !~ '^[0-9]{1,5}$'
+            THEN 'retry_max_delay must be a number of seconds up to 99999'
         WHEN job->>'at' IS NOT NULL AND job->>'delay' IS NOT NULL
             THEN 'at and delay are exclusive'
         WHEN job->>'at' !~ '^[0-9]{1,12}$'
@@ -206,7 +208,8 @@ BEGIN
         'url', job->>'url',
         'retry', v_retry,
         'retry_count', CASE WHEN v_retry <> 'none' THEN (job->>'retry_count')::int END,
-        'retry_delay', CASE WHEN v_retry IN ('fixed', 'fibonacci') THEN (job->>'retry_delay')::int END,
+        'retry_delay', CASE WHEN v_retry <> 'none' THEN coalesce((job->>'retry_delay')::int, 0) END,
+        'retry_max_delay', CASE WHEN v_retry IN ('fibonacci', 'exponential') THEN (job->>'retry_max_delay')::int END,
         'delay', v_delay,
         'timeout', v_timeout,
         'queue', v_queue,

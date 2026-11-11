@@ -235,7 +235,7 @@ async fn server_error_is_retried_with_jitter(pool: PgPool) -> anyhow::Result<()>
 #[sqlx::test(migrations = "./sql/migrations")]
 async fn too_many_requests_respects_retry_after(pool: PgPool) -> anyhow::Result<()> {
     let state = common::state(pool.clone());
-    // immediate retry policy, but the server asks to wait 2 minutes
+    // retries at once, but the server asks to wait 2 minutes
     let id = run_echo(&state, "status=429&retry-after=120&_retry=3").await;
     let (retry, delay) = scheduled_in(&pool, id).await.expect("scheduled retry");
     assert_eq!(retry, 1);
@@ -541,6 +541,66 @@ async fn enqueue_v1_checks_the_form_of_key_and_queue(pool: PgPool) -> anyhow::Re
     )
     .fetch_one(&pool)
     .await?;
+    Ok(())
+}
+
+#[sqlx::test(migrations = "./sql/migrations")]
+async fn enqueue_v1_stores_the_retry_policy(pool: PgPool) -> anyhow::Result<()> {
+    use irisqo::models::{JobMeta, JobRetry};
+    use serde_json::json;
+
+    let pool = &pool;
+    let enqueue = |job: serde_json::Value| async move {
+        let id: i64 = sqlx::query_scalar("SELECT enqueue_v1($1::jsonb)")
+            .bind(job.to_string())
+            .fetch_one(pool)
+            .await?;
+        let meta: sqlx::types::Json<JobMeta> =
+            sqlx::query_scalar("SELECT meta FROM jobs WHERE id = $1")
+                .bind(id)
+                .fetch_one(pool)
+                .await?;
+        Ok::<_, sqlx::Error>(meta.0.retry)
+    };
+    let url = "http://localhost/x";
+
+    assert_eq!(
+        enqueue(json!({"url": url, "retry": "fixed", "retry_count": 3})).await?,
+        Some(JobRetry::Fixed {
+            retry_count: 3,
+            retry_delay: 0
+        })
+    );
+    assert_eq!(
+        enqueue(json!({"url": url, "retry": "exponential", "retry_count": 5,
+            "retry_delay": 2, "retry_max_delay": 60}))
+        .await?,
+        Some(JobRetry::Exponential {
+            retry_count: 5,
+            retry_delay: 2,
+            retry_max_delay: Some(60)
+        })
+    );
+    assert_eq!(enqueue(json!({ "url": url })).await?, None);
+
+    for (job, error) in [
+        (
+            json!({"url": url, "retry": "fixd", "retry_count": 3}),
+            "retry must be",
+        ),
+        (
+            json!({"url": url, "retry": "exponential", "retry_count": 3}),
+            "retry_delay must be",
+        ),
+        (
+            json!({"url": url, "retry": "fibonacci", "retry_count": 3, "retry_delay": 1,
+                "retry_max_delay": "x"}),
+            "retry_max_delay must be",
+        ),
+    ] {
+        let err = enqueue(job).await.expect_err("rejected");
+        assert!(err.to_string().contains(error), "{err}");
+    }
     Ok(())
 }
 

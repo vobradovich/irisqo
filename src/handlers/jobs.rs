@@ -30,7 +30,8 @@ pub fn routes(state: Arc<AppState>) -> Router {
 }
 
 /// JSON job format v1. `meta` is the stored [`JobMeta`]: `sink` (`http` with `method`, `url`),
-/// `retry` (`none`, `immediate`, `fixed`, `fibonacci` with `retry_count`, `retry_delay`), `delay`, `timeout`.
+/// `retry` (`fixed`, `fibonacci`, `exponential` with `retry_count`, `retry_delay`, which `fixed` may
+/// leave out to retry at once, and `retry_max_delay` of the last two), `delay`, `timeout`.
 /// The retry policy defaults to none, the timeout to `--timeout`; an HTTP job needs `method` and `url`.
 /// Unknown fields of `meta` are ignored.
 #[derive(Debug, Deserialize)]
@@ -54,10 +55,7 @@ pub(crate) fn prepare_spec(
     let mut errors = Vec::new();
     let mut bad = |parameter, detail: &str| errors.push(ParamError::new(parameter, detail));
 
-    // always stored: no retry when the job has none
-    let mut meta = spec.meta;
-    meta.entry("retry").or_insert_with(|| "none".into());
-    let mut meta = serde_json::from_value::<JobMeta>(Value::Object(meta))
+    let mut meta = serde_json::from_value::<JobMeta>(Value::Object(spec.meta))
         .map_err(|err| bad("meta", &err.to_string()))
         .ok();
     if let Some(meta) = &mut meta {
@@ -205,7 +203,7 @@ mod tests {
         assert!(
             matches!(&job.meta.sink, JobSink::Http(http) if http.method == hyper::Method::POST)
         );
-        assert_eq!(job.meta.retry, crate::models::JobRetry::None);
+        assert_eq!(job.meta.retry, None);
         // none stored: the server's default applies when the job runs
         assert_eq!(job.meta.timeout, None);
         assert_eq!(job.at, Some(now + chrono::Duration::seconds(2)));
@@ -237,14 +235,23 @@ mod tests {
                 .any(|error| error.detail.contains("duplicate"))
         );
 
-        // the structure of meta: no sink, an unknown sink, no url, a bad method or retry
+        // a retry that is not a policy means no retries, not an error (see `JobMeta::retry`)
+        for meta in [
+            r#"{"sink":"noop","retry":"fixd"}"#,
+            r#"{"sink":"noop","retry":"fibonacci","retry_count":3}"#,
+            r#"{"sink":"noop","retry":"none"}"#,
+        ] {
+            let spec = serde_json::from_str(&format!(r#"{{"meta":{meta}}}"#))?;
+            assert_eq!(prepare(spec).expect(meta).meta.retry, None, "{meta}");
+        }
+
+        // the structure of meta: no sink, an unknown sink, no url, a bad method
         for meta in [
             r#"{"url":"https://example.com"}"#,
             r#"{"sink":"smtp"}"#,
             r#"{"sink":"http"}"#,
             r#"{"sink":"http","url":"https://example.com"}"#,
             r#"{"sink":"http","url":"https://example.com","method":"BAD METHOD"}"#,
-            r#"{"sink":"noop","retry":"fixd"}"#,
         ] {
             let spec = serde_json::from_str(&format!(r#"{{"meta":{meta}}}"#))?;
             let errors = prepare(spec).expect_err(meta);

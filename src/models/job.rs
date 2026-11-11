@@ -67,8 +67,9 @@ pub struct JobCreateRow {
 pub struct JobMeta {
     #[serde(flatten, default)]
     pub sink: JobSink,
-    #[serde(flatten, default)]
-    pub retry: JobRetry,
+    /// No retries when absent.
+    #[serde(flatten)]
+    pub retry: Option<JobRetry>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub delay: Option<u32>,
     /// Milliseconds; the API stores `--timeout` (default 3000) when the request has none.
@@ -195,10 +196,10 @@ mod tests {
                     method: Method::GET,
                     url: Uri::try_from("http://localhost").unwrap(),
                 }),
-                retry: JobRetry::Fixed {
+                retry: Some(JobRetry::Fixed {
                     retry_count: 3,
                     retry_delay: 1,
-                },
+                }),
                 delay: Some(300),
                 timeout: Some(2000),
                 ..JobMeta::default()

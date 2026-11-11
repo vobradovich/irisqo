@@ -5,10 +5,7 @@ use crate::{
         results::{self, JobResult, is_retryable_status},
         schedules::JobSchedule,
     },
-    models::{
-        AppState, Error, JobEntry, JobRetry, JobRow, JobSink, JobWithRetry, MAX_RETRY_DELAY,
-        targets, with_jitter,
-    },
+    models::{AppState, Error, JobEntry, JobRetry, JobRow, JobSink, JobWithRetry, targets},
     otel::{self, HeaderInjector, metrics::metrics},
 };
 use bytes::Bytes;
@@ -413,7 +410,7 @@ async fn schedule_next_at(
 async fn on_error(
     app_state: &AppState,
     entry: JobEntry,
-    job_retry: JobRetry,
+    job_retry: Option<JobRetry>,
     err: Error,
 ) -> Option<JobResult> {
     let instance_id = &app_state.instance_id;
@@ -488,19 +485,19 @@ fn error_message(err: &Error) -> String {
 async fn retry_or_fail(
     app_state: &AppState,
     entry: JobEntry,
-    job_retry: JobRetry,
+    job_retry: Option<JobRetry>,
     retry_after: Option<u32>,
     message: &str,
 ) -> Result<(), Error> {
     let instance_id = &app_state.instance_id;
     let JobEntry { id: job_id, retry } = entry;
     let attempt: u16 = retry.try_into().unwrap_or(u16::MAX);
+    let job_retry = job_retry.ok_or(Error::RetriesExceeded)?;
     let delay = job_retry
-        .next_retry_in(attempt)
+        .jittered_delay(attempt)
         .ok_or(Error::RetriesExceeded)?;
-    let delay = with_jitter(delay)
-        .max(retry_after.unwrap_or(0))
-        .min(MAX_RETRY_DELAY);
+    // never sooner than the Retry-After of the response, up to the longest delay of the policy
+    let delay = delay.max(retry_after.unwrap_or(0).min(job_retry.retry_max_delay()));
     let affected = if delay == 0 {
         debug!({ instance_id, job_id, retry }, "==> unlock");
         db::jobqueue::unlock(&app_state.pool, entry, instance_id, message).await?

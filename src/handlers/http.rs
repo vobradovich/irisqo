@@ -100,7 +100,7 @@ pub fn prepare_job(
     let mut errors = Vec::new();
     let mut at: Option<DateTime<Utc>> = None;
     let mut timeout: Option<u32> = None;
-    let mut retry = JobRetry::None;
+    let mut retry: Option<JobRetry> = None;
     let mut rule: Option<(ScheduleRule, &'static str)> = None;
     let mut until: Option<DateTime<Utc>> = None;
     let mut key: Option<String> = None;
@@ -123,9 +123,9 @@ pub fn prepare_job(
                 Ok(ms) if ms > 0 => timeout = Some(ms.min(options.max_timeout)),
                 _ => bad("_timeout", "must be a positive number of milliseconds"),
             },
-            "_retry" => match value.parse::<JobRetry>() {
+            "_retry" => match JobRetry::parse(&value) {
                 Ok(parsed) => retry = parsed,
-                Err(_) => bad("_retry", "must be N, N|fixed|S or N|fibonacci|S"),
+                Err(_) => bad("_retry", JobRetry::RULE),
             },
             "_interval" => match value.parse() {
                 Ok(parsed @ ScheduleRule::Interval(_)) => rule = Some((parsed, "_interval")),

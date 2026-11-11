@@ -93,16 +93,23 @@ Automatically retry requests that fail by adding the `_retry` query parameter.
 GET {{host}}/to/https://postman-echo.com/get?_retry=3
 ```
 
-Retry Backoff
+Retry Backoff: `N|fixed|S` waits `S` seconds before every retry (`N` alone retries at once),
+`N|fibonacci|S` waits `S` × 1, 1, 2, 3, 5, … and `N|exponential|S` waits `S` × 1, 2, 4, 8, …;
+an optional fourth part caps the backoff delay (`N|exponential|S|M`, seconds)
 ```
 GET {{host}}/to/https://postman-echo.com/get?_retry=3|fixed|5
 
 GET {{host}}/to/https://postman-echo.com/get?_retry=3|fibonacci|5
+
+GET {{host}}/to/https://postman-echo.com/get?_retry=8|exponential|2|300
 ```
+
+In JSON (`meta` of `POST /api/v1/jobs`, `enqueue_v1`): `retry` (`fixed`, `fibonacci`, `exponential`),
+`retry_count`, `retry_delay`, `retry_max_delay`.
 
 Retried: network errors, timeouts, `408`, `425`, `429` and `5xx`. Any other `4xx` fails the job at once.
 Delays get ±20 % jitter, never come sooner than the response `Retry-After` (seconds or HTTP-date),
-and are capped at 24 hours.
+and are capped at 24 hours unless the policy sets them (`retry_delay` of `fixed`, `retry_max_delay`).
 
 ### Timeout
 `_timeout` sets the request timeout in milliseconds (default `--timeout`, 3000), capped by `--max-timeout` (default 300000).

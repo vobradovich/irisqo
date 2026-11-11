@@ -221,7 +221,8 @@ job id. `job` is a JSON object, only `url` is required:
 ```text
 url, method (default POST), headers (object of strings), body | body_base64
 at (unix time) | delay (seconds), timeout (ms, default 30000)
-retry none (default) | immediate | fixed | fibonacci, retry_count, retry_delay (seconds)
+retry none (default) | fixed | fibonacci | exponential, retry_count,
+      retry_delay (seconds; fixed without it retries at once), retry_max_delay (seconds, backoffs)
 queue | priority (either one), key (a repeated key returns the existing job id)
 traceparent, tracestate
 ```
