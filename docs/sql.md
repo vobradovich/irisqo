@@ -55,13 +55,13 @@ CREATE TABLE queues (
 
 ### Schedules
 
-`next_id` is the waiting job, which is the template of the next run. `schedule`: digits only is an interval in seconds, otherwise cron. `miss_policy`: what to do with the runs missed in downtime: none | one | all.
+`next_id` is the waiting job, which is the template of the next run. `rule`: digits only is an interval in seconds, otherwise cron. `miss_policy`: what to do with the runs missed in downtime: none | one | all.
 
 ```sql
 CREATE TABLE schedules (
     schedule_id text PRIMARY KEY,
-    schedule    text NOT NULL,                -- '300' or '0 9 * * 1-5'
-    timezone    text NOT NULL DEFAULT 'UTC',  -- of a cron schedule
+    rule        text NOT NULL,                -- '300' or '0 9 * * 1-5'
+    tz          text NOT NULL DEFAULT 'UTC',  -- of a cron schedule
     next_id     bigint NULL,                  -- the waiting run
     next_at     timestamptz NULL,
     until       timestamptz NULL,
@@ -216,13 +216,16 @@ CREATE TABLE stats (
 ### enqueue_v1
 
 `enqueue_v1(job jsonb) RETURNS bigint`: enqueues inside the caller's transaction (embedded mode) and returns the
-job id. `job` is a JSON object, only `url` is required:
+job id. `job` is a flat JSON object, the same fields as `POST /api/v1/jobs` and `PUT /api/v1/schedules/{id}`;
+`sink` is required (`http` also needs `url`):
 
 ```text
-url, method (default POST), headers (object of strings), body | body_base64
-at (unix time) | delay (seconds), timeout (ms, default 30000)
-retry none (default) | immediate | fixed | fibonacci, retry_count, retry_delay (seconds)
-queue | priority (either one), key (a repeated key returns the existing job id)
+sink http | noop
+url, method (default POST; sink http), headers (object of strings), body (a string as it is, any other JSON as JSON text with content-type application/json) | body_base64
+at (unix time) and/or delay (seconds; at wins), timeout (ms; none: --timeout when the job runs)
+retry none (default) | fixed | fibonacci | exponential, retry_count,
+      retry_delay (seconds; fixed without it retries at once), retry_max_delay (seconds, backoffs)
+queue, priority, key (a repeated key returns the existing job id)
 traceparent, tracestate
 ```
 

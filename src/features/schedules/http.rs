@@ -1,3 +1,5 @@
+use super::schedule_input::{ScheduleInput, prepare_schedule};
+use crate::handlers::http::{create_job, job_headers, parse_body};
 use crate::models::{Error, Problem};
 use crate::{
     features::{Paging, PagingResult},
@@ -5,20 +7,48 @@ use crate::{
 };
 use axum::{
     Json, Router,
-    extract::{Path, Query, State},
-    http::StatusCode,
+    body::Bytes,
+    extract::{DefaultBodyLimit, Path, Query, State},
+    http::{HeaderValue, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
+use chrono::Utc;
 use std::sync::Arc;
 
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
-        .route("/schedules/{id}", get(get_by_id).put(pause).delete(delete))
+        .route(
+            "/schedules/{id}",
+            get(get_by_id)
+                .put(upsert)
+                .delete(delete)
+                .layer(DefaultBodyLimit::max(state.max_body_size)),
+        )
         .route("/schedules/{id}/pause", post(pause))
         .route("/schedules/{id}/resume", post(resume))
         .route("/schedules", get(get_all))
         .with_state(state)
+}
+
+/// Declares a schedule: created with its first run, or changed (it keeps its id, the waiting run
+/// is cancelled and replaced by one with the new job and rule; a paused schedule is resumed).
+/// `200` with the run that is next (`id`, `schedule_id`, `key`) and the same in the headers.
+async fn upsert(
+    State(state): State<Arc<AppState>>,
+    Path(schedule_id): Path<String>,
+    body: Bytes,
+) -> Result<impl IntoResponse, Problem> {
+    let spec: ScheduleInput = parse_body(&body, "schedule")?;
+    let job = prepare_schedule(&state.worker_options, &schedule_id, spec, Utc::now())
+        .map_err(Error::InvalidParams)?;
+    let run = create_job(&state, job).await?;
+    let mut headers = job_headers(&run);
+    // the schedule is what was declared
+    if let Ok(location) = HeaderValue::from_str(&format!("/api/v1/schedules/{schedule_id}")) {
+        headers.insert("location", location);
+    }
+    Ok((headers, Json(run)))
 }
 
 async fn get_all(

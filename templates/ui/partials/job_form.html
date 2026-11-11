@@ -1,5 +1,6 @@
 <div id="job-new" class="split" hx-target:inherited="this" hx-swap:inherited="outerHTML" hx-include:inherited="#job-form">
   <form id="job-form" action="/ui/jobs" method="post" hx-post="/ui/jobs" novalidate>
+    <input type="hidden" name="tz" value="{{ form.tz }}">
 
     {% if let Some(created) = form.created %}
     <div class="alert success" role="status">
@@ -66,9 +67,9 @@
         <input id="delay" name="delay" type="number" min="0" value="{{ form.delay }}"{{ invalid(form, "delay", "delay-error") }}>
         {{ note(form, "delay", "delay-error", "Delay", "") }}
       </label>
-      <label for="at" class="dep when-at">At, UTC
+      <label for="at" class="dep when-at">At, local time
         <input id="at" name="at" type="datetime-local" value="{{ form.at }}"{{ invalid(form, "at", "at-error") }}>
-        {{ note(form, "at", "at-error", "Time", "A time in the past runs the job now.") }}
+        {{ note(form, "at", "at-error", "Time", "In the time zone of your browser, UTC when it is not known. A time in the past runs the job now.") }}
       </label>
     </fieldset>
 
@@ -86,9 +87,9 @@
         </label>
         <label for="cron" class="dep repeat-cron">Cron expression
           <input id="cron" name="cron" class="mono" placeholder="*/15 * * * *" value="{{ form.cron }}"{{ invalid(form, "cron", "cron-error") }}>
-          {{ note(form, "cron", "cron-error", "Cron", "5 fields, or 6 with seconds first.") }}
+          {{ note(form, "cron", "cron-error", "Cron", "5 fields, or 6 with seconds first. In the time zone of your browser.") }}
         </label>
-        <label for="until">Until, UTC (optional)
+        <label for="until">Until, local time (optional)
           <input id="until" name="until" type="datetime-local" value="{{ form.until }}"{{ invalid(form, "until", "until-error") }}>
           {{ note(form, "until", "until-error", "Until", "") }}
         </label>
@@ -101,16 +102,19 @@
         <label for="retry">Policy
           <select id="retry" name="retry">
             <option value="none"{% if form.retry == "none" %} selected{% endif %}>No retries</option>
-            <option value="immediate"{% if form.retry == "immediate" %} selected{% endif %}>Immediate</option>
             <option value="fixed"{% if form.retry == "fixed" %} selected{% endif %}>Fixed delay</option>
             <option value="fibonacci"{% if form.retry == "fibonacci" %} selected{% endif %}>Fibonacci backoff</option>
+            <option value="exponential"{% if form.retry == "exponential" %} selected{% endif %}>Exponential backoff</option>
           </select>
         </label>
         <label for="retry_count" class="narrow dep retry-any">Retries
           <input id="retry_count" name="retry_count" type="number" min="0" value="{{ form.retry_count }}"{{ invalid(form, "retry_count", "retry-error") }}>
         </label>
         <label for="retry_delay" class="narrow dep retry-delayed">Delay, s
-          <input id="retry_delay" name="retry_delay" type="number" min="1" value="{{ form.retry_delay }}"{{ invalid(form, "retry_count", "retry-error") }}>
+          <input id="retry_delay" name="retry_delay" type="number" min="0" value="{{ form.retry_delay }}"{{ invalid(form, "retry_count", "retry-error") }}>
+        </label>
+        <label for="retry_max_delay" class="narrow dep retry-backoff">Max delay, s
+          <input id="retry_max_delay" name="retry_max_delay" type="number" min="1" placeholder="86400" value="{{ form.retry_max_delay }}"{{ invalid(form, "retry_count", "retry-error") }}>
         </label>
         <label for="timeout" class="narrow">Timeout, ms
           <input id="timeout" name="timeout" type="number" min="1" max="{{ form.max_timeout }}" placeholder="{{ form.default_timeout }}" value="{{ form.timeout }}"{{ invalid(form, "timeout", "timeout-error") }}>

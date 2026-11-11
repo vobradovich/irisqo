@@ -5,10 +5,7 @@ use crate::{
         results::{self, JobResult, is_retryable_status},
         schedules::JobSchedule,
     },
-    models::{
-        AppState, Error, JobEntry, JobRetry, JobRow, JobSink, JobWithRetry, MAX_RETRY_DELAY,
-        targets, with_jitter,
-    },
+    models::{AppState, Error, JobEntry, JobRetry, JobRow, JobSink, JobWithRetry, targets},
     otel::{self, HeaderInjector, metrics::metrics},
 };
 use bytes::Bytes;
@@ -119,7 +116,7 @@ async fn job_attempt(app_state: &AppState, job_with_retry: JobWithRetry) -> Opti
     let job_retry = job.meta.retry;
     let schedule_id = job.schedule_id.clone();
     let job_result = match job.meta.sink {
-        JobSink::None => Ok(JobResult::default()),
+        JobSink::Noop => Ok(JobResult::default()),
         JobSink::Http(_) => job_run_http(app_state, job, retry).await,
     };
     let result = match job_result {
@@ -200,7 +197,12 @@ pub async fn complete(app_state: &AppState, completions: Vec<Completion>) {
 async fn job_run_http(app_state: &AppState, job: JobRow, retry: i32) -> Result<JobResult, Error> {
     let job_id = job.id;
     // jobs stored before the limit existed may carry a bigger timeout
-    let timeout_ms = job.meta.timeout.min(app_state.worker_options.max_timeout);
+    let options = &app_state.worker_options;
+    let timeout_ms = job
+        .meta
+        .timeout
+        .unwrap_or(options.timeout)
+        .min(options.max_timeout);
     let schedule_id = job.schedule_id.clone();
     let mut req = hyper::Request::<Full<Bytes>>::try_from(job)?;
     add_delivery_headers(req.headers_mut(), job_id, retry, schedule_id.as_deref());
@@ -370,7 +372,7 @@ async fn processed_scheduled(app_state: &AppState, completion: &Completion) -> R
     if let Some(next_at) = next_at {
         // `None`: the schedule was deleted or deactivated meanwhile
         if let Some(next_id) =
-            db::jobqueue::clone_schedule_at(&mut *tx, job_id, next_at, instance_id).await?
+            features::schedules::clone_schedule_at(&mut *tx, job_id, next_at, instance_id).await?
         {
             debug!({ instance_id, job_id, next_id, next_at = %next_at }, "==> clone and schedule");
         }
@@ -393,7 +395,7 @@ async fn schedule_next_at(
     if row.paused {
         return Ok(None);
     }
-    let Ok(schedule) = row.schedule.parse::<JobSchedule>().inspect_err(|err| {
+    let Ok(schedule) = JobSchedule::from_row(&row.rule, &row.tz, row.until).inspect_err(|err| {
         error!({ instance_id = app_state.instance_id, schedule_id }, "JobSchedule::parse error {:?}", err);
     }) else {
         return Ok(None);
@@ -401,14 +403,14 @@ async fn schedule_next_at(
     // after the current run's time too: a run done early (enqueued by hand) must not
     // schedule the next one at its own time
     let after = row.next_at.map_or_else(Utc::now, |at| at.max(Utc::now()));
-    Ok(schedule.next(after, row.until))
+    Ok(schedule.next(after))
 }
 
 /// Schedules a retry when the error is worth one; returns the final result otherwise.
 async fn on_error(
     app_state: &AppState,
     entry: JobEntry,
-    job_retry: JobRetry,
+    job_retry: Option<JobRetry>,
     err: Error,
 ) -> Option<JobResult> {
     let instance_id = &app_state.instance_id;
@@ -483,19 +485,19 @@ fn error_message(err: &Error) -> String {
 async fn retry_or_fail(
     app_state: &AppState,
     entry: JobEntry,
-    job_retry: JobRetry,
+    job_retry: Option<JobRetry>,
     retry_after: Option<u32>,
     message: &str,
 ) -> Result<(), Error> {
     let instance_id = &app_state.instance_id;
     let JobEntry { id: job_id, retry } = entry;
     let attempt: u16 = retry.try_into().unwrap_or(u16::MAX);
+    let job_retry = job_retry.ok_or(Error::RetriesExceeded)?;
     let delay = job_retry
-        .next_retry_in(attempt)
+        .jittered_delay(attempt)
         .ok_or(Error::RetriesExceeded)?;
-    let delay = with_jitter(delay)
-        .max(retry_after.unwrap_or(0))
-        .min(MAX_RETRY_DELAY);
+    // never sooner than the Retry-After of the response, up to the longest delay of the policy
+    let delay = delay.max(retry_after.unwrap_or(0).min(job_retry.retry_max_delay()));
     let affected = if delay == 0 {
         debug!({ instance_id, job_id, retry }, "==> unlock");
         db::jobqueue::unlock(&app_state.pool, entry, instance_id, message).await?

@@ -20,7 +20,7 @@ use askama_web::WebTemplate;
 use axum::{
     Router,
     body::Bytes,
-    extract::{RawQuery, State},
+    extract::{DefaultBodyLimit, RawQuery, State},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     middleware,
     response::{IntoResponse, Redirect, Response},
@@ -73,7 +73,12 @@ struct JobPreviewPartial {
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/ui", get(|| async { Redirect::to("/ui/jobs") }))
-        .route("/ui/jobs", get(jobs::jobs_page).post(create_job_from_form))
+        .route(
+            "/ui/jobs",
+            get(jobs::jobs_page)
+                .post(create_job_from_form)
+                .layer(DefaultBodyLimit::max(state.max_body_size)),
+        )
         .route("/ui/jobs/live", get(jobs::jobs_live))
         .route("/ui/jobs/new", get(new_job_page))
         .route("/ui/jobs/new/form", get(new_job_form))

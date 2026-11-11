@@ -53,10 +53,15 @@ fn unauthorized(challenge: &'static str) -> Response {
     response
 }
 
-#[test]
-fn bearer_tokens() {
-    assert_eq!(bearer("Bearer abc"), Some("abc"));
-    assert_eq!(bearer("bearer  abc "), Some("abc"));
-    assert_eq!(bearer("Basic abc"), None);
-    assert_eq!(bearer("Bearer"), None);
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bearer_tokens() {
+        assert_eq!(bearer("Bearer abc"), Some("abc"));
+        assert_eq!(bearer("bearer  abc "), Some("abc"));
+        assert_eq!(bearer("Basic abc"), None);
+        assert_eq!(bearer("Bearer"), None);
+    }
 }

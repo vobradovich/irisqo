@@ -26,8 +26,8 @@ CREATE TABLE queues (
 
 CREATE TABLE schedules (
     schedule_id text PRIMARY KEY,
-    schedule    text NOT NULL,
-    timezone    text NOT NULL DEFAULT 'UTC',
+    rule        text NOT NULL,
+    tz          text NOT NULL DEFAULT 'UTC',
     next_id     bigint NULL,
     next_at     timestamptz NULL,
     until       timestamptz NULL,
@@ -132,14 +132,15 @@ CREATE TABLE stats (
 CREATE FUNCTION enqueue_v1(job jsonb) RETURNS bigint
 LANGUAGE plpgsql SET search_path FROM CURRENT AS $$
 DECLARE
+    v_sink     text := job->>'sink';
     v_retry    text := coalesce(job->>'retry', 'none');
     v_queue    text := nullif(job->>'queue', '');
     v_key      text := nullif(job->>'key', '');
     v_priority smallint;
     v_timeout  int;
     v_body     bytea;
+    v_headers  jsonb := nullif(job->'headers', 'null'::jsonb);
     v_at       timestamptz;
-    v_delay    int;
     v_meta     jsonb;
     v_error    text;
     new_id     bigint;
@@ -147,10 +148,12 @@ BEGIN
     v_error := CASE
         WHEN jsonb_typeof(job) IS DISTINCT FROM 'object'
             THEN 'must be a JSON object'
-        WHEN coalesce(job->>'url', '') !~* '^https?://[^/?#[:space:]]+'
-            OR job->>'url' ~ '[[:space:][:cntrl:]]'
+        WHEN coalesce(v_sink, '') NOT IN ('http', 'noop')
+            THEN 'sink must be http or noop'
+        WHEN v_sink = 'http' AND (coalesce(job->>'url', '') !~* '^https?://[^/?#[:space:]]+'
+                                  OR job->>'url' ~ '[[:space:][:cntrl:]]')
             THEN 'url must be an http or https URL without spaces'
-        WHEN coalesce(job->>'method', 'POST') !~* '^[a-z]{1,16}$'
+        WHEN v_sink = 'http' AND coalesce(job->>'method', 'POST') !~* '^[a-z]{1,16}$'
             THEN 'method must be an HTTP method'
         WHEN jsonb_typeof(job->'headers') NOT IN ('object', 'null')
             THEN 'headers must be an object'
@@ -168,12 +171,14 @@ BEGIN
             THEN 'priority must be an integer'
         WHEN job->>'timeout' !~ '^[1-9][0-9]{0,8}$'
             THEN 'timeout must be a positive number of milliseconds'
-        WHEN v_retry NOT IN ('none', 'immediate', 'fixed', 'fibonacci')
-            THEN 'retry must be none, immediate, fixed or fibonacci'
+        WHEN v_retry NOT IN ('none', 'fixed', 'fibonacci', 'exponential')
+            THEN 'retry must be none, fixed, fibonacci or exponential'
         WHEN coalesce(job->>'retry_count', CASE WHEN v_retry <> 'none' THEN '' END) !~ '^[0-9]{1,4}$'
             THEN 'retry_count must be a number up to 9999'
-        WHEN coalesce(job->>'retry_delay', CASE WHEN v_retry IN ('fixed', 'fibonacci') THEN '' END) !~ '^[0-9]{1,5}$'
+        WHEN coalesce(job->>'retry_delay', CASE WHEN v_retry IN ('fibonacci', 'exponential') THEN '' END) !~ '^[0-9]{1,5}$'
             THEN 'retry_delay must be a number of seconds up to 99999'
+        WHEN job->>'retry_max_delay' !~ '^[0-9]{1,5}$'
+            THEN 'retry_max_delay must be a number of seconds up to 99999'
         WHEN job->>'at' IS NOT NULL AND job->>'delay' IS NOT NULL
             THEN 'at and delay are exclusive'
         WHEN job->>'at' !~ '^[0-9]{1,12}$'
@@ -186,9 +191,10 @@ BEGIN
     END IF;
 
     v_priority := coalesce((job->>'priority')::smallint, 0);
-    v_timeout  := coalesce((job->>'timeout')::int, 30000);
+    v_timeout  := (job->>'timeout')::int;
     v_body     := nullif(CASE
                       WHEN jsonb_typeof(job->'body') = 'string' THEN convert_to(job->>'body', 'UTF8')
+                      WHEN jsonb_typeof(job->'body') NOT IN ('string', 'null') THEN convert_to((job->'body')::text, 'UTF8')
                       WHEN jsonb_typeof(job->'body_base64') = 'string' THEN decode(job->>'body_base64', 'base64')
                   END, ''::bytea);
     v_at       := CASE
@@ -198,24 +204,30 @@ BEGIN
     IF v_at <= clock_timestamp() THEN
         v_at := NULL;
     END IF;
-    v_delay := ceil(extract(epoch FROM v_at - clock_timestamp()))::int;
 
     v_meta := jsonb_strip_nulls(jsonb_build_object(
-        'sink', 'http',
-        'method', upper(coalesce(job->>'method', 'POST')),
-        'url', job->>'url',
-        'retry', v_retry,
+        'sink', v_sink,
+        'method', CASE WHEN v_sink = 'http' THEN upper(coalesce(job->>'method', 'POST')) END,
+        'url', CASE WHEN v_sink = 'http' THEN job->>'url' END,
+        'retry', nullif(v_retry, 'none'),
         'retry_count', CASE WHEN v_retry <> 'none' THEN (job->>'retry_count')::int END,
-        'retry_delay', CASE WHEN v_retry IN ('fixed', 'fibonacci') THEN (job->>'retry_delay')::int END,
-        'delay', v_delay,
+        'retry_delay', CASE WHEN v_retry <> 'none' THEN coalesce((job->>'retry_delay')::int, 0) END,
+        'retry_max_delay', CASE WHEN v_retry IN ('fibonacci', 'exponential') THEN (job->>'retry_max_delay')::int END,
         'timeout', v_timeout,
         'queue', v_queue,
         'priority', nullif(v_priority, 0),
         'traceparent', job->>'traceparent',
         'tracestate', job->>'tracestate'));
 
+    -- a JSON body that is not a string is sent as JSON text
+    IF jsonb_typeof(job->'body') NOT IN ('string', 'null')
+       AND NOT EXISTS (SELECT 1 FROM jsonb_object_keys(coalesce(v_headers, '{}')) k
+                       WHERE lower(k) = 'content-type') THEN
+        v_headers := coalesce(v_headers, '{}') || '{"content-type": "application/json"}';
+    END IF;
+
     INSERT INTO jobs (meta, headers, body, key)
-    VALUES (v_meta, nullif(job->'headers', 'null'::jsonb), v_body, v_key)
+    VALUES (v_meta, v_headers, v_body, v_key)
     ON CONFLICT (key) WHERE key IS NOT NULL DO NOTHING
     RETURNING jobs.id INTO new_id;
     IF new_id IS NULL THEN

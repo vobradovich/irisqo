@@ -1,20 +1,43 @@
+use super::{
+    http::{create_job, job_headers, parse_body},
+    job_input::{JobInput, prepare_input},
+};
 use crate::models::{Error, Problem};
 use crate::{db, db::jobqueue::ActionOutcome, models::AppState};
 use axum::{
     Json, Router,
-    extract::{Path, State},
+    body::Bytes,
+    extract::{DefaultBodyLimit, Path, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::{get, post},
 };
+use chrono::Utc;
 use std::sync::Arc;
 
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
+        .route(
+            "/jobs",
+            post(create).layer(DefaultBodyLimit::max(state.max_body_size)),
+        )
         .route("/jobs/{id}", get(get_by_id).delete(delete_by_id))
         .route("/jobs/{id}/cancel", post(cancel))
         .route("/jobs/{id}/retry", post(retry))
         .with_state(state)
+}
+
+/// Creates a job from JSON: `200` with the job (`id`, `key`) and the same in the headers
+/// (`Location`, `Irisqo-*`). A repeated `key` returns the existing job.
+async fn create(
+    State(state): State<Arc<AppState>>,
+    body: Bytes,
+) -> Result<impl IntoResponse, Problem> {
+    let spec: JobInput = parse_body(&body, "job")?;
+    let job =
+        prepare_input(&state.worker_options, spec, Utc::now()).map_err(Error::InvalidParams)?;
+    let job = create_job(&state, job).await?;
+    Ok((job_headers(&job), Json(job)))
 }
 
 async fn delete_by_id(

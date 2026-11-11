@@ -12,6 +12,7 @@ futures = "0.3.34"
 async-channel = "2.5"
 # JSON libs
 serde = "1"
+base64 = "0.22"
 serde_json = { version = "1", features = ["raw_value"] }
 http-serde = "2.1"
 # Web libs
@@ -50,12 +51,12 @@ sqlx = { version = "0.9", features = ["runtime-tokio", "tls-native-tls", "postgr
 # Types
 thiserror = "2"
 chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.10"
 whoami = { version = "2.0" }
 bytes = { version = "1", features = ["serde"] }
 ulid = { version = "3" }
 cron = { version = "0.17" }
 fastrand = "2"
-petname = { version = "3", default-features = false, features = ["default-rng", "default-words"] }
 
 [features]
 # Integration tests need a Postgres server: DATABASE_URL=postgres://... cargo test --features integration-tests

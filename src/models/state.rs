@@ -20,6 +20,7 @@ pub struct AppState {
     /// Open the API (`/to/*`, `/api/v1/*`) and the UI; `None`: both are open.
     pub api_tokens: Option<ApiTokens>,
     pub port: u16,
+    pub max_body_size: usize,
     pub instance_id: String,
     pub pool: Pool<Postgres>,
     pub client: Client<HttpsConnector<HttpConnector<GuardedResolver>>, Full<Bytes>>,
@@ -62,9 +63,27 @@ pub struct WorkerOptions {
 }
 
 /// Extra time on top of `max_timeout` before a lock counts as stuck.
+#[cfg(test)]
+impl WorkerOptions {
+    /// Options for a unit test: any target is allowed.
+    pub(crate) fn for_tests() -> Self {
+        Self {
+            workers: 1,
+            poll_interval: Duration::from_secs(1),
+            max_poll_interval: Duration::from_secs(1),
+            prefetch: 1,
+            timeout: 3000,
+            max_timeout: 300_000,
+            shutdown_timeout: Duration::from_secs(1),
+            targets: Arc::new(TargetPolicy::allow_all()),
+        }
+    }
+}
+
 const LOCK_GRACE: Duration = Duration::from_secs(60);
 const DEFAULT_DB_CONNECTIONS: u32 = 32;
 const DEFAULT_SCHEMA: &str = "irisqo";
+const DEFAULT_MAX_BODY_SIZE: usize = 64 * 1024;
 
 // Generates `pub struct Options`; `Options::from_vec(vec![])` gives the defaults (tests).
 xflags::xflags! {
@@ -72,6 +91,8 @@ xflags::xflags! {
     cmd options {
         /// API Port number. Default: 8102
         optional -p,--port n: u16
+        /// Maximum HTTP request body size in bytes. Default: 65536 (64 KiB)
+        optional --max-body-size n: usize
         /// Postgres connection URL, postgres://user:pass@host/db (better set by IRISQO_DB_URL: a flag
         /// shows in ps). Required.
         optional --db-url url: String
@@ -151,6 +172,7 @@ impl Options {
         // every option, so that a new one cannot miss its variable
         let Options {
             port,
+            max_body_size,
             db_url,
             db_connections,
             db_schema,
@@ -168,6 +190,7 @@ impl Options {
             api_token,
         } = self;
         take(port, "IRISQO_PORT", &var)?;
+        take(max_body_size, "IRISQO_MAX_BODY_SIZE", &var)?;
         take(db_url, "IRISQO_DB_URL", &var)?;
         take(db_connections, "IRISQO_DB_CONNECTIONS", &var)?;
         take(db_schema, "IRISQO_DB_SCHEMA", &var)?;
@@ -256,6 +279,7 @@ impl AppState {
             environment: options.environment(),
             api_tokens: options.api_token.clone(),
             port: options.port.unwrap_or(8102),
+            max_body_size: options.max_body_size.unwrap_or(DEFAULT_MAX_BODY_SIZE),
             instance_id,
             pool,
             client: Client::builder(TokioExecutor::new()).build::<_, Full<Bytes>>(https),
@@ -339,6 +363,12 @@ async fn warn_on_clock_skew(pool: &Pool<Postgres>) {
     }
 }
 
+/// A unique name that sorts by time: a lower case ULID.
+#[must_use]
+pub fn new_ulid() -> String {
+    ulid::Ulid::generate().to_string().to_lowercase()
+}
+
 /// `hostname:ulid`, also used as the Postgres `application_name`.
 #[must_use]
 pub fn new_instance_id() -> String {
@@ -353,7 +383,7 @@ pub fn new_instance_id() -> String {
     format!(
         "{}:{}",
         hostname.trim_start_matches(['.', '_', '-']),
-        ulid::Ulid::generate().to_string().to_lowercase()
+        new_ulid()
     )
 }
 
@@ -361,6 +391,7 @@ pub fn new_instance_id() -> String {
 fn options_fall_back_to_the_environment() {
     let vars = |name: &str| match name {
         "IRISQO_PORT" => Some("9000".to_owned()),
+        "IRISQO_MAX_BODY_SIZE" => Some("131072".to_owned()),
         "IRISQO_MAX_TIMEOUT" => Some("1000".to_owned()),
         "IRISQO_ENV" => Some("dev".to_owned()),
         _ => None,
@@ -368,6 +399,7 @@ fn options_fall_back_to_the_environment() {
     let mut options = Options::from_vec(vec!["--port".into(), "8000".into()]).expect("options");
     options.fill_from(vars).expect("valid");
     assert_eq!(options.port, Some(8000), "the command line wins");
+    assert_eq!(options.max_body_size, Some(131072));
     assert_eq!(options.max_timeout, Some(1000));
     assert_eq!(options.environment(), Environment::Development);
     assert_eq!(options.workers, None);

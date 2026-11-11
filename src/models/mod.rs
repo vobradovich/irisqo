@@ -10,9 +10,9 @@ pub use job::JobMeta;
 pub use job::JobRow;
 pub use job::JobSink;
 pub use job::JobWithRetry;
-pub use jobretry::{JobRetry, MAX_RETRY_DELAY, with_jitter};
+pub use jobretry::JobRetry;
 pub use problem::Problem;
-pub use state::{AppState, Options, SchedulerOptions, WorkerOptions, new_instance_id};
+pub use state::{AppState, Options, SchedulerOptions, WorkerOptions, new_instance_id, new_ulid};
 pub use targets::{AllowTargets, TargetPolicy};
 
 mod apitokens;

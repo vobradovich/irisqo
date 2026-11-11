@@ -59,7 +59,8 @@ pub async fn request_with(
     send(state, method, uri, headers, "").await
 }
 
-/// [`request_with`] and a form `body` (sent as `application/x-www-form-urlencoded`).
+/// [`request_with`] and a `body`: a form (`application/x-www-form-urlencoded`) unless `headers`
+/// bring their own `content-type`.
 pub async fn send(
     state: &AppState,
     method: hyper::Method,
@@ -68,7 +69,11 @@ pub async fn send(
     body: &str,
 ) -> hyper::Response<hyper::body::Incoming> {
     let mut req = hyper::Request::builder().method(method).uri(uri);
-    if !body.is_empty() {
+    if !body.is_empty()
+        && !headers
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case("content-type"))
+    {
         req = req.header("content-type", "application/x-www-form-urlencoded");
     }
     for (name, value) in headers {
@@ -158,11 +163,11 @@ pub async fn count(pool: &PgPool, sql: &'static str) -> i64 {
         .expect("count")
 }
 
-/// Inserts `n` no-sink jobs straight into `enqueued`; returns their ids.
+/// Inserts `n` noop jobs straight into `enqueued`; returns their ids.
 pub async fn insert_enqueued(pool: &PgPool, n: i32) -> Vec<i64> {
     sqlx::query_scalar(
         "WITH a AS (
-            INSERT INTO jobs(meta) SELECT '{\"sink\": \"none\", \"retry\": \"none\", \"timeout\": 1000}'::jsonb
+            INSERT INTO jobs(meta) SELECT '{\"sink\": \"noop\", \"retry\": \"none\", \"timeout\": 1000}'::jsonb
             FROM generate_series(1, $1) RETURNING id
         )
         INSERT INTO enqueued(id) SELECT id FROM a RETURNING id",

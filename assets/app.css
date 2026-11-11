@@ -218,7 +218,8 @@ aside.card h2 { font-size: 1.05rem; margin-bottom: 0.25rem; }
 #job-form:has(#repeat-interval:checked) .dep.repeat-interval,
 #job-form:has(#repeat-cron:checked) .dep.repeat-cron,
 #job-form:has(#retry option:not([value="none"]):checked) .dep.retry-any,
-#job-form:has(#retry option:is([value="fixed"], [value="fibonacci"]):checked) .dep.retry-delayed {
+#job-form:has(#retry option:is([value="fixed"], [value="fibonacci"], [value="exponential"]):checked) .dep.retry-delayed,
+#job-form:has(#retry option:is([value="fibonacci"], [value="exponential"]):checked) .dep.retry-backoff {
   display: block;
 }
 #job-form:has(#repeat-interval:checked, #repeat-cron:checked) .dep.repeat-any { display: flex; }

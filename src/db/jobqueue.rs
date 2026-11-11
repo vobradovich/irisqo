@@ -1,7 +1,7 @@
 use std::time::Duration;
 
+use crate::features;
 use crate::features::results::{self, JobResult};
-use crate::features::schedules::JobSchedule;
 use crate::models::{Error, JobCreateRow, JobEntry, JobWithRetry};
 use crate::models::{JobCreate, JobRow};
 use chrono::{DateTime, Utc};
@@ -12,29 +12,25 @@ pub async fn create(
     mut job: JobCreate,
     instance_id: &str,
 ) -> Result<JobCreateRow, Error> {
+    if job.schedule.is_some() {
+        // the same declaration as `PUT /schedules/{id}`: the key is the id of the schedule,
+        // a new unique one when there is none
+        job.key.get_or_insert_with(crate::models::new_ulid);
+        return features::schedules::db::upsert(pool, job, instance_id).await;
+    }
     let key = job.key.clone();
-    let schedule = job.schedule.take();
-    let is_schedule = schedule.is_some();
-    let res = if let Some(schedule) = schedule {
-        create_with_schedule(pool, job, schedule, instance_id).await
-    } else if let Some(at) = job.at {
+    let res = if let Some(at) = job.at {
         create_at(pool, job, at, instance_id).await
     } else {
         create_enqueue(pool, job, instance_id).await
     };
-    // Check existing Job for idempotency: the key of a schedule is its schedule id
+    // Check existing Job for idempotency
     if let Err(Error::DbError(sqlx::Error::Database(ref err))) = res
         && err.code().unwrap_or_default() == "23505"
         && let Some(key) = key
+        && let Some(job) = get_id_by_key(pool, &key).await?
     {
-        let existing = if is_schedule {
-            get_schedule_run(pool, &key).await?
-        } else {
-            get_id_by_key(pool, &key).await?
-        };
-        if let Some(job) = existing {
-            return Ok(job);
-        }
+        return Ok(job);
     }
     res
 }
@@ -52,7 +48,7 @@ async fn create_enqueue(
     )
     INSERT INTO enqueued(id) SELECT id FROM a RETURNING id";
 
-    let body: Option<&[u8]> = (!job.body.is_empty()).then_some(job.body.as_ref());
+    let body = job.body_bytes();
     let job_id = sqlx::query_scalar::<_, i64>(SQL)
         .bind(Json(&job.meta))
         .bind(Json(&job.headers))
@@ -83,7 +79,7 @@ async fn create_at(
     INSERT INTO scheduled(id, at) SELECT id, $5::timestamptz FROM a RETURNING id
     ";
 
-    let body: Option<&[u8]> = (!job.body.is_empty()).then_some(job.body.as_ref());
+    let body = job.body_bytes();
 
     let job_id = sqlx::query_scalar::<_, i64>(SQL)
         .bind(Json(&job.meta))
@@ -99,126 +95,6 @@ async fn create_at(
         schedule_id: None,
         key: job.key,
     })
-}
-
-/// `bold-lazy-heron`: a petname of three words, lower case, a valid name.
-fn new_schedule_id() -> String {
-    petname::petname(3, "-").unwrap_or_else(|| "schedule".into())
-}
-
-#[test]
-fn schedule_ids_are_idents() {
-    let id = new_schedule_id();
-    assert!(
-        id.split('-').count() == 3 && id.chars().all(|c| c.is_ascii_lowercase() || c == '-'),
-        "{id}"
-    );
-}
-
-async fn create_with_schedule(
-    pool: &Pool<Postgres>,
-    job: JobCreate,
-    schedule: JobSchedule,
-    instance_id: &str,
-) -> Result<JobCreateRow, Error> {
-    const SQL: &str = "
-    WITH a AS (
-        INSERT INTO jobs(meta, headers, body, key, schedule_id) VALUES ($1, $2, $3, $4, $6) RETURNING id
-    ), b AS (
-        INSERT INTO schedules(schedule_id, schedule, next_id, next_at)
-        SELECT $6, $7, id, $5::timestamptz FROM a RETURNING next_id
-    ), hist AS (
-        INSERT INTO history(id, retry, kind, instance_id) SELECT id, 0, 'scheduled', $8 FROM a
-    )
-    INSERT INTO scheduled(id, at) SELECT id, $5::timestamptz FROM a RETURNING id
-    ";
-
-    let body: Option<&[u8]> = (!job.body.is_empty()).then_some(job.body.as_ref());
-
-    let after = job.at.unwrap_or_else(Utc::now);
-    let at = schedule.next(after, job.until);
-    // prepare_job checks it first: a schedule must run at least once
-    let Some(at) = at else {
-        return Err(Error::invalid(
-            "_until",
-            "the schedule has no run before it",
-        ));
-    };
-    let schedule = schedule.to_string();
-
-    // a petname (`bold-lazy-heron`) is short, so a taken one is tried again with another
-    // the given key is the schedule id, and a run's key is `{schedule_id}-{run time, secs}`
-    let mut attempt = 0;
-    let (job_id, schedule_id, key) = loop {
-        attempt += 1;
-        let schedule_id = job.key.clone().unwrap_or_else(new_schedule_id);
-        let key = format!("{schedule_id}-{}", at.timestamp());
-        let res = sqlx::query_scalar::<_, i64>(SQL)
-            .bind(Json(&job.meta))
-            .bind(Json(&job.headers))
-            .bind(body)
-            .bind(&key)
-            .bind(at)
-            .bind(&schedule_id)
-            .bind(&schedule)
-            .bind(instance_id)
-            .fetch_one(pool)
-            .await;
-        match res {
-            Ok(job_id) => break (job_id, schedule_id, key),
-            Err(sqlx::Error::Database(err))
-                if job.key.is_none()
-                    && attempt < 5
-                    && err.constraint() == Some("schedules_pkey") => {}
-            Err(err) => return Err(err.into()),
-        }
-    };
-    Ok(JobCreateRow {
-        id: job_id,
-        schedule_id: Some(schedule_id),
-        key: Some(key),
-    })
-}
-
-/// Clones the job as the next run of its schedule.
-/// Returns `None` when the schedule was deleted or deactivated in the meantime,
-/// or when the job is not its latest run.
-pub async fn clone_schedule_at<'e, E>(
-    executor: E,
-    job_id: i64,
-    at: DateTime<Utc>,
-    instance_id: &str,
-) -> Result<Option<i64>, Error>
-where
-    E: sqlx::Executor<'e, Database = Postgres>,
-{
-    const SQL: &str = "
-    WITH a AS (
-        INSERT INTO jobs(meta, headers, body, schedule_id, key)
-        SELECT j.meta, j.headers, j.body, j.schedule_id, j.schedule_id || '-' || extract(epoch FROM $2::timestamptz)::bigint
-        FROM jobs AS j
-        -- only the latest run continues the schedule (a manually retried old run does not)
-        INNER JOIN schedules AS s ON s.schedule_id = j.schedule_id AND NOT s.paused AND s.next_id = j.id
-        WHERE j.id = $1
-        RETURNING id, schedule_id
-    ), b AS (
-        UPDATE schedules
-        SET next_id = a.id, next_at = $2::timestamptz
-        FROM a
-        WHERE schedules.schedule_id = a.schedule_id
-    ), hist AS (
-        INSERT INTO history(id, retry, kind, instance_id) SELECT id, 0, 'scheduled', $3 FROM a
-    )
-    INSERT INTO scheduled(id, at) SELECT id, $2::timestamptz FROM a RETURNING id
-    ";
-
-    let job_id = sqlx::query_scalar::<_, i64>(SQL)
-        .bind(job_id)
-        .bind(at)
-        .bind(instance_id)
-        .fetch_optional(executor)
-        .await?;
-    Ok(job_id)
 }
 
 pub async fn get_by_id(pool: &Pool<Postgres>, job_id: i64) -> Result<Option<JobRow>, Error> {
@@ -237,23 +113,6 @@ pub async fn get_id_by_key(
     const SQL: &str = "SELECT id, schedule_id, key FROM jobs WHERE key = $1";
     let job = sqlx::query_as::<_, JobCreateRow>(SQL)
         .bind(key)
-        .fetch_optional(pool)
-        .await?;
-    Ok(job)
-}
-
-/// The current run of a schedule.
-async fn get_schedule_run(
-    pool: &Pool<Postgres>,
-    schedule_id: &str,
-) -> Result<Option<JobCreateRow>, Error> {
-    const SQL: &str = "
-    SELECT j.id, s.schedule_id, j.key
-    FROM schedules AS s
-    INNER JOIN jobs AS j ON j.id = s.next_id
-    WHERE s.schedule_id = $1";
-    let job = sqlx::query_as::<_, JobCreateRow>(SQL)
-        .bind(schedule_id)
         .fetch_optional(pool)
         .await?;
     Ok(job)
@@ -448,7 +307,8 @@ async fn outcome(
 }
 
 /// Cancels a pending job (scheduled, or enqueued and not running): it ends as `cancelled`.
-/// A running or processed job is a conflict.
+/// A running or processed job is a conflict. A run of a schedule gives its key back: it never
+/// ran, and the schedule may need a run of the same time (`{schedule_id}-{secs}`) again.
 pub async fn cancel<'e, E>(executor: E, job_id: i64, instance_id: &str) -> Result<u64, Error>
 where
     E: sqlx::Executor<'e, Database = Postgres>,
@@ -463,6 +323,8 @@ where
     ), hist AS (
         INSERT INTO history(id, retry, kind, instance_id, message)
         SELECT id, retry, 'cancelled', $2, 'cancelled by a user' FROM c
+    ), k AS (
+        UPDATE jobs SET key = NULL WHERE id IN (SELECT id FROM c) AND schedule_id IS NOT NULL
     )
     INSERT INTO processed(id, retry, instance_id, status)
     SELECT id, retry, $2, 'cancelled' FROM c";

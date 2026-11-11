@@ -1,17 +1,17 @@
 use crate::models::Problem;
 use crate::{
     db,
-    features::schedules::JobSchedule,
+    features::schedules::{JobSchedule, ScheduleRule},
     models::{
         AppState, Error, HttpMeta, JobCreate, JobCreateRow, JobMeta, JobRetry, JobSink, ParamError,
         WorkerOptions, headers::forwarded_headers,
     },
-    otel::{self, metrics::metrics},
+    otel::metrics::metrics,
 };
 use axum::{
     Router,
     body::Bytes,
-    extract::{Path, RawQuery, State},
+    extract::{DefaultBodyLimit, Path, RawQuery, State},
     http::{HeaderMap, HeaderValue, StatusCode},
     response::IntoResponse,
     routing::get,
@@ -33,7 +33,8 @@ pub fn routes(state: Arc<AppState>) -> Router {
                 .post(job_create)
                 .put(job_create)
                 .delete(job_create)
-                .patch(job_create),
+                .patch(job_create)
+                .layer(DefaultBodyLimit::max(state.max_body_size)),
         )
         .with_state(state)
 }
@@ -56,6 +57,11 @@ async fn job_create(
     let job =
         prepare_job(&state.worker_options, request, Utc::now()).map_err(Error::InvalidParams)?;
     let job = create_job(&state, job).await?;
+    Ok((StatusCode::CREATED, job_headers(&job)))
+}
+
+/// The `Location` and `Irisqo-*` headers of a created job.
+pub fn job_headers(job: &JobCreateRow) -> HeaderMap {
     let mut headers = HeaderMap::new();
     // schedule-id and key (user-provided) may not be valid header values
     let mut put = |name: &'static str, value: Option<&str>| {
@@ -69,7 +75,7 @@ async fn job_create(
     put("irisqo-job-id", Some(&job.id.to_string()));
     put("irisqo-schedule-id", job.schedule_id.as_deref());
     put("irisqo-key", job.key.as_deref());
-    Ok((StatusCode::CREATED, headers))
+    headers
 }
 
 /// A job as requested through `/to/{url}?{query}`; the UI form builds the same.
@@ -93,11 +99,12 @@ pub fn prepare_job(
 ) -> Result<JobCreate, Vec<ParamError>> {
     let mut errors = Vec::new();
     let mut at: Option<DateTime<Utc>> = None;
-    let mut timeout: u32 = options.timeout;
-    let mut retry = JobRetry::None;
-    let mut schedule: Option<(JobSchedule, &'static str)> = None;
+    let mut timeout: Option<u32> = None;
+    let mut retry: Option<JobRetry> = None;
+    let mut rule: Option<(ScheduleRule, &'static str)> = None;
     let mut until: Option<DateTime<Utc>> = None;
     let mut key: Option<String> = None;
+    let mut tz: Option<chrono_tz::Tz> = None;
     let mut url = Url::parse(request.url).ok();
 
     let mut bad = |parameter, detail: &str| errors.push(ParamError::new(parameter, detail));
@@ -107,36 +114,35 @@ pub fn prepare_job(
                 Ok(secs) => at = Some(now + chrono::Duration::seconds(i64::from(secs))),
                 Err(_) => bad("_delay", "must be a number of seconds"),
             },
-            // a time in the past runs the job now
-            "_delay_until" => match value.parse().ok().and_then(JobSchedule::from_unix_secs) {
-                Some(t) => at = (t > now).then_some(t),
-                None => bad("_delay_until", "must be a unix time in seconds"),
+            "_delay_until" => match JobSchedule::parse_time(&value) {
+                Some(t) => at = Some(t),
+                None => bad("_delay_until", TIME_RULE),
             },
             "_timeout" => match value.parse::<u32>() {
-                Ok(ms) if ms > 0 => timeout = ms.min(options.max_timeout),
+                Ok(ms) if ms > 0 => timeout = Some(ms),
                 _ => bad("_timeout", "must be a positive number of milliseconds"),
             },
-            "_retry" => match value.parse::<JobRetry>() {
+            "_retry" => match JobRetry::parse(&value) {
                 Ok(parsed) => retry = parsed,
-                Err(_) => bad("_retry", "must be N, N|fixed|S or N|fibonacci|S"),
+                Err(_) => bad("_retry", JobRetry::RULE),
             },
             "_interval" => match value.parse() {
-                Ok(parsed @ JobSchedule::Interval { .. }) => schedule = Some((parsed, "_interval")),
+                Ok(parsed @ ScheduleRule::Interval(_)) => rule = Some((parsed, "_interval")),
                 _ => bad("_interval", "must be a positive number of seconds"),
             },
-            "_cron" => match value.parse() {
-                Ok(parsed @ JobSchedule::Cron { .. }) => schedule = Some((parsed, "_cron")),
-                Ok(JobSchedule::Interval { .. }) => bad("_cron", "is not a cron expression"),
+            "_cron" => match ScheduleRule::parse_cron(&value) {
+                Ok(parsed) => rule = Some((parsed, "_cron")),
                 Err(err) => bad("_cron", &err.detail),
             },
-            "_until" => match value.parse().ok().and_then(JobSchedule::from_unix_secs) {
-                Some(t) => until = Some(t),
-                None => bad("_until", "must be a unix time in seconds"),
+            "_tz" => match value.parse() {
+                Ok(parsed) => tz = Some(parsed),
+                Err(_) => bad("_tz", TZ_RULE),
             },
-            "_key" if !value.is_empty() && !is_key(&value) => bad(
-                "_key",
-                "must be 1 to 255 characters without control characters",
-            ),
+            "_until" => match JobSchedule::parse_time(&value) {
+                Some(t) => until = Some(t),
+                None => bad("_until", TIME_RULE),
+            },
+            "_key" if !value.is_empty() && !is_key(&value) => bad("_key", KEY_RULE),
             "_key" => key = (!value.is_empty()).then(|| value.into_owned()),
             _ => {
                 if let Some(url) = url.as_mut() {
@@ -149,9 +155,54 @@ pub fn prepare_job(
             }
         }
     }
+    if until.is_some() && rule.is_none() {
+        errors.push(ParamError::new(
+            "_until",
+            "applies to _cron and _interval only",
+        ));
+    }
+    let rule_parameter = rule.as_ref().map(|(_, parameter)| *parameter);
+    let schedule = rule.map(|(rule, _)| JobSchedule {
+        rule,
+        tz: tz.unwrap_or_default(),
+        until,
+    });
+    let sink = url
+        .and_then(|url| Uri::try_from(url.as_str()).ok())
+        .map(|url| {
+            JobSink::Http(HttpMeta {
+                method: request.method,
+                url,
+            })
+        });
+    match sink.as_ref().map(|sink| sink.check(options)) {
+        None => errors.push(ParamError::new("url", "is not a valid URL")),
+        Some(Err(detail)) => errors.push(ParamError::new("url", detail)),
+        Some(Ok(())) => {}
+    }
+    let job = sink.map(|sink| {
+        JobCreate {
+            meta: JobMeta {
+                sink,
+                retry,
+                timeout,
+                queue: None,
+                priority: None,
+                traceparent: None,
+                tracestate: None,
+            },
+            headers: Some(request.headers),
+            body: request.body,
+            at,
+            schedule,
+            key,
+        }
+        .normalized(options, now)
+    });
     // a schedule runs at least once
-    if let Some((schedule, parameter)) = &schedule
-        && schedule.next(at.unwrap_or(now), until).is_none()
+    if let Some(job) = &job
+        && let Some((schedule, parameter)) = job.schedule.as_ref().zip(rule_parameter)
+        && schedule.next(job.at.unwrap_or(now)).is_none()
     {
         let parameter = if until.is_some() { "_until" } else { parameter };
         errors.push(ParamError::new(
@@ -159,44 +210,7 @@ pub fn prepare_job(
             "the schedule has no run before it ends",
         ));
     }
-    let uri = url.and_then(|url| Uri::try_from(url.as_str()).ok());
-    match uri.as_ref() {
-        None => errors.push(ParamError::new("url", "is not a valid URL")),
-        Some(uri) => {
-            // a private IP address or localhost; a name is checked when resolved
-            if let Some(Err(detail)) = uri.host().map(|host| options.targets.check_host(host)) {
-                errors.push(ParamError::new("url", detail));
-            }
-        }
-    }
-    let Some(uri) = uri.filter(|_| errors.is_empty()) else {
-        return Err(errors);
-    };
-    let sink = match uri.scheme_str() {
-        Some("http" | "https") => JobSink::Http(HttpMeta {
-            method: request.method,
-            url: uri,
-        }),
-        _ => JobSink::None,
-    };
-    // Trace context of this request: the parent of every attempt
-    let (traceparent, tracestate) = otel::current_trace_headers();
-    Ok(JobCreate {
-        meta: JobMeta {
-            sink,
-            retry,
-            delay: at.and_then(|t| u32::try_from((t - now).num_seconds()).ok()),
-            timeout,
-            traceparent,
-            tracestate,
-        },
-        headers: Some(request.headers),
-        body: request.body,
-        at,
-        schedule: schedule.map(|(schedule, _)| schedule),
-        until,
-        key,
-    })
+    job.filter(|_| errors.is_empty()).ok_or(errors)
 }
 
 /// Stores a prepared job (or returns the existing one with the same key).
@@ -218,7 +232,95 @@ pub async fn create_job(state: &AppState, job: JobCreate) -> Result<JobCreateRow
         })
 }
 
-/// An idempotency key (as in `enqueue_v1`): up to 255 characters, no control characters.
-fn is_key(value: &str) -> bool {
-    value.chars().count() <= 255 && !value.chars().any(char::is_control)
+/// What is wrong with a time that [`JobSchedule::parse_time`] refuses.
+pub(crate) const TIME_RULE: &str = "must be an RFC 3339 time or unix seconds";
+
+/// What is wrong with a time zone name (`_tz`, `tz`).
+pub(crate) const TZ_RULE: &str = "must be an IANA time zone name, e.g. Europe/Berlin";
+
+/// A JSON request body; one that is not valid is a 400 with the reason.
+pub(crate) fn parse_body<T: serde::de::DeserializeOwned>(
+    body: &[u8],
+    what: &str,
+) -> Result<T, Error> {
+    serde_json::from_slice(body)
+        .map_err(|err| Error::invalid("body", format!("is not a valid {what}: {err}")))
+}
+
+/// What is wrong with a key that [`is_key`] refuses.
+pub(crate) const KEY_RULE: &str = "must be 1 to 255 characters without control characters";
+
+/// An idempotency key (as in `enqueue_v1`): 1 to 255 characters, no control characters.
+pub(crate) fn is_key(value: &str) -> bool {
+    !value.is_empty() && value.chars().count() <= 255 && !value.chars().any(char::is_control)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn prepare_query(query: &str) -> Result<JobCreate, Vec<ParamError>> {
+        prepare_job(
+            &WorkerOptions::for_tests(),
+            JobRequest {
+                method: Method::GET,
+                url: "https://example.com",
+                query: Some(query),
+                headers: HashMap::new(),
+                body: Bytes::new(),
+            },
+            Utc::now(),
+        )
+    }
+
+    #[test]
+    fn until_belongs_to_a_schedule() {
+        let until = JobSchedule::parse_time("2100-01-01T00:00:00Z");
+        for query in ["_interval=60", "_cron=0+9+*+*+*"] {
+            let job =
+                prepare_query(&format!("{query}&_until=2100-01-01T00:00:00Z")).expect("valid");
+            assert_eq!(job.schedule.and_then(|s| s.until), until, "{query}");
+        }
+        // an end without a schedule is not a job that ends
+        let errors = prepare_query("_until=2100-01-01T00:00:00Z").expect_err("no schedule");
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].parameter, "_until");
+    }
+
+    #[test]
+    fn a_target_is_an_http_url() {
+        let options = WorkerOptions::for_tests();
+        let prepare = |url| {
+            prepare_job(
+                &options,
+                JobRequest {
+                    method: Method::GET,
+                    url,
+                    query: None,
+                    headers: HashMap::new(),
+                    body: Bytes::new(),
+                },
+                Utc::now(),
+            )
+        };
+        assert!(prepare("https://example.com/hook").is_ok());
+        for url in ["ftp://example.com", "mailto:a@example.com", "not a url"] {
+            let errors = prepare(url).expect_err(url);
+            assert_eq!(errors.len(), 1, "{url}");
+            assert_eq!(errors[0].parameter, "url", "{url}");
+        }
+    }
+
+    #[test]
+    fn tz_is_the_zone_of_cron() {
+        let zone = |query| prepare_query(query).expect("valid").schedule.map(|s| s.tz);
+        assert_eq!(
+            zone("_cron=0+9+*+*+*&_tz=Europe/Berlin"),
+            Some(chrono_tz::Europe::Berlin)
+        );
+        assert_eq!(zone("_cron=0+9+*+*+*"), Some(chrono_tz::Tz::UTC));
+        let errors = prepare_query("_cron=0+9+*+*+*&_tz=Mars/Base").expect_err("no such zone");
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].parameter, "_tz");
+    }
 }

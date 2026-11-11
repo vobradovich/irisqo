@@ -235,7 +235,7 @@ async fn server_error_is_retried_with_jitter(pool: PgPool) -> anyhow::Result<()>
 #[sqlx::test(migrations = "./sql/migrations")]
 async fn too_many_requests_respects_retry_after(pool: PgPool) -> anyhow::Result<()> {
     let state = common::state(pool.clone());
-    // immediate retry policy, but the server asks to wait 2 minutes
+    // retries at once, but the server asks to wait 2 minutes
     let id = run_echo(&state, "status=429&retry-after=120&_retry=3").await;
     let (retry, delay) = scheduled_in(&pool, id).await.expect("scheduled retry");
     assert_eq!(retry, 1);
@@ -428,7 +428,7 @@ async fn running_job_of_deleted_schedule_is_not_cloned(pool: PgPool) -> anyhow::
 
 async fn enqueue_in_queue(pool: &PgPool, queue: &str) -> i64 {
     sqlx::query_scalar(
-        "SELECT enqueue_v1(jsonb_build_object('url', 'http://localhost/x', 'queue', $1::text))",
+        "SELECT enqueue_v1(jsonb_build_object('sink', 'http', 'url', 'http://localhost/x', 'queue', $1::text))",
     )
     .bind(queue)
     .fetch_one(pool)
@@ -440,9 +440,11 @@ async fn enqueue_in_queue(pool: &PgPool, queue: &str) -> i64 {
 async fn an_unreadable_job_fails_alone(pool: PgPool) -> anyhow::Result<()> {
     let state = common::state(pool.clone());
     let good = enqueue_in_queue(&pool, "other").await;
-    let bad: i64 = sqlx::query_scalar("SELECT enqueue_v1('{\"url\": \"http://localhost/x\"}')")
-        .fetch_one(&pool)
-        .await?;
+    let bad: i64 = sqlx::query_scalar(
+        "SELECT enqueue_v1('{\"sink\": \"http\", \"url\": \"http://localhost/x\"}')",
+    )
+    .fetch_one(&pool)
+    .await?;
     // a URL the worker cannot read
     sqlx::query(
         "UPDATE jobs SET meta = jsonb_set(meta, '{url}', '\"http://localhost/a b\"') WHERE id = $1",
@@ -525,7 +527,8 @@ async fn a_queue_gives_its_jobs_in_id_order(pool: PgPool) -> anyhow::Result<()> 
 #[sqlx::test(migrations = "./sql/migrations")]
 async fn enqueue_v1_checks_the_form_of_key_and_queue(pool: PgPool) -> anyhow::Result<()> {
     for (field, bad) in [("key", "two\nlines"), ("queue", "no spaces")] {
-        let job = serde_json::json!({ "url": "http://localhost/x", field: bad }).to_string();
+        let job = serde_json::json!({ "sink": "http", "url": "http://localhost/x", field: bad })
+            .to_string();
         let err = sqlx::query_scalar::<_, i64>("SELECT enqueue_v1($1::jsonb)")
             .bind(job)
             .fetch_one(&pool)
@@ -537,10 +540,72 @@ async fn enqueue_v1_checks_the_form_of_key_and_queue(pool: PgPool) -> anyhow::Re
         );
     }
     sqlx::query_scalar::<_, i64>(
-        "SELECT enqueue_v1('{\"url\": \"http://localhost/x\", \"key\": \"Order 1/abc=\", \"queue\": \"q:1\"}')",
+        "SELECT enqueue_v1('{\"sink\": \"http\", \"url\": \"http://localhost/x\", \"key\": \"Order 1/abc=\", \"queue\": \"q:1\"}')",
     )
     .fetch_one(&pool)
     .await?;
+    Ok(())
+}
+
+#[sqlx::test(migrations = "./sql/migrations")]
+async fn enqueue_v1_stores_the_retry_policy(pool: PgPool) -> anyhow::Result<()> {
+    use irisqo::models::{JobMeta, JobRetry};
+    use serde_json::json;
+
+    let pool = &pool;
+    let enqueue = |job: serde_json::Value| async move {
+        let id: i64 = sqlx::query_scalar("SELECT enqueue_v1($1::jsonb)")
+            .bind(job.to_string())
+            .fetch_one(pool)
+            .await?;
+        let meta: sqlx::types::Json<JobMeta> =
+            sqlx::query_scalar("SELECT meta FROM jobs WHERE id = $1")
+                .bind(id)
+                .fetch_one(pool)
+                .await?;
+        Ok::<_, sqlx::Error>(meta.0.retry)
+    };
+    let url = "http://localhost/x";
+
+    assert_eq!(
+        enqueue(json!({"sink": "http", "url": url, "retry": "fixed", "retry_count": 3})).await?,
+        Some(JobRetry::Fixed {
+            retry_count: 3,
+            retry_delay: 0
+        })
+    );
+    assert_eq!(
+        enqueue(
+            json!({"sink": "http", "url": url, "retry": "exponential", "retry_count": 5,
+            "retry_delay": 2, "retry_max_delay": 60})
+        )
+        .await?,
+        Some(JobRetry::Exponential {
+            retry_count: 5,
+            retry_delay: 2,
+            retry_max_delay: Some(60)
+        })
+    );
+    assert_eq!(enqueue(json!({"sink": "http", "url": url })).await?, None);
+
+    for (job, error) in [
+        (
+            json!({"sink": "http", "url": url, "retry": "fixd", "retry_count": 3}),
+            "retry must be",
+        ),
+        (
+            json!({"sink": "http", "url": url, "retry": "exponential", "retry_count": 3}),
+            "retry_delay must be",
+        ),
+        (
+            json!({"sink": "http", "url": url, "retry": "fibonacci", "retry_count": 3, "retry_delay": 1,
+                "retry_max_delay": "x"}),
+            "retry_max_delay must be",
+        ),
+    ] {
+        let err = enqueue(job).await.expect_err("rejected");
+        assert!(err.to_string().contains(error), "{err}");
+    }
     Ok(())
 }
 
@@ -551,7 +616,7 @@ async fn a_released_or_requeued_job_keeps_its_priority_and_queue(
     let state = common::state(pool.clone());
     let id = &state.instance_id;
     let urgent: i64 = sqlx::query_scalar(
-        "SELECT enqueue_v1('{\"url\": \"http://localhost/x\", \"priority\": 5}')",
+        "SELECT enqueue_v1('{\"sink\": \"http\", \"url\": \"http://localhost/x\", \"priority\": 5}')",
     )
     .fetch_one(&pool)
     .await?;
@@ -645,9 +710,11 @@ async fn the_app_creates_and_uses_its_own_schema(pool: PgPool) -> anyhow::Result
     assert_eq!(outside, 0, "nothing in public");
 
     // the functions find the tables of their schema
-    let id: i64 = sqlx::query_scalar("SELECT enqueue_v1('{\"url\": \"http://localhost/x\"}')")
-        .fetch_one(&state.pool)
-        .await?;
+    let id: i64 = sqlx::query_scalar(
+        "SELECT enqueue_v1('{\"sink\": \"http\", \"url\": \"http://localhost/x\"}')",
+    )
+    .fetch_one(&state.pool)
+    .await?;
     let jobs = common::fetch(&state, 10).await;
     assert_eq!(jobs.iter().map(|j| j.job.id).collect::<Vec<_>>(), [id]);
     Ok(())
@@ -666,7 +733,7 @@ async fn a_job_enqueued_during_a_claim_is_not_lost(pool: PgPool) -> anyhow::Resu
             let (pool, stop) = (pool.clone(), Arc::clone(&stop));
             tokio::spawn(async move {
                 while !stop.load(Ordering::Relaxed) {
-                    sqlx::query("SELECT enqueue_v1('{\"url\": \"http://localhost/x\"}')")
+                    sqlx::query("SELECT enqueue_v1('{\"sink\": \"http\", \"url\": \"http://localhost/x\"}')")
                         .execute(&pool)
                         .await
                         .expect("enqueue_v1");
@@ -703,7 +770,7 @@ async fn jobs_without_a_queue_come_first_and_the_queues_get_the_rest(
     let queued = enqueue_in_queue(&pool, "q").await;
     let plain = common::insert_enqueued(&pool, 2).await;
     let urgent: i64 = sqlx::query_scalar(
-        "SELECT enqueue_v1('{\"url\": \"http://localhost/x\", \"priority\": 5}')",
+        "SELECT enqueue_v1('{\"sink\": \"http\", \"url\": \"http://localhost/x\", \"priority\": 5}')",
     )
     .fetch_one(&pool)
     .await?;
@@ -735,7 +802,7 @@ async fn a_held_head_of_an_ordered_queue_does_not_cost_the_backlog(
         .execute(&pool)
         .await?;
     sqlx::query(
-        "WITH a AS (INSERT INTO jobs(meta) SELECT jsonb_build_object('retry', 'none', 'timeout', 10000, 'sink', 'none') FROM generate_series(1, 100000) RETURNING id)
+        "WITH a AS (INSERT INTO jobs(meta) SELECT jsonb_build_object('retry', 'none', 'timeout', 10000, 'sink', 'noop') FROM generate_series(1, 100000) RETURNING id)
          INSERT INTO enqueued(id, queue) SELECT id, 'q' FROM a",
     )
     .execute(&pool)
@@ -797,5 +864,76 @@ async fn an_ordered_queue_gives_the_rows_before_a_held_one(pool: PgPool) -> anyh
         .map(|j| j.job.id)
         .collect();
     assert_eq!(got, [jobs[3]]);
+    Ok(())
+}
+
+#[sqlx::test(migrations = "./sql/migrations")]
+async fn enqueue_v1_needs_a_sink_and_at_excludes_delay(pool: PgPool) -> anyhow::Result<()> {
+    let enqueue = |job: serde_json::Value| {
+        sqlx::query_scalar::<_, i64>("SELECT enqueue_v1($1::jsonb)")
+            .bind(job.to_string())
+            .fetch_one(&pool)
+    };
+    for job in [
+        serde_json::json!({"url": "http://localhost/x"}),
+        serde_json::json!({"sink": "smtp"}),
+        serde_json::json!({"sink": "http"}),
+    ] {
+        assert!(enqueue(job).await.is_err());
+    }
+    // noop needs no url; no timeout is stored
+    let id = enqueue(serde_json::json!({"sink": "noop"})).await?;
+    let meta: serde_json::Value = sqlx::query_scalar("SELECT meta FROM jobs WHERE id = $1")
+        .bind(id)
+        .fetch_one(&pool)
+        .await?;
+    assert_eq!(meta["sink"], "noop");
+    assert!(meta.get("timeout").is_none(), "{meta}");
+    // `at` and `delay` are exclusive
+    assert!(
+        enqueue(serde_json::json!({"sink": "noop", "delay": 5, "at": 1}))
+            .await
+            .is_err()
+    );
+    // `at` far ahead: the job waits
+    let id = enqueue(serde_json::json!({"sink": "noop", "at": 4_102_444_800_i64})).await?;
+    let waiting: bool =
+        sqlx::query_scalar("SELECT at > now() + interval '1 day' FROM scheduled WHERE id = $1")
+            .bind(id)
+            .fetch_one(&pool)
+            .await?;
+    assert!(waiting);
+    Ok(())
+}
+
+#[sqlx::test(migrations = "./sql/migrations")]
+async fn enqueue_v1_body_is_a_string_or_json(pool: PgPool) -> anyhow::Result<()> {
+    let stored = |body: serde_json::Value| {
+        let pool = pool.clone();
+        async move {
+            let job =
+                serde_json::json!({"sink": "http", "url": "http://localhost/x", "body": body});
+            let id: i64 = sqlx::query_scalar("SELECT enqueue_v1($1::jsonb)")
+                .bind(job.to_string())
+                .fetch_one(&pool)
+                .await?;
+            sqlx::query_as::<_, (Option<Vec<u8>>, Option<serde_json::Value>)>(
+                "SELECT body, headers FROM jobs WHERE id = $1",
+            )
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+        }
+    };
+    let (body, headers) = stored(serde_json::json!("key=value&to=me")).await?;
+    assert_eq!(body.as_deref(), Some(&b"key=value&to=me"[..]));
+    assert!(headers.is_none(), "{headers:?}");
+    let (body, headers) = stored(serde_json::json!({"key": "value", "to": "me"})).await?;
+    let json: serde_json::Value = serde_json::from_slice(&body.expect("body"))?;
+    assert_eq!(json, serde_json::json!({"key": "value", "to": "me"}));
+    assert_eq!(
+        headers,
+        Some(serde_json::json!({"content-type": "application/json"}))
+    );
     Ok(())
 }

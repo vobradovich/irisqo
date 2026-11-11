@@ -93,16 +93,23 @@ Automatically retry requests that fail by adding the `_retry` query parameter.
 GET {{host}}/to/https://postman-echo.com/get?_retry=3
 ```
 
-Retry Backoff
+Retry Backoff: `N|fixed|S` waits `S` seconds before every retry (`N` alone retries at once),
+`N|fibonacci|S` waits `S` × 1, 1, 2, 3, 5, … and `N|exponential|S` waits `S` × 1, 2, 4, 8, …;
+an optional fourth part caps the backoff delay (`N|exponential|S|M`, seconds)
 ```
 GET {{host}}/to/https://postman-echo.com/get?_retry=3|fixed|5
 
 GET {{host}}/to/https://postman-echo.com/get?_retry=3|fibonacci|5
+
+GET {{host}}/to/https://postman-echo.com/get?_retry=8|exponential|2|300
 ```
+
+In JSON (`meta` of `POST /api/v1/jobs`, `enqueue_v1`): `retry` (`fixed`, `fibonacci`, `exponential`),
+`retry_count`, `retry_delay`, `retry_max_delay`.
 
 Retried: network errors, timeouts, `408`, `425`, `429` and `5xx`. Any other `4xx` fails the job at once.
 Delays get ±20 % jitter, never come sooner than the response `Retry-After` (seconds or HTTP-date),
-and are capped at 24 hours.
+and are capped at 24 hours unless the policy sets them (`retry_delay` of `fixed`, `retry_max_delay`).
 
 ### Timeout
 `_timeout` sets the request timeout in milliseconds (default `--timeout`, 3000), capped by `--max-timeout` (default 300000).
@@ -115,6 +122,7 @@ GET {{host}}/to/https://postman-echo.com/get?_delay=5
 
 ### Jobs and schedules
 ```
+POST   {{host}}/api/v1/jobs                       a job as JSON: {meta, headers, body, key} (200, the job's id)
 GET    {{host}}/api/v1/jobs/{id}                  the job
 GET    {{host}}/api/v1/jobs/{id}/result           its result
 GET    {{host}}/api/v1/jobs/{id}/history          its history
@@ -123,6 +131,7 @@ POST   {{host}}/api/v1/jobs/{id}/retry            a processed job runs once more
 DELETE {{host}}/api/v1/jobs/{id}
 POST   {{host}}/api/v1/schedules/{id}/pause       no more runs, the pending one is cancelled
 POST   {{host}}/api/v1/schedules/{id}/resume      the next run is scheduled
+PUT    {{host}}/api/v1/schedules/{id}             declare a schedule (a new one, or replace its rule and job): {meta, headers, body, cron | interval, tz, until}
 DELETE {{host}}/api/v1/schedules/{id}
 ```
 
@@ -239,6 +248,10 @@ IRISQO_DB_URL=postgres://user:pass@localhost/irisqo cargo run --release -- --hel
 
 Each option can also be set by an `IRISQO_` variable, in the environment or a `.env` file:
 `--max-timeout` is `IRISQO_MAX_TIMEOUT`, `--env` is `IRISQO_ENV`. The command line wins.
+
+`--max-body-size` (`IRISQO_MAX_BODY_SIZE`) limits the full HTTP request body when submitting a job.
+The default is 65536 bytes (64 KiB). For JSON jobs this includes the metadata, target headers and payload.
+The worker reads up to 10 MiB of the target's response body.
 
 The database URL is required: set `IRISQO_DB_URL` (better than `--db-url`: a flag shows the password in `ps`).
 
