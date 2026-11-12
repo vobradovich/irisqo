@@ -1,0 +1,24 @@
+{% extends "ui/layout.html" %}
+{% block title %}Queues{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>Queues</h1>
+  {% if list.live %}
+  <span class="live"><span class="dot" aria-hidden="true"></span><span>Live · refreshes every 2 s</span><a href="{{ list.pause_href }}" class="live-toggle" title="Pause updates" aria-label="Pause updates"><svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor" aria-hidden="true"><rect x="3" y="2" width="3.5" height="12" rx="1"/><rect x="9.5" y="2" width="3.5" height="12" rx="1"/></svg></a></span>
+  {% else %}
+  <span class="live paused"><span>Updates paused</span><a href="{{ list.resume_href }}" class="live-toggle" title="Resume updates" aria-label="Resume updates"><svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor" aria-hidden="true"><path d="M4 2.5v11a.5.5 0 0 0 .77.42l8.5-5.5a.5.5 0 0 0 0-.84l-8.5-5.5A.5.5 0 0 0 4 2.5z"/></svg></a></span>
+  {% endif %}
+  <a href="/ui/queues/new" role="button" class="compact">New queue</a>
+</div>
+<div class="filters">
+  <nav class="segmented" aria-label="Show">
+    <ul>
+      {% for f in list.filters %}
+      <li><a href="{{ f.href }}"{% if f.current %} aria-current="page"{% endif %}>{{ f.label }}</a></li>
+      {% endfor %}
+    </ul>
+  </nav>
+</div>
+<p class="muted">A job names its queue; a declared queue sets how many jobs run at once and how fast they start. A name nobody declared runs one job at a time, in order. A paused queue holds its jobs, none is lost.</p>
+{% include "ui/partials/queues_table.html" %}
+{% endblock %}

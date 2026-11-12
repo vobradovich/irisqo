@@ -4,11 +4,9 @@
 <div class="page-head">
   <h1>Jobs</h1>
   {% if list.live %}
-  <span class="live"><span class="dot" aria-hidden="true"></span><span>Live · refreshes every 2 s</span></span>
-  <a href="{{ list.pause_href }}" role="button" class="secondary">Pause updates</a>
+  <span class="live"><span class="dot" aria-hidden="true"></span><span>Live · refreshes every 2 s</span><a href="{{ list.pause_href }}" class="live-toggle" title="Pause updates" aria-label="Pause updates"><svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor" aria-hidden="true"><rect x="3" y="2" width="3.5" height="12" rx="1"/><rect x="9.5" y="2" width="3.5" height="12" rx="1"/></svg></a></span>
   {% else %}
-  <span class="live paused"><span>Updates paused</span></span>
-  <a href="{{ list.resume_href }}" role="button" class="secondary">Resume updates</a>
+  <span class="live paused"><span>Updates paused</span><a href="{{ list.resume_href }}" class="live-toggle" title="Resume updates" aria-label="Resume updates"><svg viewBox="0 0 16 16" width="12" height="12" fill="currentColor" aria-hidden="true"><path d="M4 2.5v11a.5.5 0 0 0 .77.42l8.5-5.5a.5.5 0 0 0 0-.84l-8.5-5.5A.5.5 0 0 0 4 2.5z"/></svg></a></span>
   {% endif %}
 </div>
 
