@@ -3,7 +3,7 @@
 
 use super::{job_request::JobRequest, jobs};
 use crate::features::{
-    history, instances, queues, results,
+    flows, history, instances, results,
     schedules::{self, ScheduleRequest},
 };
 use crate::models::{JobCreateRow, ParamError, Problem};
@@ -35,13 +35,13 @@ pub(crate) struct ScheduleBody {
         schedules::http::pause,
         schedules::http::resume,
         schedules::http::delete,
-        queues::http::get_all,
-        queues::http::get_undeclared,
-        queues::http::get_by_id,
-        queues::http::upsert,
-        queues::http::pause,
-        queues::http::resume,
-        queues::http::delete,
+        flows::http::get_all,
+        flows::http::get_undeclared,
+        flows::http::get_by_id,
+        flows::http::upsert,
+        flows::http::pause,
+        flows::http::resume,
+        flows::http::delete,
         instances::http::get_all,
         history::get_history_by_id,
         results::http::result_by_id,
@@ -65,7 +65,7 @@ mod tests {
         for path in [
             "/api/v1/jobs",
             "/api/v1/schedules/{id}",
-            "/api/v1/queues/{id}",
+            "/api/v1/flows/{id}",
             "/api/v1/instances",
         ] {
             assert!(doc["paths"].get(path).is_some(), "{path}");
@@ -96,7 +96,7 @@ mod tests {
         for field in [
             "sink",
             "url",
-            "queue",
+            "flow_key",
             "priority",
             "retry",
             "retry_count",

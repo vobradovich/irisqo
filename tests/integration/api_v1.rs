@@ -56,14 +56,13 @@ async fn the_api_describes_itself(pool: PgPool) -> anyhow::Result<()> {
 }
 
 #[sqlx::test(migrations = "./sql/migrations")]
-async fn queue_and_priority_reach_the_tables(pool: PgPool) -> anyhow::Result<()> {
+async fn flow_and_priority_reach_the_tables(pool: PgPool) -> anyhow::Result<()> {
     let state = common::state(pool.clone());
     let addr = common::spawn_app(&state).await;
     let job = |extra: &str| format!(r#"{{"sink":"noop",{extra}"key":"k"}}"#);
-    let sql =
-        "SELECT queue, priority FROM enqueued UNION ALL SELECT queue, priority FROM scheduled";
+    let sql = "SELECT flow_key, priority FROM enqueued UNION ALL SELECT flow_key, priority FROM scheduled";
     let stored = || async {
-        sqlx::query_as::<_, (Option<String>, i16)>(sql)
+        sqlx::query_as::<_, (Option<String>, i32)>(sql)
             .fetch_all(&pool)
             .await
     };
@@ -74,19 +73,19 @@ async fn queue_and_priority_reach_the_tables(pool: PgPool) -> anyhow::Result<()>
     assert_eq!(r.status(), StatusCode::OK);
     assert_eq!(stored().await?, [(None, 5)]);
     clear().await?;
-    let uri = format!("http://{addr}/to/http://{addr}/echo?_queue=order-42");
+    let uri = format!("http://{addr}/to/http://{addr}/echo?_flow_key=order-42");
     let r = common::send(&state, Method::POST, &uri, &[], "").await;
     assert_eq!(r.status(), StatusCode::CREATED);
     assert_eq!(stored().await?, [(Some("order-42".to_owned()), 0)]);
     clear().await?;
 
     // delayed
-    post_job(&state, addr, &job(r#""queue":"q","delay":3600,"#)).await;
+    post_job(&state, addr, &job(r#""flow_key":"q","delay":3600,"#)).await;
     assert_eq!(stored().await?, [(Some("q".to_owned()), 0)]);
     clear().await?;
 
-    // a queue and a priority do not go together; a bad queue name
-    for extra in [r#""queue":"q","priority":1,"#, r#""queue":"Bad Name","#] {
+    // a bad flow name
+    for extra in [r#""flow_key":"Bad Name","#] {
         let r = post_job(&state, addr, &job(extra)).await;
         assert_eq!(r.status(), StatusCode::BAD_REQUEST, "{extra}");
     }

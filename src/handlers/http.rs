@@ -167,7 +167,14 @@ pub fn prepare_job(
 }
 
 /// The job parameters of `/to/`: `_` and the name of the field of [`JobRequest`].
-const JOB_PARAMETERS: [&str; 6] = ["_delay", "_at", "_timeout", "_queue", "_priority", "_key"];
+const JOB_PARAMETERS: [&str; 6] = [
+    "_delay",
+    "_at",
+    "_timeout",
+    "_flow_key",
+    "_priority",
+    "_key",
+];
 
 /// The `/to/` parameter of a job field; the field itself when it has none (`url`, `headers`).
 fn query_parameter(field: &'static str) -> &'static str {
@@ -222,6 +229,7 @@ pub(crate) fn is_key(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::FlowKey;
     use std::collections::HashMap;
 
     fn prepare_query(query: &str) -> Result<JobCreate, Vec<ParamError>> {
@@ -253,17 +261,19 @@ mod tests {
     }
 
     #[test]
-    fn queue_and_priority_are_the_jobs() {
+    fn flow_and_priority_are_the_jobs() {
         let meta = |query| prepare_query(query).expect("valid").meta;
-        let m = meta("_queue=order-42");
-        assert_eq!((m.queue.as_deref(), m.priority), (Some("order-42"), None));
+        let m = meta("_flow_key=order-42");
+        assert_eq!(
+            (m.flow_key.as_ref().map(FlowKey::as_str), m.priority),
+            (Some("order-42"), None)
+        );
         let m = meta("_priority=5");
-        assert_eq!((m.queue, m.priority), (None, Some(5)));
-        assert_eq!(meta("_queue=").queue, None);
+        assert_eq!((m.flow_key, m.priority), (None, Some(5)));
+        assert_eq!(meta("_flow_key=").flow_key, None);
         for (query, parameter) in [
-            ("_queue=Bad+Name", "_queue"),
+            ("_flow_key=Bad+Name", "_flow_key"),
             ("_priority=high", "_priority"),
-            ("_queue=a&_priority=1", "_priority"),
         ] {
             let errors = prepare_query(query).expect_err(query);
             assert_eq!(errors.len(), 1, "{query}");

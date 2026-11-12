@@ -88,12 +88,12 @@ pub struct JobMeta {
     /// Milliseconds; the API stores `--timeout` (default 3000) when the request has none.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub timeout: Option<u32>,
-    /// Flow key of the job (see [`is_queue`]).
+    /// Flow key of the job.
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub queue: Option<String>,
-    /// Higher runs first; only for a job without a queue (0 when absent).
+    pub flow_key: Option<FlowKey>,
+    /// Higher runs first, among the jobs of its flow if it has one (0 when absent).
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub priority: Option<i16>,
+    pub priority: Option<i32>,
     /// W3C trace context of the request that created the job: the parent of every
     /// attempt (the link of every schedule run), copied to every run of a schedule.
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -102,30 +102,37 @@ pub struct JobMeta {
     pub tracestate: Option<String>,
 }
 
-impl JobMeta {
-    /// The `queue` and `priority` columns of `scheduled` and `enqueued`.
-    pub fn queue_priority(&self) -> (Option<&str>, i16) {
-        (self.queue.as_deref(), self.priority.unwrap_or(0))
+/// The key of a flow, as `enqueue_v1` checks it: 1 to 128 characters of `a-z 0-9 . _ : -`, the
+/// first a letter or a digit. Only [`FlowKey::try_from`] (and the deserialization, which uses it)
+/// makes one, so a `FlowKey` is always valid.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, sqlx::Type, utoipa::ToSchema)]
+#[serde(try_from = "String")]
+#[sqlx(transparent)]
+pub struct FlowKey(String);
+
+impl FlowKey {
+    /// What is wrong with a name that [`FlowKey::try_from`] refuses.
+    pub const RULE: &str =
+        "must be 1 to 128 characters of a-z, 0-9, . _ : - and start with a letter or a digit";
+
+    pub fn as_str(&self) -> &str {
+        &self.0
     }
 }
 
-/// A queue name, as `enqueue_v1` checks it: 1 to 128 characters of `a-z 0-9 . _ : -`, the first
-/// a letter or a digit.
-pub fn is_queue(value: &str) -> bool {
-    let mut chars = value.chars();
-    chars
-        .next()
-        .is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
-        && value.len() <= 128
-        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || ".:_-".contains(c))
+impl TryFrom<String> for FlowKey {
+    type Error = &'static str;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        let mut chars = value.chars();
+        let valid = chars
+            .next()
+            .is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit())
+            && value.len() <= 128
+            && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || ".:_-".contains(c));
+        valid.then_some(FlowKey(value)).ok_or(Self::RULE)
+    }
 }
-
-/// What is wrong with a queue name that [`is_queue`] refuses.
-pub const QUEUE_RULE: &str =
-    "must be 1 to 128 characters of a-z, 0-9, . _ : - and start with a letter or a digit";
-
-/// Why a job with a queue has no priority: the queue orders its jobs.
-pub const PRIORITY_RULE: &str = "applies to a job without a queue only";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, utoipa::ToSchema)]
 #[serde(tag = "sink")]

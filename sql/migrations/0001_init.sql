@@ -3,23 +3,20 @@ CREATE TABLE instances (
     roles       text[] NOT NULL
                 CHECK (cardinality(roles) > 0
                        AND roles <@ ARRAY['http', 'worker', 'scheduler', 'retention', 'relay']),
-    queues      text[] NULL,
-    unqueued    boolean NOT NULL DEFAULT true,
     version     text NOT NULL,
     started_at  timestamptz NOT NULL DEFAULT now(),
     seen_at     timestamptz NOT NULL DEFAULT now(),
     stopped_at  timestamptz NULL
 );
 
-CREATE TABLE queues (
-    queue_id    text PRIMARY KEY,
-    parallelism int NOT NULL DEFAULT 1
-                CHECK (parallelism > 0),
-    ordered     boolean NOT NULL DEFAULT true,
+CREATE TABLE flows (
+    flow_id     text PRIMARY KEY,
+    concurrency int NOT NULL DEFAULT 1
+                CHECK (concurrency > 0),
     rate        int NULL
                 CHECK (rate > 0),
-    rate_period interval NOT NULL DEFAULT '1 second'
-                CHECK (rate_period > interval '0'),
+    rate_period int NOT NULL DEFAULT 1
+                CHECK (rate_period > 0),
     next_at     timestamptz NULL,
     paused      boolean NOT NULL DEFAULT false
 );
@@ -55,9 +52,8 @@ CREATE TABLE scheduled (
     at       timestamptz NOT NULL,
     attempt  int NOT NULL DEFAULT 0
              CHECK (attempt >= 0),
-    queue    text NULL,
-    priority smallint NOT NULL DEFAULT 0,
-    CONSTRAINT ck_scheduled_queue_priority CHECK (queue IS NULL OR priority = 0)
+    flow_key text NULL,
+    priority int NOT NULL DEFAULT 0
 ) WITH (
     autovacuum_vacuum_scale_factor = 0, autovacuum_vacuum_threshold = 1000,
     autovacuum_analyze_scale_factor = 0, autovacuum_analyze_threshold = 1000
@@ -69,30 +65,29 @@ CREATE TABLE enqueued (
     attempt  int NOT NULL DEFAULT 0
              CHECK (attempt >= 0),
     at       timestamptz NOT NULL DEFAULT now(),
-    queue    text NULL,
-    priority smallint NOT NULL DEFAULT 0,
-    CONSTRAINT ck_enqueued_queue_priority CHECK (queue IS NULL OR priority = 0)
+    flow_key text NULL,
+    priority int NOT NULL DEFAULT 0
 ) WITH (
     autovacuum_vacuum_scale_factor = 0, autovacuum_vacuum_threshold = 1000,
     autovacuum_analyze_scale_factor = 0, autovacuum_analyze_threshold = 1000
 );
 CREATE INDEX ix_enqueued_candidates ON enqueued (priority DESC, attempt, id)
-    WHERE queue IS NULL;
-CREATE INDEX ix_enqueued_queue      ON enqueued (queue, id)
-    WHERE queue IS NOT NULL;
+    WHERE flow_key IS NULL;
+CREATE INDEX ix_enqueued_flow       ON enqueued (flow_key, priority DESC, attempt, id)
+    WHERE flow_key IS NOT NULL;
 
 CREATE TABLE claimed (
     id          bigint PRIMARY KEY REFERENCES jobs ON DELETE CASCADE,
     attempt     int NOT NULL,
-    queue       text NULL,
-    priority    smallint NOT NULL DEFAULT 0,
+    flow_key    text NULL,
+    priority    int NOT NULL DEFAULT 0,
     instance_id text NOT NULL,
     at          timestamptz NOT NULL DEFAULT now()
 ) WITH (
     autovacuum_vacuum_scale_factor = 0, autovacuum_vacuum_threshold = 1000,
     autovacuum_analyze_scale_factor = 0, autovacuum_analyze_threshold = 1000
 );
-CREATE INDEX ix_claimed_queue       ON claimed (queue) WHERE queue IS NOT NULL;
+CREATE INDEX ix_claimed_flow        ON claimed (flow_key) WHERE flow_key IS NOT NULL;
 CREATE INDEX ix_claimed_instance_id ON claimed (instance_id);
 CREATE INDEX ix_claimed_at          ON claimed (at);
 
@@ -134,9 +129,9 @@ LANGUAGE plpgsql SET search_path FROM CURRENT AS $$
 DECLARE
     v_sink     text := job->>'sink';
     v_retry    text := coalesce(job->>'retry', 'none');
-    v_queue    text := nullif(job->>'queue', '');
+    v_flow     text := nullif(job->>'flow_key', '');
     v_key      text := nullif(job->>'key', '');
-    v_priority smallint;
+    v_priority int;
     v_timeout  int;
     v_body     bytea;
     v_headers  jsonb := nullif(job->'headers', 'null'::jsonb);
@@ -165,14 +160,12 @@ BEGIN
             THEN 'body and body_base64 are exclusive'
         WHEN v_key !~ '^[^[:cntrl:]]{1,255}$'
             THEN 'key must be 1 to 255 characters without control characters'
-        WHEN v_queue !~ '^[a-z0-9][a-z0-9._:-]{0,127}$'
-            THEN 'queue must be 1 to 128 characters of a-z, 0-9, . _ : - and start with a letter or a digit'
-        WHEN job->>'priority' !~ '^-?[0-9]{1,5}$'
+        WHEN v_flow !~ '^[a-z0-9][a-z0-9._:-]{0,127}$'
+            THEN 'flow_key must be 1 to 128 characters of a-z, 0-9, . _ : - and start with a letter or a digit'
+        WHEN job->>'priority' !~ '^-?[0-9]{1,10}$'
             THEN 'priority must be an integer'
-        WHEN (job->>'priority')::int NOT BETWEEN -32768 AND 32767
-            THEN 'priority must be from -32768 to 32767'
-        WHEN v_queue IS NOT NULL AND (job->>'priority')::int <> 0
-            THEN 'priority applies to a job without a queue only'
+        WHEN (job->>'priority')::bigint NOT BETWEEN -2147483648 AND 2147483647
+            THEN 'priority must be from -2147483648 to 2147483647'
         WHEN job->>'timeout' !~ '^[1-9][0-9]{0,8}$'
             THEN 'timeout must be a positive number of milliseconds'
         WHEN v_retry NOT IN ('none', 'fixed', 'fibonacci', 'exponential')
@@ -194,7 +187,7 @@ BEGIN
         RAISE EXCEPTION 'invalid job: %', v_error USING ERRCODE = 'invalid_parameter_value';
     END IF;
 
-    v_priority := coalesce((job->>'priority')::smallint, 0);
+    v_priority := coalesce((job->>'priority')::int, 0);
     v_timeout  := (job->>'timeout')::int;
     v_body     := nullif(CASE
                       WHEN jsonb_typeof(job->'body') = 'string' THEN convert_to(job->>'body', 'UTF8')
@@ -218,12 +211,11 @@ BEGIN
         'retry_delay', CASE WHEN v_retry <> 'none' THEN coalesce((job->>'retry_delay')::int, 0) END,
         'retry_max_delay', CASE WHEN v_retry IN ('fibonacci', 'exponential') THEN (job->>'retry_max_delay')::int END,
         'timeout', v_timeout,
-        'queue', v_queue,
+        'flow_key', v_flow,
         'priority', nullif(v_priority, 0),
         'traceparent', job->>'traceparent',
         'tracestate', job->>'tracestate'));
 
-    -- a JSON body that is not a string is sent as JSON text
     IF jsonb_typeof(job->'body') NOT IN ('string', 'null')
        AND NOT EXISTS (SELECT 1 FROM jsonb_object_keys(coalesce(v_headers, '{}')) k
                        WHERE lower(k) = 'content-type') THEN
@@ -239,10 +231,10 @@ BEGIN
     END IF;
 
     IF v_at IS NULL THEN
-        INSERT INTO enqueued (id, queue, priority) VALUES (new_id, v_queue, v_priority);
+        INSERT INTO enqueued (id, flow_key, priority) VALUES (new_id, v_flow, v_priority);
         INSERT INTO history (id, attempt, kind) VALUES (new_id, 0, 'enqueued');
     ELSE
-        INSERT INTO scheduled (id, at, queue, priority) VALUES (new_id, v_at, v_queue, v_priority);
+        INSERT INTO scheduled (id, at, flow_key, priority) VALUES (new_id, v_at, v_flow, v_priority);
         INSERT INTO history (id, attempt, kind) VALUES (new_id, 0, 'scheduled');
     END IF;
     RETURN new_id;
@@ -261,9 +253,9 @@ BEGIN
                      ORDER BY s.at, s.id
                      LIMIT p_limit
                      FOR UPDATE SKIP LOCKED)
-        RETURNING id, attempt, at, queue, priority
+        RETURNING id, attempt, at, flow_key, priority
     ), b AS (
-        INSERT INTO enqueued (id, attempt, at, queue, priority)
+        INSERT INTO enqueued (id, attempt, at, flow_key, priority)
         SELECT * FROM d
         RETURNING id, attempt
     ), hist AS (
@@ -287,7 +279,7 @@ BEGIN
 
     INSERT INTO stats (name, value, at)
     SELECT v.name, v.value, clock_timestamp()
-    FROM (SELECT count(*) AS n, min(at) FILTER (WHERE at <= clock_timestamp()) AS due
+    FROM (SELECT count(*) AS n, min(at) AS due
           FROM enqueued) AS e,
          (SELECT count(*) AS n, count(*) FILTER (WHERE status = 'failed') AS failed
           FROM processed
@@ -324,19 +316,17 @@ LANGUAGE sql SET search_path FROM CURRENT AS $$
         DELETE FROM enqueued
         WHERE id IN (SELECT e.id
                      FROM enqueued AS e
-                     WHERE e.queue IS NULL AND e.at <= now()
+                     WHERE e.flow_key IS NULL
                      ORDER BY e.priority DESC, e.attempt, e.id
                      LIMIT p_limit
                      FOR UPDATE SKIP LOCKED)
-        RETURNING id, attempt, queue, priority
+        RETURNING id, attempt, priority
     ), hist AS (
         INSERT INTO history (id, attempt, kind, instance_id)
-        SELECT b.id, b.attempt, 'claimed', p_instance_id
-        FROM b
+        SELECT b.id, b.attempt, 'claimed', p_instance_id FROM b
     ), c AS (
-        INSERT INTO claimed (id, attempt, queue, priority, instance_id)
-        SELECT b.id, b.attempt, b.queue, b.priority, p_instance_id
-        FROM b
+        INSERT INTO claimed (id, attempt, priority, instance_id)
+        SELECT b.id, b.attempt, b.priority, p_instance_id FROM b
         RETURNING claimed.id, claimed.attempt, claimed.priority
     )
     SELECT j.id, j.meta, j.headers, j.body, j.schedule_id, j.key, c.attempt
@@ -345,11 +335,7 @@ LANGUAGE sql SET search_path FROM CURRENT AS $$
     ORDER BY c.priority DESC, c.attempt, c.id
 $$;
 
-CREATE FUNCTION claim_queued_v1(
-    p_instance_id text,
-    p_limit       int,
-    p_queues      text[] DEFAULT NULL
-)
+CREATE FUNCTION claim_flow_v1(p_instance_id text, p_limit int)
 RETURNS TABLE (
     id          bigint,
     meta        jsonb,
@@ -362,115 +348,68 @@ RETURNS TABLE (
 LANGUAGE plpgsql SET search_path FROM CURRENT SET jit = off AS $$
 #variable_conflict use_column
 DECLARE
-    v_queues text[] := '{}';
+    v_flows text[];
 BEGIN
-    WITH RECURSIVE qs(queue) AS (
-        (SELECT e.queue
-         FROM enqueued e
-         WHERE p_queues IS NULL AND e.queue IS NOT NULL
-         ORDER BY e.queue
-         LIMIT 1)
+    WITH RECURSIVE names(flow_key) AS (
+        (SELECT e.flow_key FROM enqueued e WHERE e.flow_key IS NOT NULL ORDER BY e.flow_key LIMIT 1)
         UNION ALL
-        SELECT (SELECT e.queue
-                FROM enqueued e
-                WHERE e.queue > qs.queue
-                ORDER BY e.queue
-                LIMIT 1)
-        FROM qs
-        WHERE qs.queue IS NOT NULL
-    ), src AS (
-        SELECT qs.queue FROM qs WHERE qs.queue IS NOT NULL
-        UNION ALL
-        SELECT u FROM unnest(p_queues) AS u
+        SELECT (SELECT e.flow_key FROM enqueued e WHERE e.flow_key > names.flow_key ORDER BY e.flow_key LIMIT 1)
+        FROM names
+        WHERE names.flow_key IS NOT NULL
     ), ready AS MATERIALIZED (
-        SELECT src.queue
-        FROM src
-        LEFT JOIN queues q ON q.queue_id = src.queue
-        WHERE NOT coalesce(q.paused, false)
-          AND (q.next_at IS NULL OR q.next_at <= now())
-          AND CASE WHEN coalesce(q.ordered, true)
-                   THEN coalesce((SELECT e.at <= now()
-                                  FROM enqueued e
-                                  WHERE e.queue = src.queue
-                                  ORDER BY e.id
-                                  LIMIT 1), false)
-                   ELSE EXISTS (SELECT 1
-                                FROM enqueued e
-                                WHERE e.queue = src.queue AND e.at <= now())
-              END
-          AND (SELECT count(*)
-               FROM claimed c
-               WHERE c.queue = src.queue) < coalesce(q.parallelism, 1)
+        SELECT names.flow_key
+        FROM names
+        LEFT JOIN flows f ON f.flow_id = names.flow_key
+        WHERE names.flow_key IS NOT NULL
+          AND NOT coalesce(f.paused, false)
+          AND coalesce(f.next_at, now()) <= now()
+          AND (SELECT count(*) FROM claimed c WHERE c.flow_key = names.flow_key) < coalesce(f.concurrency, 1)
     )
-    SELECT coalesce(array_agg(l.queue), '{}')
-    INTO v_queues
-    FROM (SELECT ready.queue
+    SELECT coalesce(array_agg(l.flow_key), '{}')
+    INTO v_flows
+    FROM (SELECT ready.flow_key
           FROM ready
-          WHERE pg_try_advisory_xact_lock(hashtextextended(current_schema() || ':' || ready.queue, 0))
+          WHERE pg_try_advisory_xact_lock(hashtextextended(current_schema() || ':' || ready.flow_key, 0))
           LIMIT p_limit) l;
 
     RETURN QUERY
-    WITH slots AS (
-        SELECT u.name,
-               coalesce(q.ordered, true) AS ordered,
-               least(greatest(coalesce(q.parallelism, 1)
-                              - (SELECT count(*) FROM claimed c WHERE c.queue = u.name), 0),
-                     coalesce(q.rate, 2147483647)) AS n
-        FROM unnest(v_queues) AS u(name)
-        LEFT JOIN queues q ON q.queue_id = u.name
-        WHERE NOT coalesce(q.paused, false)
-          AND (q.next_at IS NULL OR q.next_at <= now())
-    ), a AS (
-        SELECT s.id
-        FROM slots
+    WITH a AS (
+        SELECT x.id
+        FROM unnest(v_flows) AS u(name)
+        LEFT JOIN flows f ON f.flow_id = u.name
         CROSS JOIN LATERAL (
-            (SELECT w.id
-             FROM (SELECT f.id, bool_or(f.at > now()) OVER (ORDER BY f.id) AS held
-                   FROM (SELECT e.id, e.at
-                         FROM enqueued e
-                         WHERE e.queue = slots.name
-                         ORDER BY e.id
-                         LIMIT slots.n) f) w
-             WHERE slots.ordered AND NOT w.held)
-            UNION ALL
-            (SELECT e.id
-             FROM enqueued e
-             WHERE NOT slots.ordered AND e.queue = slots.name AND e.at <= now()
-             ORDER BY e.id
-             LIMIT slots.n)
-        ) s
+            SELECT e.id
+            FROM enqueued e
+            WHERE e.flow_key = u.name
+            ORDER BY e.priority DESC, e.attempt, e.id
+            LIMIT least(greatest(coalesce(f.concurrency, 1)
+                                 - (SELECT count(*) FROM claimed cl WHERE cl.flow_key = u.name), 0),
+                        coalesce(f.rate, 2147483647))
+        ) x
+        ORDER BY x.id
+        LIMIT p_limit
     ), b AS (
-        DELETE FROM enqueued
-        WHERE id IN (SELECT a.id FROM a ORDER BY a.id LIMIT p_limit)
-        RETURNING id, attempt, queue
+        DELETE FROM enqueued WHERE id IN (SELECT a.id FROM a) RETURNING id, attempt, flow_key, priority
     ), hist AS (
         INSERT INTO history (id, attempt, kind, instance_id)
-        SELECT b.id, b.attempt, 'claimed', p_instance_id
-        FROM b
+        SELECT b.id, b.attempt, 'claimed', p_instance_id FROM b
     ), rated AS (
-        UPDATE queues q
-        SET next_at = now() + q.rate_period * x.n / q.rate
-        FROM (SELECT b.queue, count(*) AS n
-              FROM b
-              GROUP BY b.queue) x
-        WHERE q.queue_id = x.queue AND q.rate IS NOT NULL
+        UPDATE flows f
+        SET next_at = now() + make_interval(secs => f.rate_period::float8 * y.n / f.rate)
+        FROM (SELECT b.flow_key, count(*) AS n FROM b GROUP BY b.flow_key) y
+        WHERE f.flow_id = y.flow_key AND f.rate IS NOT NULL
     ), c AS (
-        INSERT INTO claimed (id, attempt, queue, instance_id)
-        SELECT b.id, b.attempt, b.queue, p_instance_id
-        FROM b
-        RETURNING claimed.id, claimed.attempt
+        INSERT INTO claimed (id, attempt, flow_key, priority, instance_id)
+        SELECT b.id, b.attempt, b.flow_key, b.priority, p_instance_id FROM b
+        RETURNING claimed.id, claimed.attempt, claimed.priority
     )
     SELECT j.id, j.meta, j.headers, j.body, j.schedule_id, j.key, c.attempt
     FROM c
     INNER JOIN jobs AS j ON j.id = c.id
-    ORDER BY c.id;
+    ORDER BY c.priority DESC, c.attempt, c.id;
 END $$;
 
-CREATE FUNCTION claim_v1(
-    p_instance_id text,
-    p_limit       int,
-    p_queues      text[] DEFAULT NULL
-)
+CREATE FUNCTION claim_v1(p_instance_id text, p_limit int)
 RETURNS TABLE (
     id          bigint,
     meta        jsonb,
@@ -487,6 +426,6 @@ BEGIN
     RETURN QUERY SELECT * FROM claim_plain_v1(p_instance_id, p_limit);
     GET DIAGNOSTICS v_plain = ROW_COUNT;
     IF v_plain < p_limit THEN
-        RETURN QUERY SELECT * FROM claim_queued_v1(p_instance_id, p_limit - v_plain::int, p_queues);
+        RETURN QUERY SELECT * FROM claim_flow_v1(p_instance_id, p_limit - v_plain::int);
     END IF;
 END $$;

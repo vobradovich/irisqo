@@ -4,11 +4,11 @@
 
 mod assets;
 mod csrf;
+mod flows;
 pub mod form;
 mod instances;
 mod jobs;
 mod login;
-mod queues;
 mod schedules;
 pub mod views;
 
@@ -93,17 +93,14 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route("/ui/jobs/{id}/cancel", post(jobs::job_cancel))
         .route("/ui/jobs/{id}/delete", post(jobs::job_delete))
         .route("/ui/schedules", get(schedules::schedules_page))
-        .route(
-            "/ui/queues",
-            get(queues::queues_page).post(queues::queue_create),
-        )
-        .route("/ui/queues/table", get(queues::queues_table))
-        .route("/ui/queues/new", get(queues::queue_new))
-        .route("/ui/queues/{id}", post(queues::queue_update))
-        .route("/ui/queues/{id}/edit", get(queues::queue_edit))
-        .route("/ui/queues/{id}/pause", post(queues::queue_pause))
-        .route("/ui/queues/{id}/resume", post(queues::queue_resume))
-        .route("/ui/queues/{id}/delete", post(queues::queue_delete))
+        .route("/ui/flows", get(flows::flows_page).post(flows::flow_create))
+        .route("/ui/flows/table", get(flows::flows_table))
+        .route("/ui/flows/new", get(flows::flow_new))
+        .route("/ui/flows/{id}", post(flows::flow_update))
+        .route("/ui/flows/{id}/edit", get(flows::flow_edit))
+        .route("/ui/flows/{id}/pause", post(flows::flow_pause))
+        .route("/ui/flows/{id}/resume", post(flows::flow_resume))
+        .route("/ui/flows/{id}/delete", post(flows::flow_delete))
         .route("/ui/instances", get(instances::instances_page))
         .route("/ui/instances/table", get(instances::instances_table))
         .route("/ui/schedules/{id}/pause", post(schedules::schedule_pause))

@@ -15,9 +15,9 @@ pub async fn kill_expired(
         SELECT instance_id FROM instances WHERE stopped_at IS NULL AND seen_at < now() - $1 ORDER BY instance_id FOR UPDATE SKIP LOCKED
     ), c AS (
         DELETE FROM claimed USING a WHERE claimed.instance_id = a.instance_id
-        RETURNING claimed.id, claimed.attempt, claimed.queue, claimed.priority, a.instance_id AS locked_by
+        RETURNING claimed.id, claimed.attempt, claimed.flow_key, claimed.priority, a.instance_id AS locked_by
     ), b AS (
-        INSERT INTO enqueued(id, attempt, queue, priority) SELECT id, attempt + 1, queue, priority FROM c
+        INSERT INTO enqueued(id, attempt, flow_key, priority) SELECT id, attempt + 1, flow_key, priority FROM c
     ), hist AS (
         INSERT INTO history(id, attempt, kind, instance_id, message)
         SELECT id, attempt + 1, 'retried', $2, 'instance expired: ' || locked_by FROM c
@@ -35,9 +35,9 @@ pub async fn kill_expired(
 pub async fn kill(pool: &Pool<Postgres>, instance_id: &str) -> Result<u64, Error> {
     const SQL: &str = "
     WITH a AS (
-        DELETE FROM claimed WHERE instance_id = $1 RETURNING id, attempt, queue, priority
+        DELETE FROM claimed WHERE instance_id = $1 RETURNING id, attempt, flow_key, priority
     ), b AS (
-        INSERT INTO enqueued(id, attempt, queue, priority) SELECT id, attempt, queue, priority FROM a
+        INSERT INTO enqueued(id, attempt, flow_key, priority) SELECT id, attempt, flow_key, priority FROM a
     ), hist AS (
         INSERT INTO history(id, attempt, kind, instance_id, message)
         SELECT id, attempt, 'released', $1, 'released on shutdown' FROM a

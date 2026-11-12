@@ -2,6 +2,7 @@ pub use apitokens::ApiTokens;
 pub use environment::Environment;
 pub use error::{Error, INVALID_PARAMS_TYPE, ParamError};
 
+pub use job::FlowKey;
 pub use job::HttpMeta;
 pub use job::JobCreate;
 pub use job::JobCreateRow;
@@ -10,7 +11,6 @@ pub use job::JobMeta;
 pub use job::JobRow;
 pub use job::JobSink;
 pub use job::JobWithAttempt;
-pub use job::{PRIORITY_RULE, QUEUE_RULE, is_queue};
 pub use jobretry::JobRetry;
 pub use problem::Problem;
 pub use state::{AppState, Options, SchedulerOptions, WorkerOptions, new_instance_id, new_ulid};

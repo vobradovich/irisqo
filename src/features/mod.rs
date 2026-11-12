@@ -1,10 +1,10 @@
 use serde::{Deserialize, Serialize};
 
 pub mod echo;
+pub mod flows;
 pub mod history;
 pub mod instances;
 pub mod live;
-pub mod queues;
 pub mod results;
 pub mod schedules;
 pub mod ui;

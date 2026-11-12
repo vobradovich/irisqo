@@ -1,0 +1,45 @@
+{% extends "ui/layout.html" %}
+{% block title %}{% if form.is_edit() %}Edit flow{% else %}New flow{% endif %}{% endblock %}
+{% block content %}
+<hgroup>
+  <h1>{% if form.is_edit() %}Edit flow{% else %}New flow{% endif %}</h1>
+  <p>The limits apply to the jobs that name this flow. A change takes effect at once; the jobs running now finish.</p>
+</hgroup>
+{% if let Some(editing) = form.editing %}
+<form method="post" action="/ui/flows/{{ editing|urlencode }}" novalidate>
+{% else %}
+<form method="post" action="/ui/flows" novalidate>
+{% endif %}
+  {% if !form.errors.is_empty() %}
+  <div class="alert error" role="alert">The flow was not saved: check the fields below.</div>
+  {% endif %}
+  <fieldset class="card">
+    <label for="flow_key">Name
+      {% if form.is_edit() %}
+      <input id="flow_key" name="flow_key" class="mono" value="{{ form.flow_key }}" disabled>
+      {% else %}
+      <input id="flow_key" name="flow_key" class="mono" required maxlength="128" placeholder="emails" value="{{ form.flow_key }}"{% if form.error("flow_key").is_some() %} aria-invalid="true" aria-describedby="flow_key-error"{% endif %}>
+      {% endif %}
+      {% if let Some(e) = form.error("flow_key") %}<small id="flow_key-error" class="error">Name {{ e }}</small>{% else %}<small class="hint">a-z, 0-9, . _ : - and the first a letter or a digit.</small>{% endif %}
+    </label>
+    <label for="concurrency">Jobs at once
+      <input id="concurrency" name="concurrency" type="number" min="1" max="100000" value="{{ form.concurrency }}"{% if form.error("concurrency").is_some() %} aria-invalid="true" aria-describedby="concurrency-error"{% endif %}>
+      {% if let Some(e) = form.error("concurrency") %}<small id="concurrency-error" class="error">Jobs at once {{ e }}</small>{% endif %}
+    </label>
+    <div class="row">
+      <label for="rate">Start at most
+        <input id="rate" name="rate" type="number" min="1" max="1000000" placeholder="no limit" value="{{ form.rate }}"{% if form.error("rate").is_some() %} aria-invalid="true" aria-describedby="rate-error"{% endif %}>
+        {% if let Some(e) = form.error("rate") %}<small id="rate-error" class="error">Rate {{ e }}</small>{% endif %}
+      </label>
+      <label for="rate_period">jobs per (seconds)
+        <input id="rate_period" name="rate_period" type="number" min="1" max="31536000" value="{{ form.rate_period }}"{% if form.error("rate_period").is_some() %} aria-invalid="true" aria-describedby="rate_period-error"{% endif %}>
+        {% if let Some(e) = form.error("rate_period") %}<small id="rate_period-error" class="error">Period {{ e }}</small>{% endif %}
+      </label>
+    </div>
+  </fieldset>
+  <p class="actions">
+    <button type="submit">{% if form.is_edit() %}Save{% else %}Create{% endif %}</button>
+    <a href="/ui/flows" role="button" class="secondary">Cancel</a>
+  </p>
+</form>
+{% endblock %}
