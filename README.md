@@ -82,12 +82,12 @@ The forwarded headers are stored for the target and never given back: the API
 `Accept-Language`, `User-Agent`, `Cache-Control`); any other value reads `••••`.
 
 Every delivery also carries:
-- `Irisqo-Job-Id` - the job, the same on every retry: delivery is at least once, use it to drop duplicates;
-- `Irisqo-Retry` - the attempt, from 0;
+- `Irisqo-Job-Id` - the job, the same on every attempt: delivery is at least once, use it to drop duplicates;
+- `Irisqo-Attempt` - the attempt, from 0;
 - `Irisqo-Schedule-Id` - the schedule of a schedule run (every run is a new job);
 - `traceparent`/`tracestate` - the trace context (see Telemetry).
 
-### Retry
+### Retries
 Automatically retry requests that fail by adding the `_retry` query parameter.
 ```
 GET {{host}}/to/https://postman-echo.com/get?_retry=3
@@ -275,7 +275,7 @@ OTLP is plain HTTP: a local collector/agent or OpenObserve.
 Jobs continue the trace of the request that created them (W3C `traceparent`/`tracestate`):
 
 - every attempt is a `job.run` span, a child of that request (so retries are siblings),
-  with `job.id`, `job.retry`, `job.schedule_id` and `job.outcome` (`completed`, `failed`, `retry`);
+  with `job.id`, `job.attempt`, `job.schedule_id` and `job.outcome` (`completed`, `failed`, `retry`);
 - the outgoing request is a client span, and the receiver gets its `traceparent`/`tracestate`;
 - every run of a schedule starts its own trace, with a link to the request that created the
   schedule (one trace per schedule would grow forever);
@@ -308,8 +308,8 @@ its `trace_id`/`span_id`. Exported spans do not depend on `RUST_LOG`.
 ### Delivery guarantees
 At least once. Every instance sends a heartbeat; jobs of an instance silent for 30 s are released,
 and so is any job locked for longer than `--max-timeout` + 60 s (a failed result write, a hung worker).
-A late result of such an attempt is rejected: a job is completed only by its current attempt
-(instance + retry number). On `SIGINT`/`SIGTERM` the instance stops taking jobs, finishes the ones in
+A late result of such an attempt is rejected: a job is completed only by its current attempt.
+On `SIGINT`/`SIGTERM` the instance stops taking jobs, finishes the ones in
 flight (up to `--shutdown-timeout`), writes their results and releases the rest: an abandoned
 attempt runs again elsewhere.
 

@@ -4,7 +4,7 @@ use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
 use irisqo::{
     AppState, db,
-    models::{JobWithRetry, Options, new_instance_id},
+    models::{JobWithAttempt, Options, new_instance_id},
     services::jobrunner,
 };
 use sqlx::PgPool;
@@ -97,10 +97,10 @@ pub async fn text(response: hyper::Response<hyper::body::Incoming>) -> String {
 }
 
 /// Assigns up to `limit` enqueued jobs to this instance.
-pub async fn fetch(state: &AppState, limit: i32) -> Vec<JobWithRetry> {
-    db::jobqueue::fetch_job_with_retry(&state.pool, &state.instance_id, limit)
+pub async fn fetch(state: &AppState, limit: i32) -> Vec<JobWithAttempt> {
+    db::jobqueue::fetch_job_with_attempt(&state.pool, &state.instance_id, limit)
         .await
-        .expect("fetch_job_with_retry")
+        .expect("fetch_job_with_attempt")
 }
 
 /// Fetches and runs every enqueued job once; returns how many ran.

@@ -192,7 +192,7 @@ pub struct JobView {
     pub created_at: DateTime<Utc>,
     #[sqlx(try_from = "String")]
     pub status: JobStatus,
-    pub retry: i32,
+    pub attempt: i32,
     /// When a scheduled job is due.
     pub scheduled_at: Option<DateTime<Utc>>,
     /// Since when an enqueued job waits.
@@ -205,13 +205,13 @@ pub struct JobView {
 const VIEW: &str = "
     SELECT j.id, j.meta, j.schedule_id, j.key, j.created_at,
         CASE
-            WHEN s.id IS NOT NULL THEN CASE WHEN s.retry > 0 THEN 'retrying' ELSE 'scheduled' END
+            WHEN s.id IS NOT NULL THEN CASE WHEN s.attempt > 0 THEN 'retrying' ELSE 'scheduled' END
             WHEN e.id IS NOT NULL THEN 'enqueued'
             WHEN c.id IS NOT NULL THEN 'processing'
             WHEN p.id IS NOT NULL THEN p.status
             ELSE 'unknown'
         END AS status,
-        coalesce(s.retry, e.retry, c.retry, p.retry, 0) AS retry,
+        coalesce(s.attempt, e.attempt, c.attempt, p.attempt, 0) AS attempt,
         s.at AS scheduled_at, e.at AS enqueued_at, c.at AS claimed_at,
         c.instance_id::text AS instance_id, p.at AS processed_at
     FROM jobs AS j
@@ -238,8 +238,8 @@ impl StatusFilter {
             StatusFilter::Active => {
                 "SELECT id FROM scheduled UNION ALL SELECT id FROM enqueued UNION ALL SELECT id FROM claimed"
             }
-            StatusFilter::Only(JobStatus::Scheduled) => "SELECT id FROM scheduled WHERE retry = 0",
-            StatusFilter::Only(JobStatus::Retrying) => "SELECT id FROM scheduled WHERE retry > 0",
+            StatusFilter::Only(JobStatus::Scheduled) => "SELECT id FROM scheduled WHERE attempt = 0",
+            StatusFilter::Only(JobStatus::Retrying) => "SELECT id FROM scheduled WHERE attempt > 0",
             StatusFilter::Only(JobStatus::Enqueued) => "SELECT id FROM enqueued",
             StatusFilter::Only(JobStatus::Processing) => "SELECT id FROM claimed",
             StatusFilter::Only(JobStatus::Completed) => {

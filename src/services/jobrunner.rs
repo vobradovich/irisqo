@@ -5,7 +5,7 @@ use crate::{
         results::{self, JobResult, is_retryable_status},
         schedules::JobSchedule,
     },
-    models::{AppState, Error, JobEntry, JobRetry, JobRow, JobSink, JobWithRetry, targets},
+    models::{AppState, Error, JobEntry, JobRetry, JobRow, JobSink, JobWithAttempt, targets},
     otel::{self, HeaderInjector, metrics::metrics},
 };
 use bytes::Bytes;
@@ -37,8 +37,8 @@ pub struct Completion {
 }
 
 /// Runs a job and writes its result right away.
-pub async fn job_run(app_state: &AppState, job_with_retry: JobWithRetry) {
-    if let Some(completion) = job_execute(app_state, job_with_retry).await {
+pub async fn job_run(app_state: &AppState, job_with_attempt: JobWithAttempt) {
+    if let Some(completion) = job_execute(app_state, job_with_attempt).await {
         complete(app_state, vec![completion]).await;
     }
 }
@@ -49,22 +49,22 @@ pub async fn job_run(app_state: &AppState, job_with_retry: JobWithRetry) {
 /// The attempt is a `job.run` span, a child of the request that created the job
 /// (`meta.traceparent`), so retries are siblings. A schedule run instead starts its
 /// own trace with a link to that request: a schedule would grow one trace forever.
-pub async fn job_execute(app_state: &AppState, job_with_retry: JobWithRetry) -> Option<Completion> {
-    let meta = &job_with_retry.job.meta;
+pub async fn job_execute(app_state: &AppState, job_with_attempt: JobWithAttempt) -> Option<Completion> {
+    let meta = &job_with_attempt.job.meta;
     let span = tracing::info_span!(
         target: otel::TRACING_TARGET,
         "job.run",
         otel.name = "job.run",
         otel.kind = ?SpanKind::Consumer,
         otel.status_code = Empty,
-        job.id = job_with_retry.job.id,
-        job.retry = job_with_retry.retry,
-        job.schedule_id = job_with_retry.job.schedule_id.as_deref(),
+        job.id = job_with_attempt.job.id,
+        job.attempt = job_with_attempt.attempt,
+        job.schedule_id = job_with_attempt.job.schedule_id.as_deref(),
         job.outcome = Empty,
     );
     let request =
         otel::context_from_trace_headers(meta.traceparent.as_deref(), meta.tracestate.as_deref());
-    let parent = if job_with_retry.job.schedule_id.is_some() {
+    let parent = if job_with_attempt.job.schedule_id.is_some() {
         let link = request.span().span_context().clone();
         if link.is_valid() {
             span.add_link(link);
@@ -80,7 +80,7 @@ pub async fn job_execute(app_state: &AppState, job_with_retry: JobWithRetry) -> 
     let metrics = metrics();
     metrics.jobs_in_flight.add(1, &[]);
     let start = Instant::now();
-    let mut completion = job_attempt(app_state, job_with_retry)
+    let mut completion = job_attempt(app_state, job_with_attempt)
         .instrument(span.clone())
         .await;
     metrics.jobs_in_flight.add(-1, &[]);
@@ -107,17 +107,17 @@ pub async fn job_execute(app_state: &AppState, job_with_retry: JobWithRetry) -> 
     completion
 }
 
-async fn job_attempt(app_state: &AppState, job_with_retry: JobWithRetry) -> Option<Completion> {
+async fn job_attempt(app_state: &AppState, job_with_attempt: JobWithAttempt) -> Option<Completion> {
     let instance_id = &app_state.instance_id;
-    let JobWithRetry { job, retry } = job_with_retry;
-    let entry = JobEntry { id: job.id, retry };
+    let JobWithAttempt { job, attempt } = job_with_attempt;
+    let entry = JobEntry { id: job.id, attempt };
     let job_id = job.id;
-    debug!({ instance_id, job_id, retry }, "==> run");
+    debug!({ instance_id, job_id, attempt }, "==> run");
     let job_retry = job.meta.retry;
     let schedule_id = job.schedule_id.clone();
     let job_result = match job.meta.sink {
         JobSink::Noop => Ok(JobResult::default()),
-        JobSink::Http(_) => job_run_http(app_state, job, retry).await,
+        JobSink::Http(_) => job_run_http(app_state, job, attempt).await,
     };
     let result = match job_result {
         Ok(result) => result,
@@ -194,7 +194,7 @@ pub async fn complete(app_state: &AppState, completions: Vec<Completion>) {
     }
 }
 
-async fn job_run_http(app_state: &AppState, job: JobRow, retry: i32) -> Result<JobResult, Error> {
+async fn job_run_http(app_state: &AppState, job: JobRow, attempt: i32) -> Result<JobResult, Error> {
     let job_id = job.id;
     // jobs stored before the limit existed may carry a bigger timeout
     let options = &app_state.worker_options;
@@ -205,7 +205,7 @@ async fn job_run_http(app_state: &AppState, job: JobRow, retry: i32) -> Result<J
         .min(options.max_timeout);
     let schedule_id = job.schedule_id.clone();
     let mut req = hyper::Request::<Full<Bytes>>::try_from(job)?;
-    add_delivery_headers(req.headers_mut(), job_id, retry, schedule_id.as_deref());
+    add_delivery_headers(req.headers_mut(), job_id, attempt, schedule_id.as_deref());
     let mut attrs = client_attrs(req.method(), req.uri());
     let span = tracing::info_span!(
         target: otel::TRACING_TARGET,
@@ -302,15 +302,15 @@ async fn job_run_http(app_state: &AppState, job: JobRow, retry: i32) -> Result<J
 }
 
 /// Lets the target recognize a redelivery (delivery is at least once): the same
-/// `irisqo-job-id` with a higher `irisqo-retry`. A schedule run is a new job.
+/// `irisqo-job-id` with a higher `irisqo-attempt`. A schedule run is a new job.
 fn add_delivery_headers(
     headers: &mut hyper::HeaderMap,
     job_id: i64,
-    retry: i32,
+    attempt: i32,
     schedule_id: Option<&str>,
 ) {
     headers.insert("irisqo-job-id", job_id.into());
-    headers.insert("irisqo-retry", retry.into());
+    headers.insert("irisqo-attempt", attempt.into());
     if let Some(value) = schedule_id.and_then(|s| HeaderValue::from_str(s).ok()) {
         headers.insert("irisqo-schedule-id", value);
     }
@@ -490,8 +490,8 @@ async fn retry_or_fail(
     message: &str,
 ) -> Result<(), Error> {
     let instance_id = &app_state.instance_id;
-    let JobEntry { id: job_id, retry } = entry;
-    let attempt: u16 = retry.try_into().unwrap_or(u16::MAX);
+    let JobEntry { id: job_id, attempt } = entry;
+    let attempt: u16 = attempt.try_into().unwrap_or(u16::MAX);
     let job_retry = job_retry.ok_or(Error::RetriesExceeded)?;
     let delay = job_retry
         .jittered_delay(attempt)
@@ -499,11 +499,11 @@ async fn retry_or_fail(
     // never sooner than the Retry-After of the response, up to the longest delay of the policy
     let delay = delay.max(retry_after.unwrap_or(0).min(job_retry.retry_max_delay()));
     let affected = if delay == 0 {
-        debug!({ instance_id, job_id, retry }, "==> unlock");
+        debug!({ instance_id, job_id, attempt }, "==> unlock");
         db::jobqueue::unlock(&app_state.pool, entry, instance_id, message).await?
     } else {
         let at = Utc::now() + chrono::Duration::seconds(i64::from(delay));
-        debug!({ instance_id, job_id, retry, delay }, "==> retry");
+        debug!({ instance_id, job_id, attempt, delay }, "==> retry");
         db::jobqueue::retry(&app_state.pool, entry, at, instance_id, message).await?
     };
     if affected == 0 {

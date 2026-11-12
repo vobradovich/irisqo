@@ -19,7 +19,7 @@ pub async fn get_by_id(pool: &Pool<Postgres>, job_id: i64) -> Result<Option<JobR
     Ok(job)
 }
 
-/// Completes the current attempt (`instance_id` + `retry`) of a job;
+/// Completes the current attempt (`instance_id` + `attempt`) of a job;
 /// returns 0 affected rows when the lock is not ours any more.
 pub async fn processed<'e, E>(
     executor: E,
@@ -34,7 +34,7 @@ where
 }
 
 /// Completes many jobs in one statement; jobs whose current attempt is not
-/// (`instance_id` + `retry`) any more are skipped. Returns the number of completed jobs.
+/// (`instance_id` + `attempt`) any more are skipped. Returns the number of completed jobs.
 pub async fn processed_many<'e, E>(
     executor: E,
     items: &[(JobEntry, &JobResult)],
@@ -46,17 +46,17 @@ where
     const SQL: &str = "
     WITH input AS (
         SELECT * FROM UNNEST($1::bigint[], $2::int[], $3::text[], $4::jsonb[], $5::jsonb[], $6::bytea[], $8::text[])
-            AS t(id, retry, status, meta, headers, body, message)
+            AS t(id, attempt, status, meta, headers, body, message)
     ), a AS (
         DELETE FROM claimed AS c USING input AS i
-        WHERE c.id = i.id AND c.retry = i.retry AND c.instance_id = $7
+        WHERE c.id = i.id AND c.attempt = i.attempt AND c.instance_id = $7
         RETURNING c.id
     ), hist AS (
-        INSERT INTO history(id, retry, kind, instance_id, message)
-        SELECT i.id, i.retry, i.status, $7, i.message FROM input AS i INNER JOIN a ON a.id = i.id
+        INSERT INTO history(id, attempt, kind, instance_id, message)
+        SELECT i.id, i.attempt, i.status, $7, i.message FROM input AS i INNER JOIN a ON a.id = i.id
     )
-    INSERT INTO processed(id, retry, instance_id, status, outcome, headers, body)
-    SELECT i.id, i.retry, $7, i.status, i.meta, i.headers, i.body
+    INSERT INTO processed(id, attempt, instance_id, status, outcome, headers, body)
+    SELECT i.id, i.attempt, $7, i.status, i.meta, i.headers, i.body
     FROM input AS i INNER JOIN a ON a.id = i.id";
     if items.is_empty() {
         return Ok(0);
@@ -70,7 +70,7 @@ where
     let mut messages = Vec::with_capacity(items.len());
     for (entry, result) in items {
         ids.push(entry.id);
-        retries.push(entry.retry);
+        retries.push(entry.attempt);
         statuses.push(result.processed_status());
         metas.push(Json(&result.meta));
         headers.push(Json(&result.headers));

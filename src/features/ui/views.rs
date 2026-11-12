@@ -152,7 +152,7 @@ impl JobRowView {
                 .processed_at
                 .map_or_else(Default::default, |at| (since(at), utc(at))),
         };
-        let attempt = u32::try_from(job.retry).unwrap_or(0) + 1;
+        let attempt = u32::try_from(job.attempt).unwrap_or(0) + 1;
         let max = max_attempts(job.meta.retry);
         // manual retries go past the policy
         let attempt = if attempt > max {

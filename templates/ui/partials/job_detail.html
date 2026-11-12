@@ -80,7 +80,7 @@
       <li>
         <span class="mono muted" title="{{ h.at|utc }}">{{ h.at.format("%H:%M:%S") }}</span>
         <span class="status {{ h.kind }}"><span>{{ h.kind.label() }}</span></span>
-        <span class="mono muted">retry {{ h.retry }}</span>
+        <span class="mono muted">attempt {{ h.attempt }}</span>
         <span class="mono muted" title="{{ h.instance_id }}">{{ h.instance_id|short_instance }}</span>
         <span>{{ h.message|or_empty }}</span>
       </li>

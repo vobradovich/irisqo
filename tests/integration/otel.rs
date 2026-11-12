@@ -145,7 +145,7 @@ async fn retries_are_sibling_spans(pool: PgPool) -> anyhow::Result<()> {
             Some("failed".into())
         ]
     );
-    let retries: Vec<_> = runs.iter().map(|s| attr(s, "job.retry")).collect();
+    let retries: Vec<_> = runs.iter().map(|s| attr(s, "job.attempt")).collect();
     assert_eq!(
         retries,
         [Some(0_i64.into()), Some(1_i64.into()), Some(2_i64.into())]

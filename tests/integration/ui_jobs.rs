@@ -163,11 +163,11 @@ async fn cancel_and_retry_through_the_api(pool: PgPool) -> anyhow::Result<()> {
             .0,
         StatusCode::NO_CONTENT
     );
-    let retry: i32 = sqlx::query_scalar("SELECT retry FROM enqueued WHERE id = $1")
+    let attempt: i32 = sqlx::query_scalar("SELECT attempt FROM enqueued WHERE id = $1")
         .bind(pending)
         .fetch_one(&pool)
         .await?;
-    assert_eq!(retry, 1);
+    assert_eq!(attempt, 1);
     assert_eq!(common::run_enqueued(&state).await, 1);
     assert_eq!(
         common::processed_status(&pool, pending).await.as_deref(),
@@ -384,7 +384,7 @@ async fn instances_page_shows_heartbeats_and_work(pool: PgPool) -> anyhow::Resul
     .execute(&pool)
     .await?;
     let ids = common::insert_enqueued(&pool, 2).await;
-    sqlx::query("WITH a AS (DELETE FROM enqueued WHERE id = ANY($2) RETURNING id, retry) INSERT INTO claimed(id, retry, instance_id) SELECT id, retry, $1 FROM a")
+    sqlx::query("WITH a AS (DELETE FROM enqueued WHERE id = ANY($2) RETURNING id, attempt) INSERT INTO claimed(id, attempt, instance_id) SELECT id, attempt, $1 FROM a")
         .bind(&state.instance_id)
         .bind(&ids)
         .execute(&pool)

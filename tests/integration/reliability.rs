@@ -33,13 +33,13 @@ async fn reaper_releases_stuck_lock_and_rejects_late_result(pool: PgPool) -> any
         db::jobqueue::reap_expired_locks(&pool, lease, &state.instance_id, 100).await?,
         1
     );
-    let (retry, locked): (i32, bool) = sqlx::query_as(
-        "SELECT retry, EXISTS (SELECT 1 FROM claimed WHERE id = $1) FROM enqueued WHERE id = $1",
+    let (attempt, locked): (i32, bool) = sqlx::query_as(
+        "SELECT attempt, EXISTS (SELECT 1 FROM claimed WHERE id = $1) FROM enqueued WHERE id = $1",
     )
     .bind(id)
     .fetch_one(&pool)
     .await?;
-    assert_eq!((retry, locked), (1, false));
+    assert_eq!((attempt, locked), (1, false));
     let (status, message) = common::history(&pool, id).await.pop().expect("history");
     assert_eq!(status, "retried");
     assert!(message.unwrap_or_default().starts_with("lock expired: "));
@@ -69,7 +69,7 @@ async fn expired_instance_is_killed_with_history(pool: PgPool) -> anyhow::Result
     )
     .execute(&pool)
     .await?;
-    sqlx::query("WITH a AS (DELETE FROM enqueued RETURNING id, retry) INSERT INTO claimed(id, retry, instance_id) SELECT id, retry, 'old' FROM a")
+    sqlx::query("WITH a AS (DELETE FROM enqueued RETURNING id, attempt) INSERT INTO claimed(id, attempt, instance_id) SELECT id, attempt, 'old' FROM a")
         .execute(&pool)
         .await?;
 
@@ -77,7 +77,7 @@ async fn expired_instance_is_killed_with_history(pool: PgPool) -> anyhow::Result
         db::instances::kill_expired(&pool, Duration::from_secs(30), &state.instance_id).await?;
     assert_eq!(killed, 1);
     assert_eq!(
-        common::count(&pool, "SELECT count(*) FROM enqueued WHERE retry = 1").await,
+        common::count(&pool, "SELECT count(*) FROM enqueued WHERE attempt = 1").await,
         1
     );
     assert_eq!(
@@ -96,7 +96,7 @@ async fn shutdown_release_is_in_history(pool: PgPool) -> anyhow::Result<()> {
     db::instances::kill(&pool, &state.instance_id).await?;
 
     assert_eq!(
-        common::count(&pool, "SELECT count(*) FROM enqueued WHERE retry = 0").await,
+        common::count(&pool, "SELECT count(*) FROM enqueued WHERE attempt = 0").await,
         1
     );
     let (status, message) = common::history(&pool, id).await.pop().expect("history");
@@ -201,7 +201,7 @@ async fn run_echo(state: &Arc<irisqo::AppState>, query: &str) -> i64 {
 
 async fn scheduled_in(pool: &PgPool, id: i64) -> Option<(i32, i64)> {
     sqlx::query_as(
-        "SELECT retry, (extract(epoch from at) - extract(epoch from now()))::bigint FROM scheduled WHERE id = $1",
+        "SELECT attempt, (extract(epoch from at) - extract(epoch from now()))::bigint FROM scheduled WHERE id = $1",
     )
     .bind(id)
     .fetch_optional(pool)
@@ -226,8 +226,8 @@ async fn server_error_is_retried_with_jitter(pool: PgPool) -> anyhow::Result<()>
     let state = common::state(pool.clone());
     let id = run_echo(&state, "status=503&_retry=3|fixed|100").await;
     assert_eq!(common::processed_status(&pool, id).await, None);
-    let (retry, delay) = scheduled_in(&pool, id).await.expect("scheduled retry");
-    assert_eq!(retry, 1);
+    let (attempt, delay) = scheduled_in(&pool, id).await.expect("scheduled attempt");
+    assert_eq!(attempt, 1);
     assert!((79..=121).contains(&delay), "{delay}");
     Ok(())
 }
@@ -237,8 +237,8 @@ async fn too_many_requests_respects_retry_after(pool: PgPool) -> anyhow::Result<
     let state = common::state(pool.clone());
     // retries at once, but the server asks to wait 2 minutes
     let id = run_echo(&state, "status=429&retry-after=120&_retry=3").await;
-    let (retry, delay) = scheduled_in(&pool, id).await.expect("scheduled retry");
-    assert_eq!(retry, 1);
+    let (attempt, delay) = scheduled_in(&pool, id).await.expect("scheduled attempt");
+    assert_eq!(attempt, 1);
     assert!((119..=121).contains(&delay), "{delay}");
     Ok(())
 }
@@ -250,7 +250,7 @@ async fn results_are_written_in_one_batch(pool: PgPool) -> anyhow::Result<()> {
     let mut jobs = common::fetch(&state, 1000).await;
     assert_eq!(jobs.len(), 300);
     // one attempt is stale: its lock was taken over meanwhile
-    jobs[0].retry += 1;
+    jobs[0].attempt += 1;
 
     let mut completions = Vec::new();
     for job in jobs {
@@ -497,7 +497,7 @@ async fn a_delayed_retry_keeps_its_place_in_an_ordered_queue(pool: PgPool) -> an
     let ids: Vec<i64> = jobs.iter().map(|j| j.job.id).collect();
     assert_eq!(ids, [a], "one at a time");
 
-    let entry = irisqo::models::JobEntry { id: a, retry: 0 };
+    let entry = irisqo::models::JobEntry { id: a, attempt: 0 };
     let at = chrono::Utc::now() + chrono::Duration::seconds(60);
     db::jobqueue::retry(&pool, entry, at, &state.instance_id, "again").await?;
     let next = common::fetch(&state, 10).await;
@@ -514,7 +514,7 @@ async fn a_queue_gives_its_jobs_in_id_order(pool: PgPool) -> anyhow::Result<()> 
     let older = enqueue_in_queue(&pool, "q").await;
     enqueue_in_queue(&pool, "q").await;
     // the older job was retried: still first in its queue
-    sqlx::query("UPDATE enqueued SET retry = 1 WHERE id = $1")
+    sqlx::query("UPDATE enqueued SET attempt = 1 WHERE id = $1")
         .bind(older)
         .execute(&pool)
         .await?;
@@ -661,7 +661,7 @@ async fn a_released_or_requeued_job_keeps_its_priority_and_queue(
     let jobs = common::fetch(&state, 10).await;
     let entry = irisqo::models::JobEntry {
         id: urgent,
-        retry: jobs[0].retry,
+        attempt: jobs[0].attempt,
     };
     assert_eq!(db::jobqueue::unlock(&pool, entry, id, "again").await?, 1);
     let rows = sqlx::query_as::<_, (i64, Option<String>, i16)>(sql)
@@ -670,7 +670,7 @@ async fn a_released_or_requeued_job_keeps_its_priority_and_queue(
     assert_eq!(rows, vec![want[0].clone()]);
 
     // processed, then run once more by a user
-    sqlx::query("WITH a AS (DELETE FROM claimed RETURNING id, retry) INSERT INTO processed(id, retry, instance_id, status) SELECT id, retry, 'x', 'failed' FROM a")
+    sqlx::query("WITH a AS (DELETE FROM claimed RETURNING id, attempt) INSERT INTO processed(id, attempt, instance_id, status) SELECT id, attempt, 'x', 'failed' FROM a")
         .execute(&pool)
         .await?;
     for job in [urgent, queued] {
@@ -800,7 +800,7 @@ async fn jobs_without_a_queue_come_first_and_the_queues_get_the_rest(
 
     // the batch is full of jobs without a queue: by priority, then by id; the queue waits
     let ids =
-        |jobs: Vec<irisqo::models::JobWithRetry>| jobs.iter().map(|j| j.job.id).collect::<Vec<_>>();
+        |jobs: Vec<irisqo::models::JobWithAttempt>| jobs.iter().map(|j| j.job.id).collect::<Vec<_>>();
     assert_eq!(
         ids(common::fetch(&state, 3).await),
         [urgent, plain[0], plain[1]]

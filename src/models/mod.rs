@@ -9,7 +9,7 @@ pub use job::JobEntry;
 pub use job::JobMeta;
 pub use job::JobRow;
 pub use job::JobSink;
-pub use job::JobWithRetry;
+pub use job::JobWithAttempt;
 pub use job::{PRIORITY_RULE, QUEUE_RULE, is_queue};
 pub use jobretry::JobRetry;
 pub use problem::Problem;

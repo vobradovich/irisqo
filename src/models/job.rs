@@ -28,14 +28,14 @@ pub struct JobRow {
 #[derive(Debug, Clone, Copy, sqlx::FromRow)]
 pub struct JobEntry {
     pub id: i64,
-    pub retry: i32,
+    pub attempt: i32,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]
-pub struct JobWithRetry {
+pub struct JobWithAttempt {
     #[sqlx(flatten)]
     pub job: JobRow,
-    pub retry: i32,
+    pub attempt: i32,
 }
 
 #[derive(Debug, Clone, Default)]

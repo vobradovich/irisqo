@@ -102,8 +102,8 @@ dead entries. Their autovacuum is set by a small number of dead rows (`autovacuu
 CREATE TABLE scheduled (
     id       bigint PRIMARY KEY REFERENCES jobs ON DELETE CASCADE,
     at       timestamptz NOT NULL,         -- when to run
-    retry    int NOT NULL DEFAULT 0
-             CHECK (retry >= 0),
+    attempt  int NOT NULL DEFAULT 0
+             CHECK (attempt >= 0),
     queue    text NULL,                    -- meta.queue
     priority smallint NOT NULL DEFAULT 0,  -- meta.priority, higher runs first
     CONSTRAINT ck_scheduled_queue_priority CHECK (queue IS NULL OR priority = 0)
@@ -118,7 +118,7 @@ A job has either a queue or a priority: priority orders only the rows without a 
 `claim_v1` claims a batch in one call (one transaction): first the jobs without a queue (`claim_plain_v1`), then the
 queues get the room that is left (`claim_queued_v1`).
 
-- rows without a queue: `priority DESC`, `retry` (new jobs before retries), `id`;
+- rows without a queue: `priority DESC`, `attempt` (new jobs before retries), `id`;
 - queues, only when the first part did not fill the batch. A queue is locked with `pg_try_advisory_xact_lock`
   (one worker at a time) and gives `parallelism - running` rows in `id` order, at most `rate`, nothing
   before `next_at`. A row of an ordered queue waits for every earlier row of the queue that is held
@@ -129,14 +129,14 @@ A retry with a delay goes back to `scheduled`, except in an ordered queue: there
 ```sql
 CREATE TABLE enqueued (
     id       bigint PRIMARY KEY REFERENCES jobs ON DELETE CASCADE,
-    retry    int NOT NULL DEFAULT 0
-             CHECK (retry >= 0),
+    attempt  int NOT NULL DEFAULT 0
+             CHECK (attempt >= 0),
     at       timestamptz NOT NULL DEFAULT now(),  -- the earliest start
     queue    text NULL,
     priority smallint NOT NULL DEFAULT 0,
     CONSTRAINT ck_enqueued_queue_priority CHECK (queue IS NULL OR priority = 0)
 );
-CREATE INDEX ix_enqueued_candidates ON enqueued (priority DESC, retry, id)
+CREATE INDEX ix_enqueued_candidates ON enqueued (priority DESC, attempt, id)
     WHERE queue IS NULL;
 CREATE INDEX ix_enqueued_queue      ON enqueued (queue, id)
     WHERE queue IS NOT NULL;
@@ -149,7 +149,7 @@ CREATE INDEX ix_enqueued_queue      ON enqueued (queue, id)
 ```sql
 CREATE TABLE claimed (
     id          bigint PRIMARY KEY REFERENCES jobs ON DELETE CASCADE,
-    retry       int NOT NULL,
+    attempt     int NOT NULL,
     queue       text NULL,
     priority    smallint NOT NULL DEFAULT 0,
     instance_id text NOT NULL,
@@ -167,7 +167,7 @@ With the response of the target (`outcome` and `headers`; the body only with `--
 ```sql
 CREATE TABLE processed (
     id          bigint PRIMARY KEY REFERENCES jobs ON DELETE CASCADE,
-    retry       int NOT NULL,
+    attempt     int NOT NULL,
     instance_id text NOT NULL,
     at          timestamptz NOT NULL DEFAULT now(),
     status      text NOT NULL
@@ -188,7 +188,7 @@ Journal of state changes, written in the transaction of the change (an outbox); 
 CREATE TABLE history (
     seq         bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     id          bigint NOT NULL REFERENCES jobs ON DELETE CASCADE,
-    retry       int NOT NULL,
+    attempt     int NOT NULL,
     at          timestamptz NOT NULL DEFAULT now(),
     kind        text NOT NULL
                 CHECK (kind IN ('scheduled', 'enqueued', 'claimed', 'released', 'retried',
@@ -250,7 +250,7 @@ this call counted. After taking the lock the age is checked again: the previous 
 ### claim_v1
 
 `claim_v1(p_instance_id text, p_limit int, p_queues text[] DEFAULT NULL)
-RETURNS TABLE (id, meta, headers, body, schedule_id, key, retry)`: claims up to `p_limit` jobs for a worker,
+RETURNS TABLE (id, meta, headers, body, schedule_id, key, attempt)`: claims up to `p_limit` jobs for a worker,
 `enqueued` -> `claimed`, and returns them with the columns of `jobs` that a worker needs: the jobs without a queue first,
 then the queues with what is left (one call, one transaction). `p_queues`: NULL any queue, `'{}'` none.
 
@@ -264,9 +264,9 @@ ROW_COUNT` counts the first part). `jit` is off: the planner overestimates the q
 
 ### claim_plain_v1
 
-`claim_plain_v1(p_instance_id text, p_limit int) RETURNS TABLE (id, meta, headers, body, schedule_id, key, retry)`:
+`claim_plain_v1(p_instance_id text, p_limit int) RETURNS TABLE (id, meta, headers, body, schedule_id, key, attempt)`:
 the jobs without a queue, a `LANGUAGE sql` function of one statement. Claims up to `p_limit` jobs (`priority DESC`,
-`retry`, `id`; `FOR UPDATE SKIP LOCKED`), `enqueued` -> `claimed`, writes `history`, and returns the jobs in the order
+`attempt`, `id`; `FOR UPDATE SKIP LOCKED`), `enqueued` -> `claimed`, writes `history`, and returns the jobs in the order
 of the claim.
 
 ### claim_queued_v1

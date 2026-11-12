@@ -2,7 +2,7 @@ use std::time::Duration;
 
 use crate::features;
 use crate::features::results::{self, JobResult};
-use crate::models::{Error, JobCreateRow, JobEntry, JobWithRetry};
+use crate::models::{Error, JobCreateRow, JobEntry, JobWithAttempt};
 use crate::models::{JobCreate, JobRow};
 use chrono::{DateTime, Utc};
 use sqlx::{FromRow, Pool, Postgres, Row, types::Json};
@@ -44,7 +44,7 @@ async fn create_enqueue(
     WITH a AS (
         INSERT INTO jobs(meta, headers, body, key) VALUES ($1, $2, $3, $4) RETURNING id
     ), hist AS (
-        INSERT INTO history(id, retry, kind, instance_id) SELECT id, 0, 'enqueued', $5 FROM a
+        INSERT INTO history(id, attempt, kind, instance_id) SELECT id, 0, 'enqueued', $5 FROM a
     )
     INSERT INTO enqueued(id, queue, priority) SELECT id, $6, $7 FROM a RETURNING id";
 
@@ -77,7 +77,7 @@ async fn create_at(
     WITH a AS (
         INSERT INTO jobs(meta, headers, body, key) VALUES ($1, $2, $3, $4) RETURNING id
     ), hist AS (
-        INSERT INTO history(id, retry, kind, instance_id) SELECT id, 0, 'scheduled', $6 FROM a
+        INSERT INTO history(id, attempt, kind, instance_id) SELECT id, 0, 'scheduled', $6 FROM a
     )
     INSERT INTO scheduled(id, at, queue, priority) SELECT id, $5::timestamptz, $7, $8 FROM a RETURNING id
     ";
@@ -140,11 +140,11 @@ pub async fn enqueue_scheduled(
     WITH a AS (
         DELETE FROM scheduled
         WHERE id IN (SELECT id FROM scheduled WHERE at <= now() ORDER BY at, id LIMIT $1 FOR UPDATE SKIP LOCKED)
-        RETURNING id, retry, at, queue, priority
+        RETURNING id, attempt, at, queue, priority
     ), b AS (
-        INSERT INTO enqueued(id, retry, at, queue, priority) SELECT id, retry, at, queue, priority FROM a RETURNING id, retry
+        INSERT INTO enqueued(id, attempt, at, queue, priority) SELECT id, attempt, at, queue, priority FROM a RETURNING id, attempt
     )
-    INSERT INTO history(id, retry, kind, instance_id) SELECT id, retry, 'enqueued', $2 FROM b";
+    INSERT INTO history(id, attempt, kind, instance_id) SELECT id, attempt, 'enqueued', $2 FROM b";
     let res = sqlx::query(SQL)
         .bind(limit)
         .bind(instance_id)
@@ -154,7 +154,7 @@ pub async fn enqueue_scheduled(
 }
 
 /// Puts a job back to the queue for an immediate retry.
-/// Only the current attempt (`instance_id` + `retry`) may do it: returns 0 otherwise.
+/// Only the current attempt (`instance_id` + `attempt`) may do it: returns 0 otherwise.
 pub async fn unlock(
     pool: &Pool<Postgres>,
     entry: JobEntry,
@@ -163,15 +163,15 @@ pub async fn unlock(
 ) -> Result<u64, Error> {
     const SQL: &str = "
     WITH a AS (
-        DELETE FROM claimed WHERE id = $1 AND instance_id = $2 AND retry = $3 RETURNING id, retry, queue, priority
+        DELETE FROM claimed WHERE id = $1 AND instance_id = $2 AND attempt = $3 RETURNING id, attempt, queue, priority
     ), b AS (
-        INSERT INTO enqueued(id, retry, queue, priority) SELECT id, retry + 1, queue, priority FROM a RETURNING id, retry
+        INSERT INTO enqueued(id, attempt, queue, priority) SELECT id, attempt + 1, queue, priority FROM a RETURNING id, attempt
     )
-    INSERT INTO history(id, retry, kind, instance_id, message) SELECT id, retry, 'retried', $2, $4 FROM b";
+    INSERT INTO history(id, attempt, kind, instance_id, message) SELECT id, attempt, 'retried', $2, $4 FROM b";
     let res = sqlx::query(SQL)
         .bind(entry.id)
         .bind(instance_id)
-        .bind(entry.retry)
+        .bind(entry.attempt)
         .bind(message)
         .execute(pool)
         .await?;
@@ -179,7 +179,7 @@ pub async fn unlock(
 }
 
 /// Moves a job to `scheduled` for a retry at `at`.
-/// Only the current attempt (`instance_id` + `retry`) may do it: returns 0 otherwise.
+/// Only the current attempt (`instance_id` + `attempt`) may do it: returns 0 otherwise.
 pub async fn retry(
     pool: &Pool<Postgres>,
     entry: JobEntry,
@@ -189,31 +189,31 @@ pub async fn retry(
 ) -> Result<u64, Error> {
     const SQL: &str = "
     WITH a AS (
-        DELETE FROM claimed WHERE id = $1 AND instance_id = $3 AND retry = $4
-        RETURNING id, retry + 1 AS retry, queue, priority, instance_id
+        DELETE FROM claimed WHERE id = $1 AND instance_id = $3 AND attempt = $4
+        RETURNING id, attempt + 1 AS attempt, queue, priority, instance_id
     ), r AS (
         -- in an ordered queue the retry holds its place: later jobs wait for it in `enqueued`
         SELECT a.*, (a.queue IS NOT NULL AND coalesce(q.ordered, true)) AS held
         FROM a LEFT JOIN queues q ON q.queue_id = a.queue
     ), hist AS (
-        INSERT INTO history(id, retry, kind, instance_id, message)
-        SELECT id, retry, 'retried', instance_id, $5 FROM r
+        INSERT INTO history(id, attempt, kind, instance_id, message)
+        SELECT id, attempt, 'retried', instance_id, $5 FROM r
     ), held AS (
-        INSERT INTO enqueued(id, retry, at, queue, priority) SELECT id, retry, $2::timestamptz, queue, priority FROM r WHERE held
+        INSERT INTO enqueued(id, attempt, at, queue, priority) SELECT id, attempt, $2::timestamptz, queue, priority FROM r WHERE held
     )
-    INSERT INTO scheduled(id, at, retry, queue, priority) SELECT id, $2::timestamptz, retry, queue, priority FROM r WHERE NOT held";
+    INSERT INTO scheduled(id, at, attempt, queue, priority) SELECT id, $2::timestamptz, attempt, queue, priority FROM r WHERE NOT held";
     let res = sqlx::query(SQL)
         .bind(entry.id)
         .bind(at)
         .bind(instance_id)
-        .bind(entry.retry)
+        .bind(entry.attempt)
         .bind(message)
         .execute(pool)
         .await?;
     Ok(res.rows_affected())
 }
 
-/// Releases up to `limit` jobs locked for longer than `lease` (`retry + 1`, so a late
+/// Releases up to `limit` jobs locked for longer than `lease` (`attempt + 1`, so a late
 /// result of the stuck attempt is rejected), whatever instance holds them.
 pub async fn reap_expired_locks(
     pool: &Pool<Postgres>,
@@ -225,12 +225,12 @@ pub async fn reap_expired_locks(
     WITH a AS (
         DELETE FROM claimed
         WHERE id IN (SELECT id FROM claimed WHERE at < now() - $1 ORDER BY at LIMIT $3 FOR UPDATE SKIP LOCKED)
-        RETURNING id, retry, queue, priority, instance_id
+        RETURNING id, attempt, queue, priority, instance_id
     ), b AS (
-        INSERT INTO enqueued(id, retry, queue, priority) SELECT id, retry + 1, queue, priority FROM a
+        INSERT INTO enqueued(id, attempt, queue, priority) SELECT id, attempt + 1, queue, priority FROM a
     )
-    INSERT INTO history(id, retry, kind, instance_id, message)
-    SELECT id, retry + 1, 'retried', $2, 'lock expired: ' || instance_id FROM a";
+    INSERT INTO history(id, attempt, kind, instance_id, message)
+    SELECT id, attempt + 1, 'retried', $2, 'lock expired: ' || instance_id FROM a";
     let res = sqlx::query(SQL)
         .bind(lease)
         .bind(instance_id)
@@ -247,11 +247,11 @@ pub async fn reap_expired_locks(
 /// would use an older snapshot and miss a job enqueued meanwhile, which would stay claimed and
 /// never run. The claim is committed before any job runs: a worker completing a job never
 /// waits on the fetch itself.
-pub async fn fetch_job_with_retry(
+pub async fn fetch_job_with_attempt(
     pool: &Pool<Postgres>,
     instance_id: &str,
     prefetch: i32,
-) -> Result<Vec<JobWithRetry>, Error> {
+) -> Result<Vec<JobWithAttempt>, Error> {
     const SQL: &str = "SELECT * FROM claim_v1($2, $1)";
     let rows = sqlx::query(SQL)
         .bind(prefetch)
@@ -260,15 +260,15 @@ pub async fn fetch_job_with_retry(
         .await?;
     let mut jobs = Vec::with_capacity(rows.len());
     for row in rows {
-        match JobWithRetry::from_row(&row) {
+        match JobWithAttempt::from_row(&row) {
             Ok(job) => jobs.push(job),
             // an unreadable job (a bad URL, say) fails alone, it must not hold the batch
             Err(err) => {
-                let (Ok(id), Ok(retry)) = (row.try_get("id"), row.try_get("retry")) else {
+                let (Ok(id), Ok(attempt)) = (row.try_get("id"), row.try_get("attempt")) else {
                     tracing::error!("unreadable job without an id: {err:?}");
                     continue;
                 };
-                let entry = JobEntry { id, retry };
+                let entry = JobEntry { id, attempt };
                 tracing::error!(job_id = id, "unreadable job: {err:?}");
                 let result = JobResult::from(Error::from(err));
                 // when this write fails too, the job stays claimed (the lock reaper releases it)
@@ -321,19 +321,19 @@ where
 {
     const SQL: &str = "
     WITH s AS (
-        DELETE FROM scheduled WHERE id = $1 RETURNING id, retry
+        DELETE FROM scheduled WHERE id = $1 RETURNING id, attempt
     ), e AS (
-        DELETE FROM enqueued WHERE id = $1 RETURNING id, retry
+        DELETE FROM enqueued WHERE id = $1 RETURNING id, attempt
     ), c AS (
-        SELECT id, retry FROM s UNION ALL SELECT id, retry FROM e
+        SELECT id, attempt FROM s UNION ALL SELECT id, attempt FROM e
     ), hist AS (
-        INSERT INTO history(id, retry, kind, instance_id, message)
-        SELECT id, retry, 'cancelled', $2, 'cancelled by a user' FROM c
+        INSERT INTO history(id, attempt, kind, instance_id, message)
+        SELECT id, attempt, 'cancelled', $2, 'cancelled by a user' FROM c
     ), k AS (
         UPDATE jobs SET key = NULL WHERE id IN (SELECT id FROM c) AND schedule_id IS NOT NULL
     )
-    INSERT INTO processed(id, retry, instance_id, status)
-    SELECT id, retry, $2, 'cancelled' FROM c";
+    INSERT INTO processed(id, attempt, instance_id, status)
+    SELECT id, attempt, $2, 'cancelled' FROM c";
     let res = sqlx::query(SQL)
         .bind(job_id)
         .bind(instance_id)
@@ -352,7 +352,7 @@ pub async fn cancel_job(
 }
 
 /// Runs a processed job (completed, failed or cancelled) once more, now.
-/// The retry number goes on (it fences the attempts), so the retry policy is not restarted.
+/// The attempt number goes on (it fences the attempts), so the retry policy is not restarted.
 pub async fn requeue_job(
     pool: &Pool<Postgres>,
     job_id: i64,
@@ -360,15 +360,15 @@ pub async fn requeue_job(
 ) -> Result<ActionOutcome, Error> {
     const SQL: &str = "
     WITH p AS (
-        DELETE FROM processed WHERE id = $1 RETURNING id, retry
+        DELETE FROM processed WHERE id = $1 RETURNING id, attempt
     ), e AS (
-        INSERT INTO enqueued(id, retry, queue, priority)
-        SELECT p.id, p.retry + 1, j.meta->>'queue', coalesce((j.meta->>'priority')::smallint, 0)
+        INSERT INTO enqueued(id, attempt, queue, priority)
+        SELECT p.id, p.attempt + 1, j.meta->>'queue', coalesce((j.meta->>'priority')::smallint, 0)
         FROM p INNER JOIN jobs AS j ON j.id = p.id
-        RETURNING id, retry
+        RETURNING id, attempt
     )
-    INSERT INTO history(id, retry, kind, instance_id, message)
-    SELECT id, retry, 'enqueued', $2, 'retried by a user' FROM e";
+    INSERT INTO history(id, attempt, kind, instance_id, message)
+    SELECT id, attempt, 'enqueued', $2, 'retried by a user' FROM e";
     let res = sqlx::query(SQL)
         .bind(job_id)
         .bind(instance_id)
