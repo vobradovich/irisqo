@@ -400,13 +400,26 @@ a[role="button"].secondary:hover {
   display: inline-flex;
   align-items: center;
   gap: 0.5rem;
-  min-height: 1.875rem;
-  padding: 0 0.75rem;
+  min-height: 2.5rem;
+  padding: 0 0.3rem 0 1rem;
   border: 1px solid var(--border);
   border-radius: 999px;
   color: var(--muted);
-  font-size: 0.85rem;
+  font-size: 0.95rem;
 }
+.live.paused { padding-left: 1rem; }
+.live-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.9rem;
+  height: 1.9rem;
+  margin-left: 0.35rem;
+  border-radius: 50%;
+  background: var(--border);
+  color: inherit;
+}
+.live-toggle:hover { color: var(--pico-color, #fff); }
 .live .dot { width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--success); }
 
 /* filters: the status tabs, then the schedule and the search, in one row
@@ -630,7 +643,9 @@ pre.body {
 }
 .table-wrap td.request-cell { max-width: 22rem; }
 .table-wrap .actions { display: flex; gap: 0.5rem; justify-content: flex-end; }
-.table-wrap .actions button { width: auto; margin: 0; padding: 0.5rem 0.875rem; }
+.table-wrap .actions button,
+.table-wrap .actions a[role="button"],
+.page-head > a.compact { width: auto; margin: 0; padding: 0.5rem 0.875rem; font-size: 1rem; line-height: 1.5; }
 .state-active { color: var(--success); font-weight: 600; }
 .table-wrap .num { text-align: right; }
 .table-wrap .failed-count { color: var(--danger); }

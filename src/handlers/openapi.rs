@@ -3,7 +3,7 @@
 
 use super::{job_request::JobRequest, jobs};
 use crate::features::{
-    history, instances, results,
+    history, instances, queues, results,
     schedules::{self, ScheduleRequest},
 };
 use crate::models::{JobCreateRow, ParamError, Problem};
@@ -35,6 +35,13 @@ pub(crate) struct ScheduleBody {
         schedules::http::pause,
         schedules::http::resume,
         schedules::http::delete,
+        queues::http::get_all,
+        queues::http::get_undeclared,
+        queues::http::get_by_id,
+        queues::http::upsert,
+        queues::http::pause,
+        queues::http::resume,
+        queues::http::delete,
         instances::http::get_all,
         history::get_history_by_id,
         results::http::result_by_id,
@@ -58,6 +65,7 @@ mod tests {
         for path in [
             "/api/v1/jobs",
             "/api/v1/schedules/{id}",
+            "/api/v1/queues/{id}",
             "/api/v1/instances",
         ] {
             assert!(doc["paths"].get(path).is_some(), "{path}");
@@ -74,7 +82,7 @@ mod tests {
         ids.sort_unstable();
         ids.dedup();
         assert_eq!(ids.len(), operations, "{ids:?}");
-        assert_eq!(operations, 15);
+        assert_eq!(operations, 22);
         // the retry policy is flattened into the job: `allOf` of its fields and the others
         let job = &doc["components"]["schemas"]["JobRequest"]["allOf"];
         let job: serde_json::Map<String, serde_json::Value> = job

@@ -49,6 +49,9 @@ pub enum Error {
     #[error("Schedule Not Found - {0}")]
     ScheduleNotFound(String),
 
+    #[error("Queue Not Found - {0}")]
+    QueueNotFound(String),
+
     #[error(transparent)]
     Timeout(#[from] Elapsed),
 
@@ -109,6 +112,7 @@ impl Error {
             Error::JobNotFound(_)
             | Error::ResultNotFound(_)
             | Error::ScheduleNotFound(_)
+            | Error::QueueNotFound(_)
             | Error::Timeout(_)
             | Error::IoError(_)
             | Error::HttpError(_)
@@ -154,6 +158,7 @@ impl From<Error> for Problem {
                 "Job {id} has no result: it does not exist or is not processed yet."
             )),
             Error::ScheduleNotFound(id) => not_found(format!("Schedule {id} does not exist.")),
+            Error::QueueNotFound(name) => not_found(format!("Queue {name} does not exist.")),
             Error::DbError(sqlx::Error::RowNotFound) => Problem::new(StatusCode::NOT_FOUND),
             Error::Timeout(_)
             | Error::DbError(_)

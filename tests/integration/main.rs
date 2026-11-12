@@ -12,6 +12,7 @@ mod common;
 mod delivery;
 mod limits;
 mod otel;
+mod queues;
 mod reliability;
 mod security;
 mod smoke;
