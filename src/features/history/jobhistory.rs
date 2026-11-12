@@ -1,7 +1,7 @@
 #[derive(Debug, Clone, sqlx::FromRow, serde::Serialize, utoipa::ToSchema)]
 pub struct JobHistoryRow {
     pub id: i64,
-    pub retry: i32,
+    pub attempt: i32,
     pub instance_id: String,
     pub at: chrono::DateTime<chrono::Utc>,
     #[sqlx(try_from = "String")]

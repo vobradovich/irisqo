@@ -51,13 +51,13 @@ async fn only_allowed_headers_are_forwarded(pool: PgPool) -> anyhow::Result<()> 
     assert!(!got.contains_key("cookie"));
     assert!(!got.keys().any(|k| k.starts_with("irisqo-forward-")));
     assert_eq!(got.get("irisqo-job-id"), Some(&job_id.to_string()));
-    assert_eq!(got.get("irisqo-retry").map(String::as_str), Some("0"));
+    assert_eq!(got.get("irisqo-attempt").map(String::as_str), Some("0"));
     assert!(!got.contains_key("irisqo-schedule-id"));
     Ok(())
 }
 
 #[sqlx::test(migrations = "./sql/migrations")]
-async fn redelivery_has_the_same_job_id_and_the_next_retry(pool: PgPool) -> anyhow::Result<()> {
+async fn redelivery_has_the_same_job_id_and_the_next_attempt(pool: PgPool) -> anyhow::Result<()> {
     let state = common::state(pool.clone());
     let addr = common::spawn_app(&state).await;
     let response = common::create(
@@ -76,7 +76,7 @@ async fn redelivery_has_the_same_job_id_and_the_next_retry(pool: PgPool) -> anyh
 
     let got = received_headers(&pool, job_id).await;
     assert_eq!(got.get("irisqo-job-id"), Some(&job_id.to_string()));
-    assert_eq!(got.get("irisqo-retry").map(String::as_str), Some("1"));
+    assert_eq!(got.get("irisqo-attempt").map(String::as_str), Some("1"));
 
     // the history says why each attempt ended
     let history = common::history(&pool, job_id).await;
@@ -171,12 +171,12 @@ async fn shutdown_timeout_abandons_running_jobs(pool: PgPool) -> anyhow::Result<
 
     // what main does on exit: the abandoned job runs again elsewhere, same attempt
     db::instances::kill(&pool, &state.instance_id).await?;
-    let (retry, locked): (i32, bool) = sqlx::query_as(
-        "SELECT retry, EXISTS (SELECT 1 FROM claimed WHERE id = $1) FROM enqueued WHERE id = $1",
+    let (attempt, locked): (i32, bool) = sqlx::query_as(
+        "SELECT attempt, EXISTS (SELECT 1 FROM claimed WHERE id = $1) FROM enqueued WHERE id = $1",
     )
     .bind(job_id)
     .fetch_one(&pool)
     .await?;
-    assert_eq!((retry, locked), (0, false));
+    assert_eq!((attempt, locked), (0, false));
     Ok(())
 }

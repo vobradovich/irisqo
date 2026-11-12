@@ -53,8 +53,8 @@ CREATE INDEX ix_jobs_parent_id   ON jobs (parent_id) WHERE parent_id IS NOT NULL
 CREATE TABLE scheduled (
     id       bigint PRIMARY KEY REFERENCES jobs ON DELETE CASCADE,
     at       timestamptz NOT NULL,
-    retry    int NOT NULL DEFAULT 0
-             CHECK (retry >= 0),
+    attempt  int NOT NULL DEFAULT 0
+             CHECK (attempt >= 0),
     queue    text NULL,
     priority smallint NOT NULL DEFAULT 0,
     CONSTRAINT ck_scheduled_queue_priority CHECK (queue IS NULL OR priority = 0)
@@ -66,8 +66,8 @@ CREATE INDEX ix_scheduled_at ON scheduled (at);
 
 CREATE TABLE enqueued (
     id       bigint PRIMARY KEY REFERENCES jobs ON DELETE CASCADE,
-    retry    int NOT NULL DEFAULT 0
-             CHECK (retry >= 0),
+    attempt  int NOT NULL DEFAULT 0
+             CHECK (attempt >= 0),
     at       timestamptz NOT NULL DEFAULT now(),
     queue    text NULL,
     priority smallint NOT NULL DEFAULT 0,
@@ -76,14 +76,14 @@ CREATE TABLE enqueued (
     autovacuum_vacuum_scale_factor = 0, autovacuum_vacuum_threshold = 1000,
     autovacuum_analyze_scale_factor = 0, autovacuum_analyze_threshold = 1000
 );
-CREATE INDEX ix_enqueued_candidates ON enqueued (priority DESC, retry, id)
+CREATE INDEX ix_enqueued_candidates ON enqueued (priority DESC, attempt, id)
     WHERE queue IS NULL;
 CREATE INDEX ix_enqueued_queue      ON enqueued (queue, id)
     WHERE queue IS NOT NULL;
 
 CREATE TABLE claimed (
     id          bigint PRIMARY KEY REFERENCES jobs ON DELETE CASCADE,
-    retry       int NOT NULL,
+    attempt     int NOT NULL,
     queue       text NULL,
     priority    smallint NOT NULL DEFAULT 0,
     instance_id text NOT NULL,
@@ -98,7 +98,7 @@ CREATE INDEX ix_claimed_at          ON claimed (at);
 
 CREATE TABLE processed (
     id          bigint PRIMARY KEY REFERENCES jobs ON DELETE CASCADE,
-    retry       int NOT NULL,
+    attempt     int NOT NULL,
     instance_id text NOT NULL,
     at          timestamptz NOT NULL DEFAULT now(),
     status      text NOT NULL
@@ -113,7 +113,7 @@ CREATE INDEX ix_processed_status_id ON processed (status, id DESC);
 CREATE TABLE history (
     seq         bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     id          bigint NOT NULL REFERENCES jobs ON DELETE CASCADE,
-    retry       int NOT NULL,
+    attempt     int NOT NULL,
     at          timestamptz NOT NULL DEFAULT now(),
     kind        text NOT NULL
                 CHECK (kind IN ('scheduled', 'enqueued', 'claimed', 'released', 'retried',
@@ -240,10 +240,10 @@ BEGIN
 
     IF v_at IS NULL THEN
         INSERT INTO enqueued (id, queue, priority) VALUES (new_id, v_queue, v_priority);
-        INSERT INTO history (id, retry, kind) VALUES (new_id, 0, 'enqueued');
+        INSERT INTO history (id, attempt, kind) VALUES (new_id, 0, 'enqueued');
     ELSE
         INSERT INTO scheduled (id, at, queue, priority) VALUES (new_id, v_at, v_queue, v_priority);
-        INSERT INTO history (id, retry, kind) VALUES (new_id, 0, 'scheduled');
+        INSERT INTO history (id, attempt, kind) VALUES (new_id, 0, 'scheduled');
     END IF;
     RETURN new_id;
 END $$;
@@ -261,14 +261,14 @@ BEGIN
                      ORDER BY s.at, s.id
                      LIMIT p_limit
                      FOR UPDATE SKIP LOCKED)
-        RETURNING id, retry, at, queue, priority
+        RETURNING id, attempt, at, queue, priority
     ), b AS (
-        INSERT INTO enqueued (id, retry, at, queue, priority)
+        INSERT INTO enqueued (id, attempt, at, queue, priority)
         SELECT * FROM d
-        RETURNING id, retry
+        RETURNING id, attempt
     ), hist AS (
-        INSERT INTO history (id, retry, kind, instance_id)
-        SELECT b.id, b.retry, 'enqueued', p_instance_id
+        INSERT INTO history (id, attempt, kind, instance_id)
+        SELECT b.id, b.attempt, 'enqueued', p_instance_id
         FROM b
     )
     SELECT count(*) INTO n FROM b;
@@ -317,7 +317,7 @@ RETURNS TABLE (
     body        bytea,
     schedule_id text,
     key         text,
-    retry       int
+    attempt     int
 )
 LANGUAGE sql SET search_path FROM CURRENT AS $$
     WITH b AS (
@@ -325,24 +325,24 @@ LANGUAGE sql SET search_path FROM CURRENT AS $$
         WHERE id IN (SELECT e.id
                      FROM enqueued AS e
                      WHERE e.queue IS NULL AND e.at <= now()
-                     ORDER BY e.priority DESC, e.retry, e.id
+                     ORDER BY e.priority DESC, e.attempt, e.id
                      LIMIT p_limit
                      FOR UPDATE SKIP LOCKED)
-        RETURNING id, retry, queue, priority
+        RETURNING id, attempt, queue, priority
     ), hist AS (
-        INSERT INTO history (id, retry, kind, instance_id)
-        SELECT b.id, b.retry, 'claimed', p_instance_id
+        INSERT INTO history (id, attempt, kind, instance_id)
+        SELECT b.id, b.attempt, 'claimed', p_instance_id
         FROM b
     ), c AS (
-        INSERT INTO claimed (id, retry, queue, priority, instance_id)
-        SELECT b.id, b.retry, b.queue, b.priority, p_instance_id
+        INSERT INTO claimed (id, attempt, queue, priority, instance_id)
+        SELECT b.id, b.attempt, b.queue, b.priority, p_instance_id
         FROM b
-        RETURNING claimed.id, claimed.retry, claimed.priority
+        RETURNING claimed.id, claimed.attempt, claimed.priority
     )
-    SELECT j.id, j.meta, j.headers, j.body, j.schedule_id, j.key, c.retry
+    SELECT j.id, j.meta, j.headers, j.body, j.schedule_id, j.key, c.attempt
     FROM c
     INNER JOIN jobs AS j ON j.id = c.id
-    ORDER BY c.priority DESC, c.retry, c.id
+    ORDER BY c.priority DESC, c.attempt, c.id
 $$;
 
 CREATE FUNCTION claim_queued_v1(
@@ -357,7 +357,7 @@ RETURNS TABLE (
     body        bytea,
     schedule_id text,
     key         text,
-    retry       int
+    attempt     int
 )
 LANGUAGE plpgsql SET search_path FROM CURRENT SET jit = off AS $$
 #variable_conflict use_column
@@ -442,10 +442,10 @@ BEGIN
     ), b AS (
         DELETE FROM enqueued
         WHERE id IN (SELECT a.id FROM a ORDER BY a.id LIMIT p_limit)
-        RETURNING id, retry, queue
+        RETURNING id, attempt, queue
     ), hist AS (
-        INSERT INTO history (id, retry, kind, instance_id)
-        SELECT b.id, b.retry, 'claimed', p_instance_id
+        INSERT INTO history (id, attempt, kind, instance_id)
+        SELECT b.id, b.attempt, 'claimed', p_instance_id
         FROM b
     ), rated AS (
         UPDATE queues q
@@ -455,12 +455,12 @@ BEGIN
               GROUP BY b.queue) x
         WHERE q.queue_id = x.queue AND q.rate IS NOT NULL
     ), c AS (
-        INSERT INTO claimed (id, retry, queue, instance_id)
-        SELECT b.id, b.retry, b.queue, p_instance_id
+        INSERT INTO claimed (id, attempt, queue, instance_id)
+        SELECT b.id, b.attempt, b.queue, p_instance_id
         FROM b
-        RETURNING claimed.id, claimed.retry
+        RETURNING claimed.id, claimed.attempt
     )
-    SELECT j.id, j.meta, j.headers, j.body, j.schedule_id, j.key, c.retry
+    SELECT j.id, j.meta, j.headers, j.body, j.schedule_id, j.key, c.attempt
     FROM c
     INNER JOIN jobs AS j ON j.id = c.id
     ORDER BY c.id;
@@ -478,7 +478,7 @@ RETURNS TABLE (
     body        bytea,
     schedule_id text,
     key         text,
-    retry       int
+    attempt     int
 )
 LANGUAGE plpgsql SET search_path FROM CURRENT SET jit = off AS $$
 DECLARE

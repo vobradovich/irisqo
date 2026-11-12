@@ -60,7 +60,7 @@ pub async fn upsert(
         UPDATE schedules SET next_id = a.id, next_at = $6::timestamptz
         FROM a WHERE schedules.schedule_id = $5
     ), hist AS (
-        INSERT INTO history(id, retry, kind, instance_id) SELECT id, 0, 'scheduled', $7 FROM a
+        INSERT INTO history(id, attempt, kind, instance_id) SELECT id, 0, 'scheduled', $7 FROM a
     )
     INSERT INTO scheduled(id, at, queue, priority) SELECT id, $6::timestamptz, $8, $9 FROM a RETURNING id";
 
@@ -150,7 +150,7 @@ where
         FROM a
         WHERE schedules.schedule_id = a.schedule_id
     ), hist AS (
-        INSERT INTO history(id, retry, kind, instance_id) SELECT id, 0, 'scheduled', $3 FROM a
+        INSERT INTO history(id, attempt, kind, instance_id) SELECT id, 0, 'scheduled', $3 FROM a
     )
     INSERT INTO scheduled(id, at, queue, priority)
     SELECT a.id, $2::timestamptz, a.queue, a.priority FROM a RETURNING id

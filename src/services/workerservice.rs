@@ -5,7 +5,7 @@ use tracing::{error, info, warn};
 
 use crate::{
     db,
-    models::{AppState, JobWithRetry},
+    models::{AppState, JobWithAttempt},
     services::jobrunner::{self, Completion},
 };
 use std::{sync::Arc, time::Duration};
@@ -50,7 +50,7 @@ impl WorkerService {
         let max_interval = app_state.worker_options.max_poll_interval.max(interval);
         let mut pause = interval;
 
-        let (tx, rx) = async_channel::bounded::<JobWithRetry>(batch);
+        let (tx, rx) = async_channel::bounded::<JobWithAttempt>(batch);
         let (done_tx, done_rx) = mpsc::channel::<Completion>(concurrency);
 
         let completer = tokio::spawn({
@@ -69,7 +69,7 @@ impl WorkerService {
         drop(done_tx);
 
         while !app_state.shutdown_token.is_cancelled() {
-            let jobs = db::jobqueue::fetch_job_with_retry(
+            let jobs = db::jobqueue::fetch_job_with_attempt(
                 &app_state.pool,
                 instance_id,
                 i32::try_from(batch).unwrap_or(i32::MAX),
@@ -78,7 +78,7 @@ impl WorkerService {
             .inspect_err(|err| {
                 error!(
                     { instance_id },
-                    "db::jobqueue::fetch_job_with_retry {:?}", err
+                    "db::jobqueue::fetch_job_with_attempt {:?}", err
                 );
             })
             .unwrap_or_default();
@@ -134,7 +134,7 @@ async fn run_worker(
     app_state: &Arc<AppState>,
     idx: usize,
     per_worker: usize,
-    rx: Receiver<JobWithRetry>,
+    rx: Receiver<JobWithAttempt>,
     done_tx: mpsc::Sender<Completion>,
 ) {
     let instance_id = &app_state.instance_id;
