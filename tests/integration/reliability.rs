@@ -426,11 +426,11 @@ async fn running_job_of_deleted_schedule_is_not_cloned(pool: PgPool) -> anyhow::
     Ok(())
 }
 
-async fn enqueue_in_queue(pool: &PgPool, queue: &str) -> i64 {
+async fn enqueue_in_flow(pool: &PgPool, flow_key: &str) -> i64 {
     sqlx::query_scalar(
-        "SELECT enqueue_v1(jsonb_build_object('sink', 'http', 'url', 'http://localhost/x', 'queue', $1::text))",
+        "SELECT enqueue_v1(jsonb_build_object('sink', 'http', 'url', 'http://localhost/x', 'flow_key', $1::text))",
     )
-    .bind(queue)
+    .bind(flow_key)
     .fetch_one(pool)
     .await
     .expect("enqueue_v1")
@@ -439,7 +439,7 @@ async fn enqueue_in_queue(pool: &PgPool, queue: &str) -> i64 {
 #[sqlx::test(migrations = "./sql/migrations")]
 async fn an_unreadable_job_fails_alone(pool: PgPool) -> anyhow::Result<()> {
     let state = common::state(pool.clone());
-    let good = enqueue_in_queue(&pool, "other").await;
+    let good = enqueue_in_flow(&pool, "other").await;
     let bad: i64 = sqlx::query_scalar(
         "SELECT enqueue_v1('{\"sink\": \"http\", \"url\": \"http://localhost/x\"}')",
     )
@@ -489,47 +489,65 @@ async fn resume_does_not_clone_a_running_run(pool: PgPool) -> anyhow::Result<()>
 }
 
 #[sqlx::test(migrations = "./sql/migrations")]
-async fn a_delayed_retry_keeps_its_place_in_an_ordered_queue(pool: PgPool) -> anyhow::Result<()> {
+async fn a_delayed_retry_does_not_hold_its_flow(pool: PgPool) -> anyhow::Result<()> {
     let state = common::state(pool.clone());
-    let a = enqueue_in_queue(&pool, "q").await;
-    enqueue_in_queue(&pool, "q").await;
+    let a = enqueue_in_flow(&pool, "q").await;
+    let b = enqueue_in_flow(&pool, "q").await;
     let jobs = common::fetch(&state, 10).await;
     let ids: Vec<i64> = jobs.iter().map(|j| j.job.id).collect();
     assert_eq!(ids, [a], "one at a time");
 
     let entry = irisqo::models::JobEntry { id: a, attempt: 0 };
     let at = chrono::Utc::now() + chrono::Duration::seconds(60);
-    db::jobqueue::retry(&pool, entry, at, &state.instance_id, "again").await?;
-    let next = common::fetch(&state, 10).await;
-    assert!(next.is_empty(), "the next job waits for the retry");
+    let moved = db::jobqueue::retry(&pool, entry, at, &state.instance_id, "again").await?;
+    assert_eq!(moved, 1);
+    assert_eq!(
+        common::count(&pool, "SELECT count(*) FROM scheduled").await,
+        1
+    );
+    let next: Vec<i64> = common::fetch(&state, 10)
+        .await
+        .iter()
+        .map(|j| j.job.id)
+        .collect();
+    assert_eq!(next, [b], "the flow is free while the retry waits");
+    // a late result of the same attempt moves nothing
+    let again = db::jobqueue::retry(&pool, entry, at, &state.instance_id, "again").await?;
+    assert_eq!(again, 0);
     Ok(())
 }
 
 #[sqlx::test(migrations = "./sql/migrations")]
-async fn a_queue_gives_its_jobs_in_id_order(pool: PgPool) -> anyhow::Result<()> {
+async fn a_flow_gives_the_highest_priority_first_then_new_before_retried(
+    pool: PgPool,
+) -> anyhow::Result<()> {
     let state = common::state(pool.clone());
-    sqlx::query("INSERT INTO queues(queue_id, parallelism) VALUES ('q', 2)")
+    sqlx::query("INSERT INTO flows(flow_id, concurrency) VALUES ('q', 8)")
         .execute(&pool)
         .await?;
-    let older = enqueue_in_queue(&pool, "q").await;
-    enqueue_in_queue(&pool, "q").await;
-    // the older job was retried: still first in its queue
+    let retried = enqueue_in_flow(&pool, "q").await;
+    let low = enqueue_in_flow(&pool, "q").await;
+    let high = enqueue_in_flow(&pool, "q").await;
     sqlx::query("UPDATE enqueued SET attempt = 1 WHERE id = $1")
-        .bind(older)
+        .bind(retried)
         .execute(&pool)
         .await?;
-    let jobs = common::fetch(&state, 1).await;
-    let ids: Vec<i64> = jobs.iter().map(|j| j.job.id).collect();
-    assert_eq!(ids, [older]);
+    sqlx::query("UPDATE enqueued SET priority = 5 WHERE id = $1")
+        .bind(high)
+        .execute(&pool)
+        .await?;
+    let ids: Vec<i64> = common::fetch(&state, 10)
+        .await
+        .iter()
+        .map(|j| j.job.id)
+        .collect();
+    assert_eq!(ids, [high, low, retried]);
     Ok(())
 }
 
 #[sqlx::test(migrations = "./sql/migrations")]
-async fn enqueue_v1_priority_is_a_smallint_and_not_for_a_queue(pool: PgPool) -> anyhow::Result<()> {
-    for (extra, message) in [
-        (r#""priority": 99999"#, "priority must be from"),
-        (r#""queue": "q", "priority": 1"#, "without a queue only"),
-    ] {
+async fn enqueue_v1_priority_is_an_int_and_goes_with_a_flow(pool: PgPool) -> anyhow::Result<()> {
+    for (extra, message) in [(r#""priority": 3000000000"#, "priority must be from")] {
         let job = format!(r#"{{"sink": "noop", {extra}}}"#);
         let err = sqlx::query_scalar::<_, i64>("SELECT enqueue_v1($1::jsonb)")
             .bind(job)
@@ -538,18 +556,26 @@ async fn enqueue_v1_priority_is_a_smallint_and_not_for_a_queue(pool: PgPool) -> 
             .expect_err("rejected");
         assert!(err.to_string().contains(message), "{err}");
     }
-    // a zero priority is no priority
+    // a flow keeps the priority of its job
     sqlx::query_scalar::<_, i64>(
-        r#"SELECT enqueue_v1('{"sink": "noop", "queue": "q", "priority": 0}')"#,
+        r#"SELECT enqueue_v1('{"sink": "noop", "flow_key": "q", "priority": 7}')"#,
     )
     .fetch_one(&pool)
     .await?;
+    assert_eq!(
+        common::count(
+            &pool,
+            "SELECT count(*) FROM enqueued WHERE flow_key = 'q' AND priority = 7"
+        )
+        .await,
+        1
+    );
     Ok(())
 }
 
 #[sqlx::test(migrations = "./sql/migrations")]
-async fn enqueue_v1_checks_the_form_of_key_and_queue(pool: PgPool) -> anyhow::Result<()> {
-    for (field, bad) in [("key", "two\nlines"), ("queue", "no spaces")] {
+async fn enqueue_v1_checks_the_form_of_key_and_flow(pool: PgPool) -> anyhow::Result<()> {
+    for (field, bad) in [("key", "two\nlines"), ("flow_key", "no spaces")] {
         let job = serde_json::json!({ "sink": "http", "url": "http://localhost/x", field: bad })
             .to_string();
         let err = sqlx::query_scalar::<_, i64>("SELECT enqueue_v1($1::jsonb)")
@@ -563,7 +589,7 @@ async fn enqueue_v1_checks_the_form_of_key_and_queue(pool: PgPool) -> anyhow::Re
         );
     }
     sqlx::query_scalar::<_, i64>(
-        "SELECT enqueue_v1('{\"sink\": \"http\", \"url\": \"http://localhost/x\", \"key\": \"Order 1/abc=\", \"queue\": \"q:1\"}')",
+        "SELECT enqueue_v1('{\"sink\": \"http\", \"url\": \"http://localhost/x\", \"key\": \"Order 1/abc=\", \"flow_key\": \"q:1\"}')",
     )
     .fetch_one(&pool)
     .await?;
@@ -633,7 +659,7 @@ async fn enqueue_v1_stores_the_retry_policy(pool: PgPool) -> anyhow::Result<()> 
 }
 
 #[sqlx::test(migrations = "./sql/migrations")]
-async fn a_released_or_requeued_job_keeps_its_priority_and_queue(
+async fn a_released_or_requeued_job_keeps_its_priority_and_flow(
     pool: PgPool,
 ) -> anyhow::Result<()> {
     let state = common::state(pool.clone());
@@ -643,15 +669,15 @@ async fn a_released_or_requeued_job_keeps_its_priority_and_queue(
     )
     .fetch_one(&pool)
     .await?;
-    let queued = enqueue_in_queue(&pool, "q").await;
-    let sql = "SELECT id, queue, priority FROM enqueued ORDER BY id";
-    let want = vec![(urgent, None, 5_i16), (queued, Some("q".to_owned()), 0)];
+    let queued = enqueue_in_flow(&pool, "q").await;
+    let sql = "SELECT id, flow_key, priority FROM enqueued ORDER BY id";
+    let want = vec![(urgent, None, 5_i32), (queued, Some("q".to_owned()), 0)];
 
     // claim, then release on shutdown
     assert_eq!(common::fetch(&state, 10).await.len(), 2);
     db::instances::kill(&pool, id).await?;
     assert_eq!(
-        sqlx::query_as::<_, (i64, Option<String>, i16)>(sql)
+        sqlx::query_as::<_, (i64, Option<String>, i32)>(sql)
             .fetch_all(&pool)
             .await?,
         want
@@ -664,7 +690,7 @@ async fn a_released_or_requeued_job_keeps_its_priority_and_queue(
         attempt: jobs[0].attempt,
     };
     assert_eq!(db::jobqueue::unlock(&pool, entry, id, "again").await?, 1);
-    let rows = sqlx::query_as::<_, (i64, Option<String>, i16)>(sql)
+    let rows = sqlx::query_as::<_, (i64, Option<String>, i32)>(sql)
         .fetch_all(&pool)
         .await?;
     assert_eq!(rows, vec![want[0].clone()]);
@@ -676,7 +702,7 @@ async fn a_released_or_requeued_job_keeps_its_priority_and_queue(
     for job in [urgent, queued] {
         db::jobqueue::requeue_job(&pool, job, id).await?;
     }
-    let rows = sqlx::query_as::<_, (i64, Option<String>, i16)>(sql)
+    let rows = sqlx::query_as::<_, (i64, Option<String>, i32)>(sql)
         .fetch_all(&pool)
         .await?;
     assert_eq!(rows, want);
@@ -786,11 +812,11 @@ async fn a_job_enqueued_during_a_claim_is_not_lost(pool: PgPool) -> anyhow::Resu
 }
 
 #[sqlx::test(migrations = "./sql/migrations")]
-async fn jobs_without_a_queue_come_first_and_the_queues_get_the_rest(
+async fn jobs_without_a_flow_come_first_and_the_queues_get_the_rest(
     pool: PgPool,
 ) -> anyhow::Result<()> {
     let state = common::state(pool.clone());
-    let queued = enqueue_in_queue(&pool, "q").await;
+    let queued = enqueue_in_flow(&pool, "q").await;
     let plain = common::insert_enqueued(&pool, 2).await;
     let urgent: i64 = sqlx::query_scalar(
         "SELECT enqueue_v1('{\"sink\": \"http\", \"url\": \"http://localhost/x\", \"priority\": 5}')",
@@ -798,7 +824,7 @@ async fn jobs_without_a_queue_come_first_and_the_queues_get_the_rest(
     .fetch_one(&pool)
     .await?;
 
-    // the batch is full of jobs without a queue: by priority, then by id; the queue waits
+    // the batch is full of jobs without a flow: by priority, then by id; the flow waits
     let ids = |jobs: Vec<irisqo::models::JobWithAttempt>| {
         jobs.iter().map(|j| j.job.id).collect::<Vec<_>>()
     };
@@ -807,36 +833,32 @@ async fn jobs_without_a_queue_come_first_and_the_queues_get_the_rest(
         [urgent, plain[0], plain[1]]
     );
     assert_eq!(
-        common::count(&pool, "SELECT count(*) FROM claimed WHERE queue = 'q'").await,
+        common::count(&pool, "SELECT count(*) FROM claimed WHERE flow_key = 'q'").await,
         0
     );
 
-    // the queue gets the room that is left
-    let more = enqueue_in_queue(&pool, "other").await;
+    // the flow gets the room that is left
+    let more = enqueue_in_flow(&pool, "other").await;
     assert_eq!(ids(common::fetch(&state, 5).await), [queued, more]);
     Ok(())
 }
 
 #[sqlx::test(migrations = "./sql/migrations")]
-async fn a_held_head_of_an_ordered_queue_does_not_cost_the_backlog(
-    pool: PgPool,
-) -> anyhow::Result<()> {
+async fn a_full_flow_does_not_cost_its_backlog(pool: PgPool) -> anyhow::Result<()> {
     let state = common::state(pool.clone());
-    sqlx::query("INSERT INTO queues(queue_id, parallelism) VALUES ('q', 8)")
+    sqlx::query("INSERT INTO flows(flow_id, concurrency) VALUES ('q', 8)")
         .execute(&pool)
         .await?;
     sqlx::query(
         "WITH a AS (INSERT INTO jobs(meta) SELECT jsonb_build_object('retry', 'none', 'timeout', 10000, 'sink', 'noop') FROM generate_series(1, 100000) RETURNING id)
-         INSERT INTO enqueued(id, queue) SELECT id, 'q' FROM a",
+         INSERT INTO enqueued(id, flow_key) SELECT id, 'q' FROM a",
     )
     .execute(&pool)
     .await?;
     sqlx::query("ANALYZE enqueued").execute(&pool).await?;
-    // the head is a retry with a delay: it holds its place, the backlog waits for it
-    sqlx::query("UPDATE enqueued SET at = now() + interval '1 hour' WHERE id = (SELECT min(id) FROM enqueued)")
-        .execute(&pool)
-        .await?;
 
+    // the flow gives its places and no more
+    assert_eq!(common::fetch(&state, 64).await.len(), 8);
     let started = std::time::Instant::now();
     assert!(common::fetch(&state, 64).await.is_empty());
     assert!(
@@ -844,50 +866,33 @@ async fn a_held_head_of_an_ordered_queue_does_not_cost_the_backlog(
         "the claim read the backlog: {:?}",
         started.elapsed()
     );
-
-    // the head is due: the queue gives its jobs again (parallelism 8)
-    sqlx::query("UPDATE enqueued SET at = now() WHERE id = (SELECT min(id) FROM enqueued)")
-        .execute(&pool)
-        .await?;
-    assert_eq!(common::fetch(&state, 64).await.len(), 8);
     Ok(())
 }
 
 #[sqlx::test(migrations = "./sql/migrations")]
-async fn an_ordered_queue_gives_the_rows_before_a_held_one(pool: PgPool) -> anyhow::Result<()> {
+async fn a_paused_flow_gives_nothing_and_a_rate_spaces_the_starts(
+    pool: PgPool,
+) -> anyhow::Result<()> {
     let state = common::state(pool.clone());
-    sqlx::query("INSERT INTO queues(queue_id, parallelism) VALUES ('q', 8)")
-        .execute(&pool)
-        .await?;
-    let mut jobs = Vec::new();
-    for _ in 0..4 {
-        jobs.push(enqueue_in_queue(&pool, "q").await);
+    sqlx::query(
+        "INSERT INTO flows(flow_id, concurrency, rate, rate_period) VALUES ('q', 8, 2, 3600)",
+    )
+    .execute(&pool)
+    .await?;
+    for _ in 0..5 {
+        enqueue_in_flow(&pool, "q").await;
     }
-    sqlx::query("UPDATE enqueued SET at = now() + interval '1 hour' WHERE id = $1")
-        .bind(jobs[2])
+    // two starts per hour: the rest waits for `next_at`
+    assert_eq!(common::fetch(&state, 10).await.len(), 2);
+    assert!(common::fetch(&state, 10).await.is_empty());
+    sqlx::query("UPDATE flows SET next_at = NULL, paused = true WHERE flow_id = 'q'")
         .execute(&pool)
         .await?;
-    let got: Vec<i64> = common::fetch(&state, 10)
-        .await
-        .iter()
-        .map(|j| j.job.id)
-        .collect();
-    assert_eq!(
-        got,
-        [jobs[0], jobs[1]],
-        "the rows after the held one wait for it"
-    );
-
-    // an unordered queue skips the held row
-    sqlx::query("UPDATE queues SET ordered = false WHERE queue_id = 'q'")
+    assert!(common::fetch(&state, 10).await.is_empty());
+    sqlx::query("UPDATE flows SET paused = false WHERE flow_id = 'q'")
         .execute(&pool)
         .await?;
-    let got: Vec<i64> = common::fetch(&state, 10)
-        .await
-        .iter()
-        .map(|j| j.job.id)
-        .collect();
-    assert_eq!(got, [jobs[3]]);
+    assert_eq!(common::fetch(&state, 10).await.len(), 2);
     Ok(())
 }
 

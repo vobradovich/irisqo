@@ -1,5 +1,5 @@
-//! Queues: the list with its limits and backlog, and the forms to declare, change, pause,
-//! resume and delete a queue.
+//! Flows: the list with its limits and backlog, and the forms to declare, change, pause,
+//! resume and delete a flow.
 
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -15,31 +15,29 @@ use url::form_urlencoded;
 
 use super::{Nav, is_htmx, jobs::FilterLink, server_error};
 use crate::{
-    features::queues::{self, QueueCreate, QueueRequest, QueueRow, UndeclaredQueueRow},
+    features::flows::{self, FlowCreate, FlowRequest, FlowRow, UndeclaredFlowRow},
     models::{AppState, Error, ParamError},
 };
 
 const PAGE_SIZE: i64 = 50;
 
-pub struct QueueRowView {
+pub struct FlowRowView {
     pub id: String,
     pub declared: bool,
     pub active: bool,
     /// `running`, `paused` or `dynamic` (used by jobs, never declared).
     pub state: &'static str,
     pub state_label: &'static str,
-    pub parallelism: i32,
-    pub order: &'static str,
+    pub concurrency: i32,
     /// `5 / s`, empty without a rate limit.
     pub rate: String,
     /// Only the names without a declaration are counted.
     pub counted: bool,
     pub ready: i64,
-    pub delayed: i64,
     pub processing: i64,
 }
 
-/// Which queues the list shows.
+/// Which flows the list shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum Show {
     #[default]
@@ -76,44 +74,57 @@ impl Show {
     }
 }
 
-/// Where a page starts: after a name of the declared queues or of the others.
+/// Where a page starts: after a name of the declared flows or of the others.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Part {
     Declared,
     Undeclared,
 }
 
-#[derive(Debug, Default)]
+impl Part {
+    const ALL: [Part; 2] = [Part::Declared, Part::Undeclared];
+
+    const fn as_str(self) -> &'static str {
+        match self {
+            Part::Declared => "declared",
+            Part::Undeclared => "undeclared",
+        }
+    }
+}
+
+#[derive(Debug)]
 struct ListParams {
     show: Show,
     live: bool,
-    /// The part of the list `after` belongs to; the first one when absent.
-    part: Option<Part>,
-    after: Option<String>,
+    /// Where the page starts: the part of the list and the last name before the page. The first
+    /// page when absent.
+    cursor: Option<(Part, Option<String>)>,
 }
 
 impl ListParams {
     fn parse(query: Option<&str>) -> Self {
-        let mut params = ListParams {
-            live: true,
-            ..ListParams::default()
-        };
+        let (mut show, mut live, mut part, mut after) = (Show::default(), true, None, None);
         for (key, value) in form_urlencoded::parse(query.unwrap_or_default().as_bytes()) {
             match key.as_ref() {
-                "show" => params.show = Show::parse(&value),
-                "live" => params.live = value != "0",
-                "part" => {
-                    params.part = match value.as_ref() {
-                        "declared" => Some(Part::Declared),
-                        "undeclared" => Some(Part::Undeclared),
-                        _ => None,
-                    }
-                }
-                "after" if !value.is_empty() => params.after = Some(value.into_owned()),
+                "show" => show = Show::parse(&value),
+                "live" => live = value != "0",
+                "part" => part = Part::ALL.into_iter().find(|p| p.as_str() == value),
+                "after" if !value.is_empty() => after = Some(value.into_owned()),
                 _ => {}
             }
         }
-        params
+        // a name without a part is one of the declared flows
+        let part = part.or_else(|| after.is_some().then_some(Part::Declared));
+        ListParams {
+            show,
+            live,
+            cursor: part.map(|part| (part, after)),
+        }
+    }
+
+    fn cursor(&self) -> Option<(Part, Option<&str>)> {
+        let (part, after) = self.cursor.as_ref()?;
+        Some((*part, after.as_deref()))
     }
 
     fn query(&self, show: Show, live: bool, cursor: Option<(Part, Option<&str>)>) -> String {
@@ -123,13 +134,7 @@ impl ListParams {
             out.append_pair("live", "0");
         }
         if let Some((part, after)) = cursor {
-            out.append_pair(
-                "part",
-                match part {
-                    Part::Declared => "declared",
-                    Part::Undeclared => "undeclared",
-                },
-            );
+            out.append_pair("part", part.as_str());
             if let Some(after) = after {
                 out.append_pair("after", after);
             }
@@ -147,82 +152,75 @@ fn period(secs: i64) -> String {
     }
 }
 
-impl QueueRowView {
-    fn declared(row: &QueueRow) -> Self {
+impl FlowRowView {
+    fn declared(row: &FlowRow) -> Self {
         let (state, state_label) = if row.paused {
             ("paused", "Paused")
         } else {
             ("running", "Active")
         };
-        QueueRowView {
-            id: row.queue_id.clone(),
+        FlowRowView {
+            id: row.flow_id.clone(),
             declared: true,
             active: !row.paused,
             state,
             state_label,
-            parallelism: row.parallelism,
-            order: if row.ordered { "in order" } else { "any order" },
+            concurrency: row.concurrency,
             rate: row
                 .rate
-                .map(|rate| format!("{rate} per {}", period(row.rate_period)))
+                .map(|rate| format!("{rate} per {}", period(i64::from(row.rate_period))))
                 .unwrap_or_default(),
             counted: false,
             ready: 0,
-            delayed: 0,
             processing: 0,
         }
     }
 
-    fn undeclared(row: &UndeclaredQueueRow) -> Self {
-        QueueRowView {
-            id: row.queue_id.clone(),
+    fn undeclared(row: &UndeclaredFlowRow) -> Self {
+        FlowRowView {
+            id: row.flow_id.clone(),
             declared: false,
             active: true,
             state: "dynamic",
             state_label: "Undeclared",
-            parallelism: 1,
-            order: "in order",
+            concurrency: 1,
             rate: String::new(),
             counted: true,
             ready: row.ready,
-            delayed: row.delayed,
             processing: row.processing,
         }
     }
 }
 
-/// The form of a queue: the fields as typed, and what is wrong with them.
+/// The form of a flow: the fields as typed, and what is wrong with them.
 #[derive(Debug, Clone)]
-pub struct QueueForm {
-    /// The queue being changed; `None` for a new one.
+pub struct FlowForm {
+    /// The flow being changed; `None` for a new one.
     pub editing: Option<String>,
-    pub queue: String,
-    pub parallelism: String,
-    pub ordered: bool,
+    pub flow_key: String,
+    pub concurrency: String,
     pub rate: String,
     pub rate_period: String,
     pub errors: BTreeMap<&'static str, String>,
 }
 
-impl QueueForm {
+impl FlowForm {
     fn new() -> Self {
-        QueueForm {
+        FlowForm {
             editing: None,
-            queue: String::new(),
-            parallelism: "1".into(),
-            ordered: true,
+            flow_key: String::new(),
+            concurrency: "1".into(),
             rate: String::new(),
             rate_period: "1".into(),
             errors: BTreeMap::new(),
         }
     }
 
-    fn from_row(row: &QueueRow) -> Self {
-        QueueForm {
-            editing: Some(row.queue_id.clone()),
-            queue: row.queue_id.clone(),
-            parallelism: row.parallelism.to_string(),
-            ordered: row.ordered,
+    fn from_row(row: &FlowRow) -> Self {
+        FlowForm {
+            editing: Some(row.flow_id.clone()),
+            flow_key: row.flow_id.clone(),
+            concurrency: row.concurrency.to_string(),
             rate: row.rate.map(|r| r.to_string()).unwrap_or_default(),
             rate_period: row.rate_period.to_string(),
             errors: BTreeMap::new(),
@@ -230,12 +228,10 @@ impl QueueForm {
     }
 
     fn from_pairs(editing: Option<String>, body: &[u8]) -> Self {
-        let mut form = QueueForm {
+        let mut form = FlowForm {
             editing,
-            queue: String::new(),
-            parallelism: String::new(),
-            // a checkbox that is not checked is not sent
-            ordered: false,
+            flow_key: String::new(),
+            concurrency: String::new(),
             rate: String::new(),
             rate_period: String::new(),
             errors: BTreeMap::new(),
@@ -243,9 +239,8 @@ impl QueueForm {
         for (key, value) in form_urlencoded::parse(body) {
             let value = value.trim().to_owned();
             match key.as_ref() {
-                "queue" => form.queue = value,
-                "parallelism" => form.parallelism = value,
-                "ordered" => form.ordered = true,
+                "flow_key" => form.flow_key = value,
+                "concurrency" => form.concurrency = value,
                 "rate" => form.rate = value,
                 "rate_period" => form.rate_period = value,
                 _ => {}
@@ -263,7 +258,7 @@ impl QueueForm {
     }
 
     /// The same checks as the API; an empty field is a missing one.
-    fn checked(&self) -> Result<QueueCreate, BTreeMap<&'static str, String>> {
+    fn checked(&self) -> Result<FlowCreate, BTreeMap<&'static str, String>> {
         fn number<T: std::str::FromStr>(
             value: &str,
             field: &'static str,
@@ -279,14 +274,13 @@ impl QueueForm {
                 .ok()
         }
         let mut errors = Vec::new();
-        let request = QueueRequest {
-            parallelism: number(
-                &self.parallelism,
-                "parallelism",
+        let request = FlowRequest {
+            concurrency: number(
+                &self.concurrency,
+                "concurrency",
                 "a whole number",
                 &mut errors,
             ),
-            ordered: Some(self.ordered),
             rate: number(&self.rate, "rate", "a whole number", &mut errors),
             rate_period: number(
                 &self.rate_period,
@@ -295,7 +289,7 @@ impl QueueForm {
                 &mut errors,
             ),
         };
-        match request.validate(self.editing.as_deref().unwrap_or(&self.queue)) {
+        match request.validate(self.editing.as_deref().unwrap_or(&self.flow_key)) {
             Ok(create) if errors.is_empty() => Ok(create),
             Ok(_) => Err(into_map(errors)),
             Err(more) => {
@@ -315,8 +309,8 @@ fn into_map(errors: Vec<ParamError>) -> BTreeMap<&'static str, String> {
 
 /// The table with its live switch, as the list of the jobs has it: refreshed every 2 s unless
 /// the updates are paused (`?live=0`).
-pub struct QueuesList {
-    rows: Vec<QueueRowView>,
+pub struct FlowsList {
+    rows: Vec<FlowRowView>,
     live: bool,
     pause_href: String,
     resume_href: String,
@@ -330,26 +324,30 @@ pub struct QueuesList {
 
 /// A page of rows and where the next one starts.
 struct Page {
-    rows: Vec<QueueRowView>,
+    rows: Vec<FlowRowView>,
     next: Option<(Part, Option<String>)>,
 }
 
-/// The page the request asks for: the declared queues (straight from `queues`) first, then the
+/// The page the request asks for: the declared flows (straight from `flows`) first, then the
 /// names without a declaration, each part by name.
 async fn load_page(state: &AppState, params: &ListParams) -> Result<Page, Error> {
     let pool = &state.pool;
-    let start = params.part.unwrap_or(match params.show {
-        Show::Undeclared => Part::Undeclared,
-        Show::Declared | Show::All => Part::Declared,
-    });
-    let after = params.after.as_deref();
+    let cursor = params.cursor();
+    let start = cursor.map_or(
+        match params.show {
+            Show::Undeclared => Part::Undeclared,
+            Show::Declared | Show::All => Part::Declared,
+        },
+        |(part, _)| part,
+    );
+    let after = cursor.and_then(|(_, after)| after);
     let size = PAGE_SIZE as usize;
     let mut rows = Vec::new();
     if start == Part::Declared && params.show != Show::Undeclared {
-        let mut found = queues::db::list(pool, after, PAGE_SIZE + 1, 0).await?;
+        let mut found = flows::db::list(pool, after, PAGE_SIZE + 1, 0).await?;
         let more = found.len() > size;
         found.truncate(size);
-        rows.extend(found.iter().map(QueueRowView::declared));
+        rows.extend(found.iter().map(FlowRowView::declared));
         if more {
             return Ok(Page {
                 next: rows.last().map(|r| (Part::Declared, Some(r.id.clone()))),
@@ -363,10 +361,10 @@ async fn load_page(state: &AppState, params: &ListParams) -> Result<Page, Error>
     // the room left on the page after the declared ones
     let room = size - rows.len();
     let after = after.filter(|_| start == Part::Undeclared);
-    let mut found = queues::db::list_undeclared(pool, after, room as i64 + 1, 0).await?;
+    let mut found = flows::db::list_undeclared(pool, after, room as i64 + 1, 0).await?;
     let more = found.len() > room;
     found.truncate(room);
-    rows.extend(found.iter().map(QueueRowView::undeclared));
+    rows.extend(found.iter().map(FlowRowView::undeclared));
     let next = more.then(|| {
         let last = rows.last().filter(|r| !r.declared).map(|r| r.id.clone());
         (Part::Undeclared, last)
@@ -374,40 +372,36 @@ async fn load_page(state: &AppState, params: &ListParams) -> Result<Page, Error>
     Ok(Page { rows, next })
 }
 
-async fn load(state: &AppState, params: &ListParams) -> Result<QueuesList, Error> {
+async fn load(state: &AppState, params: &ListParams) -> Result<FlowsList, Error> {
     let page = load_page(state, params).await?;
-    let cursor = match (params.part, params.after.as_deref()) {
-        (Some(part), after) => Some((part, after)),
-        (None, Some(after)) => Some((Part::Declared, Some(after))),
-        (None, None) => None,
-    };
+    let cursor = params.cursor();
     let href = |path: &str, show: Show, live: bool, cursor| {
         format!("{path}?{}", params.query(show, live, cursor))
     };
-    Ok(QueuesList {
+    Ok(FlowsList {
         live: params.live,
-        pause_href: href("/ui/queues", params.show, false, cursor),
-        resume_href: href("/ui/queues", params.show, true, cursor),
+        pause_href: href("/ui/flows", params.show, false, cursor),
+        resume_href: href("/ui/flows", params.show, true, cursor),
         filters: Show::ALL
             .into_iter()
             .map(|show| FilterLink {
                 label: show.label(),
-                href: href("/ui/queues", show, params.live, None),
+                href: href("/ui/flows", show, params.live, None),
                 current: show == params.show,
             })
             .collect(),
-        table_href: href("/ui/queues/table", params.show, true, cursor),
+        table_href: href("/ui/flows/table", params.show, true, cursor),
         empty: match params.show {
-            Show::Declared => "No declared queues. Declare one with New queue.",
-            Show::Undeclared => "No jobs wait in an undeclared queue.",
-            Show::All => "No queues. Declare one with New queue, or give a job a queue.",
+            Show::Declared => "No declared flows. Declare one with New flow.",
+            Show::Undeclared => "No jobs wait in an undeclared flow.",
+            Show::All => "No flows. Declare one with New flow, or give a job a flow.",
         },
         first_href: cursor
             .is_some()
-            .then(|| href("/ui/queues", params.show, params.live, None)),
+            .then(|| href("/ui/flows", params.show, params.live, None)),
         next_href: page.next.as_ref().map(|(part, after)| {
             href(
-                "/ui/queues",
+                "/ui/flows",
                 params.show,
                 params.live,
                 Some((*part, after.as_deref())),
@@ -418,33 +412,30 @@ async fn load(state: &AppState, params: &ListParams) -> Result<QueuesList, Error
 }
 
 #[derive(Template, WebTemplate)]
-#[template(path = "ui/queues.html")]
-pub struct QueuesPage {
+#[template(path = "ui/flows.html")]
+pub struct FlowsPage {
     nav: Nav,
-    list: QueuesList,
+    list: FlowsList,
 }
 
 #[derive(Template, WebTemplate)]
-#[template(path = "ui/partials/queues_table.html")]
-pub struct QueuesPartial {
-    list: QueuesList,
+#[template(path = "ui/partials/flows_table.html")]
+pub struct FlowsPartial {
+    list: FlowsList,
 }
 
 #[derive(Template, WebTemplate)]
-#[template(path = "ui/queue_form.html")]
-pub struct QueueFormPage {
+#[template(path = "ui/flow_form.html")]
+pub struct FlowFormPage {
     nav: Nav,
-    form: QueueForm,
+    form: FlowForm,
 }
 
-pub async fn queues_page(
-    State(state): State<Arc<AppState>>,
-    RawQuery(query): RawQuery,
-) -> Response {
+pub async fn flows_page(State(state): State<Arc<AppState>>, RawQuery(query): RawQuery) -> Response {
     let params = ListParams::parse(query.as_deref());
     match load(&state, &params).await {
-        Ok(list) => QueuesPage {
-            nav: Nav::new(&state, "queues"),
+        Ok(list) => FlowsPage {
+            nav: Nav::new(&state, "flows"),
             list,
         }
         .into_response(),
@@ -453,85 +444,85 @@ pub async fn queues_page(
 }
 
 /// The table alone, refreshed every 2 s by the page.
-pub async fn queues_table(
+pub async fn flows_table(
     State(state): State<Arc<AppState>>,
     RawQuery(query): RawQuery,
 ) -> Response {
     let params = ListParams::parse(query.as_deref());
     match load(&state, &params).await {
-        Ok(list) => QueuesPartial { list }.into_response(),
+        Ok(list) => FlowsPartial { list }.into_response(),
         Err(err) => server_error(&err),
     }
 }
 
-fn form_page(state: &AppState, form: QueueForm) -> QueueFormPage {
-    QueueFormPage {
-        nav: Nav::new(state, "queues"),
+fn form_page(state: &AppState, form: FlowForm) -> FlowFormPage {
+    FlowFormPage {
+        nav: Nav::new(state, "flows"),
         form,
     }
 }
 
-/// The form for a new queue; `?queue=` fills the name (to declare one that jobs already use).
-pub async fn queue_new(State(state): State<Arc<AppState>>, RawQuery(query): RawQuery) -> Response {
-    let mut form = QueueForm::new();
-    if let Some(queue) = form_urlencoded::parse(query.unwrap_or_default().as_bytes())
-        .find_map(|(key, value)| (key == "queue").then(|| value.into_owned()))
+/// The form for a new flow; `?flow_key=` fills the name (to declare one that jobs already use).
+pub async fn flow_new(State(state): State<Arc<AppState>>, RawQuery(query): RawQuery) -> Response {
+    let mut form = FlowForm::new();
+    if let Some(flow) = form_urlencoded::parse(query.unwrap_or_default().as_bytes())
+        .find_map(|(key, value)| (key == "flow_key").then(|| value.into_owned()))
     {
-        form.queue = queue;
+        form.flow_key = flow;
     }
     form_page(&state, form).into_response()
 }
 
-pub async fn queue_edit(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
-    match queues::db::get_by_id(&state.pool, &id).await {
-        Ok(Some(row)) => form_page(&state, QueueForm::from_row(&row)).into_response(),
-        Ok(None) => Redirect::to("/ui/queues").into_response(),
+pub async fn flow_edit(State(state): State<Arc<AppState>>, Path(id): Path<String>) -> Response {
+    match flows::db::get_by_id(&state.pool, &id).await {
+        Ok(Some(row)) => form_page(&state, FlowForm::from_row(&row)).into_response(),
+        Ok(None) => Redirect::to("/ui/flows").into_response(),
         Err(err) => server_error(&err),
     }
 }
 
 fn invalid(
     state: &AppState,
-    mut form: QueueForm,
+    mut form: FlowForm,
     errors: BTreeMap<&'static str, String>,
 ) -> Response {
     form.errors = errors;
     (StatusCode::UNPROCESSABLE_ENTITY, form_page(state, form)).into_response()
 }
 
-pub async fn queue_create(State(state): State<Arc<AppState>>, body: Bytes) -> Response {
-    let form = QueueForm::from_pairs(None, &body);
+pub async fn flow_create(State(state): State<Arc<AppState>>, body: Bytes) -> Response {
+    let form = FlowForm::from_pairs(None, &body);
     let create = match form.checked() {
         Ok(create) => create,
         Err(errors) => return invalid(&state, form, errors),
     };
-    // a new queue must not replace the limits of one that is declared
-    match queues::db::get_by_id(&state.pool, &form.queue).await {
+    // a new flow must not replace the limits of one that is declared
+    match flows::db::get_by_id(&state.pool, &form.flow_key).await {
         Ok(Some(_)) => {
-            let errors = BTreeMap::from([("queue", "is declared already".to_owned())]);
+            let errors = BTreeMap::from([("flow_key", "is declared already".to_owned())]);
             return invalid(&state, form, errors);
         }
         Ok(None) => {}
         Err(err) => return server_error(&err),
     }
-    match queues::db::upsert(&state.pool, &create).await {
-        Ok(_) => Redirect::to("/ui/queues").into_response(),
+    match flows::db::upsert(&state.pool, &create).await {
+        Ok(_) => Redirect::to("/ui/flows").into_response(),
         Err(err) => server_error(&err),
     }
 }
 
-pub async fn queue_update(
+pub async fn flow_update(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
     body: Bytes,
 ) -> Response {
-    let form = QueueForm::from_pairs(Some(id), &body);
+    let form = FlowForm::from_pairs(Some(id), &body);
     let update = match form.checked() {
         Ok(update) => update,
         Err(errors) => return invalid(&state, form, errors),
     };
-    match queues::db::upsert(&state.pool, &update).await {
-        Ok(_) => Redirect::to("/ui/queues").into_response(),
+    match flows::db::upsert(&state.pool, &update).await {
+        Ok(_) => Redirect::to("/ui/flows").into_response(),
         Err(err) => server_error(&err),
     }
 }
@@ -545,23 +536,23 @@ enum Action {
 
 async fn act(state: &AppState, id: &str, headers: &HeaderMap, action: Action) -> Response {
     let done = match action {
-        Action::Pause => queues::db::pause(&state.pool, id).await,
-        Action::Resume => queues::db::resume(&state.pool, id).await,
-        Action::Delete => queues::db::delete(&state.pool, id).await,
+        Action::Pause => flows::db::pause(&state.pool, id).await,
+        Action::Resume => flows::db::resume(&state.pool, id).await,
+        Action::Delete => flows::db::delete(&state.pool, id).await,
     };
     if let Err(err) = done {
         return server_error(&err);
     }
     if !is_htmx(headers) {
-        return Redirect::to("/ui/queues").into_response();
+        return Redirect::to("/ui/flows").into_response();
     }
     match load(state, &ListParams::parse(None)).await {
-        Ok(list) => QueuesPartial { list }.into_response(),
+        Ok(list) => FlowsPartial { list }.into_response(),
         Err(err) => server_error(&err),
     }
 }
 
-pub async fn queue_pause(
+pub async fn flow_pause(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
     headers: HeaderMap,
@@ -569,7 +560,7 @@ pub async fn queue_pause(
     act(&state, &id, &headers, Action::Pause).await
 }
 
-pub async fn queue_resume(
+pub async fn flow_resume(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
     headers: HeaderMap,
@@ -577,7 +568,7 @@ pub async fn queue_resume(
     act(&state, &id, &headers, Action::Resume).await
 }
 
-pub async fn queue_delete(
+pub async fn flow_delete(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
     headers: HeaderMap,

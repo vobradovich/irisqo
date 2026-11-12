@@ -23,52 +23,51 @@ async fn json(
 }
 
 #[sqlx::test(migrations = "./sql/migrations")]
-async fn a_queue_is_declared_changed_paused_and_deleted(pool: PgPool) -> anyhow::Result<()> {
+async fn a_flow_is_declared_changed_paused_and_deleted(pool: PgPool) -> anyhow::Result<()> {
     let state = common::state(pool.clone());
     let addr = common::spawn_app(&state).await;
-    let url = format!("http://{addr}/api/v1/queues");
+    let url = format!("http://{addr}/api/v1/flows");
 
     let (status, row) = json(
         &state,
         Method::PUT,
         &format!("{url}/emails"),
-        r#"{"parallelism": 3, "rate": 5, "rate_period": 60}"#,
+        r#"{"concurrency": 3, "rate": 5, "rate_period": 60}"#,
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{row}");
-    assert_eq!(row["queue_id"], "emails");
-    assert_eq!(row["parallelism"], 3);
+    assert_eq!(row["flow_id"], "emails");
+    assert_eq!(row["concurrency"], 3);
     assert_eq!(row["rate"], 5);
     assert_eq!(row["rate_period"], 60);
-    assert_eq!(row["ordered"], true);
+    assert!(row.get("ordered").is_none(), "{row}");
     assert_eq!(row["paused"], false);
 
     let (status, body) = json(
         &state,
         Method::PUT,
         &format!("{url}/Bad"),
-        r#"{"parallelism": 0}"#,
+        r#"{"concurrency": 0}"#,
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(body["errors"].as_array().map(Vec::len), Some(2), "{body}");
 
-    // the settings are replaced as a whole: the rate goes, the order is off
+    // the settings are replaced as a whole: the rate goes
     let (status, row) = json(
         &state,
         Method::PUT,
         &format!("{url}/emails"),
-        r#"{"parallelism": 2, "ordered": false}"#,
+        r#"{"concurrency": 2}"#,
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{row}");
-    assert_eq!(row["parallelism"], 2);
-    assert_eq!(row["ordered"], false);
+    assert_eq!(row["concurrency"], 2);
     assert!(row["rate"].is_null());
     // no body is all the defaults; a new name is created
     let (status, row) = json(&state, Method::PUT, &format!("{url}/nope"), "").await;
     assert_eq!(status, StatusCode::CREATED, "{row}");
-    assert_eq!(row["parallelism"], 1);
+    assert_eq!(row["concurrency"], 1);
     let gone = common::request(&state, Method::DELETE, &format!("{url}/nope")).await;
     assert_eq!(gone.status(), StatusCode::NO_CONTENT);
 
@@ -79,9 +78,9 @@ async fn a_queue_is_declared_changed_paused_and_deleted(pool: PgPool) -> anyhow:
     assert_eq!(paused("/pause").await, StatusCode::NO_CONTENT);
     let (_, row) = json(&state, Method::GET, &format!("{url}/emails"), "").await;
     assert_eq!(row["paused"], true);
-    // a paused queue holds its jobs
+    // a paused flow holds its jobs
     let id = common::insert_enqueued(&pool, 1).await[0];
-    sqlx::query("UPDATE enqueued SET queue = 'emails' WHERE id = $1")
+    sqlx::query("UPDATE enqueued SET flow_key = 'emails' WHERE id = $1")
         .bind(id)
         .execute(&pool)
         .await?;
@@ -96,9 +95,9 @@ async fn a_queue_is_declared_changed_paused_and_deleted(pool: PgPool) -> anyhow:
     // the jobs use the name: it is no longer declared, but still counted
     let (_, list) = json(&state, Method::GET, &url, "").await;
     assert!(list["data"].as_array().is_some_and(Vec::is_empty), "{list}");
-    let other = format!("http://{addr}/api/v1/undeclared-queues");
+    let other = format!("http://{addr}/api/v1/undeclared-flows");
     let (_, list) = json(&state, Method::GET, &other, "").await;
-    assert_eq!(list["data"][0]["queue_id"], "emails", "{list}");
+    assert_eq!(list["data"][0]["flow_id"], "emails", "{list}");
     assert_eq!(list["data"][0]["processing"], 1, "{list}");
     let (status, _) = json(&state, Method::GET, &format!("{url}/emails"), "").await;
     assert_eq!(status, StatusCode::NOT_FOUND);
@@ -106,14 +105,14 @@ async fn a_queue_is_declared_changed_paused_and_deleted(pool: PgPool) -> anyhow:
 }
 
 #[sqlx::test(migrations = "./sql/migrations")]
-async fn the_ui_manages_queues(pool: PgPool) -> anyhow::Result<()> {
+async fn the_ui_manages_flows(pool: PgPool) -> anyhow::Result<()> {
     let state = common::state(pool.clone());
     let addr = common::spawn_app(&state).await;
-    let base = format!("http://{addr}/ui/queues");
+    let base = format!("http://{addr}/ui/flows");
 
     let (status, _, html) = send(&state, Method::GET, &base, false, "").await;
     assert_eq!(status, StatusCode::OK);
-    assert!(html.contains("No declared queues") && html.contains(r#"aria-current="page">Queues"#));
+    assert!(html.contains("No declared flows") && html.contains(r#"aria-current="page">Flows"#));
 
     // a wrong form is shown again with the reasons
     let (status, _, html) = send(
@@ -121,7 +120,7 @@ async fn the_ui_manages_queues(pool: PgPool) -> anyhow::Result<()> {
         Method::POST,
         &base,
         false,
-        "queue=reports&parallelism=x&ordered=on",
+        "flow_key=reports&concurrency=x",
     )
     .await;
     assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
@@ -132,7 +131,7 @@ async fn the_ui_manages_queues(pool: PgPool) -> anyhow::Result<()> {
         Method::POST,
         &base,
         false,
-        "queue=reports&parallelism=4&ordered=on&rate=10&rate_period=60",
+        "flow_key=reports&concurrency=4&rate=10&rate_period=60",
     )
     .await;
     assert_eq!(status, StatusCode::SEE_OTHER);
@@ -157,15 +156,15 @@ async fn the_ui_manages_queues(pool: PgPool) -> anyhow::Result<()> {
         Method::POST,
         &format!("{base}/reports"),
         false,
-        "parallelism=2",
+        "concurrency=2",
     )
     .await;
     assert_eq!(status, StatusCode::SEE_OTHER);
-    let (parallelism, ordered): (i32, bool) =
-        sqlx::query_as("SELECT parallelism, ordered FROM queues WHERE queue_id = 'reports'")
+    let concurrency: i32 =
+        sqlx::query_scalar("SELECT concurrency FROM flows WHERE flow_id = 'reports'")
             .fetch_one(&pool)
             .await?;
-    assert_eq!((parallelism, ordered), (2, false));
+    assert_eq!(concurrency, 2);
 
     let (_, _, html) = send(
         &state,
@@ -193,27 +192,27 @@ async fn the_ui_manages_queues(pool: PgPool) -> anyhow::Result<()> {
         "",
     )
     .await;
-    assert!(html.contains("No declared queues"));
+    assert!(html.contains("No declared flows"));
     Ok(())
 }
 
 #[sqlx::test(migrations = "./sql/migrations")]
-async fn the_ui_filters_and_pages_the_queues(pool: PgPool) -> anyhow::Result<()> {
+async fn the_ui_filters_and_pages_the_flows(pool: PgPool) -> anyhow::Result<()> {
     let state = common::state(pool.clone());
     let addr = common::spawn_app(&state).await;
-    let base = format!("http://{addr}/ui/queues");
-    // 52 declared queues, and jobs in two names that nobody declared
-    sqlx::query("INSERT INTO queues(queue_id) SELECT 'q' || lpad(g::text, 2, '0') FROM generate_series(1, 52) g")
+    let base = format!("http://{addr}/ui/flows");
+    // 52 declared flows, and jobs in two names that nobody declared
+    sqlx::query("INSERT INTO flows(flow_id) SELECT 'q' || lpad(g::text, 2, '0') FROM generate_series(1, 52) g")
         .execute(&pool)
         .await?;
-    for (id, queue) in common::insert_enqueued(&pool, 2)
+    for (id, flow) in common::insert_enqueued(&pool, 2)
         .await
         .into_iter()
         .zip(["free-a", "free-b"])
     {
-        sqlx::query("UPDATE enqueued SET queue = $2 WHERE id = $1")
+        sqlx::query("UPDATE enqueued SET flow_key = $2 WHERE id = $1")
             .bind(id)
-            .bind(queue)
+            .bind(flow)
             .execute(&pool)
             .await?;
     }

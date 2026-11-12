@@ -83,7 +83,7 @@ pub struct JobForm {
     pub retry_max_delay: String,
     pub timeout: String,
     pub key: String,
-    pub queue: String,
+    pub flow_key: String,
     pub priority: String,
     /// Field id -> message; `form` for errors of the whole form.
     pub errors: BTreeMap<&'static str, String>,
@@ -115,7 +115,7 @@ impl Default for JobForm {
             retry_max_delay: String::new(),
             timeout: String::new(),
             key: String::new(),
-            queue: String::new(),
+            flow_key: String::new(),
             priority: String::new(),
             errors: BTreeMap::new(),
             created: None,
@@ -171,7 +171,7 @@ impl JobForm {
                 "retry_max_delay" => form.retry_max_delay = value,
                 "timeout" => form.timeout = value,
                 "key" => form.key = value,
-                "queue" => form.queue = value,
+                "flow_key" => form.flow_key = value,
                 "priority" => form.priority = value,
                 "op" => op = value,
                 "index" => index = value,
@@ -253,8 +253,8 @@ impl JobForm {
         if let Some(id) = filled(&self.key) {
             params.push(("_key", id));
         }
-        if let Some(queue) = filled(&self.queue) {
-            params.push(("_queue", queue));
+        if let Some(flow) = filled(&self.flow_key) {
+            params.push(("_flow_key", flow));
         }
         if let Some(priority) = filled(&self.priority) {
             params.push(("_priority", priority));
@@ -379,7 +379,7 @@ fn field_of(param: &str) -> &'static str {
         "_retry" => "retry_count",
         "_timeout" => "timeout",
         "_key" => "key",
-        "_queue" => "queue",
+        "_flow_key" => "flow_key",
         "_priority" => "priority",
         _ => "url",
     }
@@ -388,6 +388,7 @@ fn field_of(param: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::FlowKey;
 
     fn options() -> WorkerOptions {
         WorkerOptions::for_tests()
@@ -472,30 +473,33 @@ mod tests {
     }
 
     #[test]
-    fn queue_and_priority_go_to_the_job() {
+    fn flow_and_priority_go_to_the_job() {
         let form = |extra: &str| {
             JobForm::from_pairs(
                 format!("method=GET&url=https%3A%2F%2Fexample.com{extra}").as_bytes(),
             )
         };
         let now = DateTime::from_timestamp(1_700_000_000, 0).unwrap();
-        let job = form("&queue=order-42")
+        let job = form("&flow_key=order-42")
             .prepare(&options(), now)
             .expect("valid");
-        assert_eq!(job.meta.queue.as_deref(), Some("order-42"));
+        assert_eq!(
+            job.meta.flow_key.as_ref().map(FlowKey::as_str),
+            Some("order-42")
+        );
         assert!(
-            form("&queue=order-42")
+            form("&flow_key=order-42")
                 .preview()
-                .contains("?_queue=order-42")
+                .contains("?_flow_key=order-42")
         );
         let job = form("&priority=7").prepare(&options(), now).expect("valid");
         assert_eq!(job.meta.priority, Some(7));
-        let errors = form("&queue=A&priority=x")
+        let errors = form("&flow_key=A&priority=x")
             .prepare(&options(), now)
             .expect_err("invalid");
         assert_eq!(
             errors.keys().copied().collect::<Vec<_>>(),
-            ["priority", "queue"]
+            ["flow_key", "priority"]
         );
     }
 

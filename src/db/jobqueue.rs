@@ -46,17 +46,17 @@ async fn create_enqueue(
     ), hist AS (
         INSERT INTO history(id, attempt, kind, instance_id) SELECT id, 0, 'enqueued', $5 FROM a
     )
-    INSERT INTO enqueued(id, queue, priority) SELECT id, $6, $7 FROM a RETURNING id";
+    INSERT INTO enqueued(id, flow_key, priority) SELECT id, $6, $7 FROM a RETURNING id";
 
     let body = job.body_bytes();
-    let (queue, priority) = job.meta.queue_priority();
+    let (flow, priority) = (job.meta.flow_key.as_ref(), job.meta.priority.unwrap_or(0));
     let job_id = sqlx::query_scalar::<_, i64>(SQL)
         .bind(Json(&job.meta))
         .bind(Json(&job.headers))
         .bind(body)
         .bind(&job.key)
         .bind(instance_id)
-        .bind(queue)
+        .bind(flow)
         .bind(priority)
         .fetch_one(pool)
         .await?;
@@ -79,11 +79,11 @@ async fn create_at(
     ), hist AS (
         INSERT INTO history(id, attempt, kind, instance_id) SELECT id, 0, 'scheduled', $6 FROM a
     )
-    INSERT INTO scheduled(id, at, queue, priority) SELECT id, $5::timestamptz, $7, $8 FROM a RETURNING id
+    INSERT INTO scheduled(id, at, flow_key, priority) SELECT id, $5::timestamptz, $7, $8 FROM a RETURNING id
     ";
 
     let body = job.body_bytes();
-    let (queue, priority) = job.meta.queue_priority();
+    let (flow, priority) = (job.meta.flow_key.as_ref(), job.meta.priority.unwrap_or(0));
 
     let job_id = sqlx::query_scalar::<_, i64>(SQL)
         .bind(Json(&job.meta))
@@ -92,7 +92,7 @@ async fn create_at(
         .bind(&job.key)
         .bind(at)
         .bind(instance_id)
-        .bind(queue)
+        .bind(flow)
         .bind(priority)
         .fetch_one(pool)
         .await?;
@@ -140,9 +140,9 @@ pub async fn enqueue_scheduled(
     WITH a AS (
         DELETE FROM scheduled
         WHERE id IN (SELECT id FROM scheduled WHERE at <= now() ORDER BY at, id LIMIT $1 FOR UPDATE SKIP LOCKED)
-        RETURNING id, attempt, at, queue, priority
+        RETURNING id, attempt, at, flow_key, priority
     ), b AS (
-        INSERT INTO enqueued(id, attempt, at, queue, priority) SELECT id, attempt, at, queue, priority FROM a RETURNING id, attempt
+        INSERT INTO enqueued(id, attempt, at, flow_key, priority) SELECT id, attempt, at, flow_key, priority FROM a RETURNING id, attempt
     )
     INSERT INTO history(id, attempt, kind, instance_id) SELECT id, attempt, 'enqueued', $2 FROM b";
     let res = sqlx::query(SQL)
@@ -153,7 +153,7 @@ pub async fn enqueue_scheduled(
     Ok(res.rows_affected())
 }
 
-/// Puts a job back to the queue for an immediate retry.
+/// Puts a job back to `enqueued` for an immediate retry.
 /// Only the current attempt (`instance_id` + `attempt`) may do it: returns 0 otherwise.
 pub async fn unlock(
     pool: &Pool<Postgres>,
@@ -163,9 +163,9 @@ pub async fn unlock(
 ) -> Result<u64, Error> {
     const SQL: &str = "
     WITH a AS (
-        DELETE FROM claimed WHERE id = $1 AND instance_id = $2 AND attempt = $3 RETURNING id, attempt, queue, priority
+        DELETE FROM claimed WHERE id = $1 AND instance_id = $2 AND attempt = $3 RETURNING id, attempt, flow_key, priority
     ), b AS (
-        INSERT INTO enqueued(id, attempt, queue, priority) SELECT id, attempt + 1, queue, priority FROM a RETURNING id, attempt
+        INSERT INTO enqueued(id, attempt, flow_key, priority) SELECT id, attempt + 1, flow_key, priority FROM a RETURNING id, attempt
     )
     INSERT INTO history(id, attempt, kind, instance_id, message) SELECT id, attempt, 'retried', $2, $4 FROM b";
     let res = sqlx::query(SQL)
@@ -190,18 +190,11 @@ pub async fn retry(
     const SQL: &str = "
     WITH a AS (
         DELETE FROM claimed WHERE id = $1 AND instance_id = $3 AND attempt = $4
-        RETURNING id, attempt + 1 AS attempt, queue, priority, instance_id
-    ), r AS (
-        -- in an ordered queue the retry holds its place: later jobs wait for it in `enqueued`
-        SELECT a.*, (a.queue IS NOT NULL AND coalesce(q.ordered, true)) AS held
-        FROM a LEFT JOIN queues q ON q.queue_id = a.queue
-    ), hist AS (
-        INSERT INTO history(id, attempt, kind, instance_id, message)
-        SELECT id, attempt, 'retried', instance_id, $5 FROM r
-    ), held AS (
-        INSERT INTO enqueued(id, attempt, at, queue, priority) SELECT id, attempt, $2::timestamptz, queue, priority FROM r WHERE held
+        RETURNING id, attempt + 1 AS attempt, flow_key, priority, instance_id
+    ), s AS (
+        INSERT INTO scheduled(id, at, attempt, flow_key, priority) SELECT id, $2::timestamptz, attempt, flow_key, priority FROM a RETURNING id, attempt
     )
-    INSERT INTO scheduled(id, at, attempt, queue, priority) SELECT id, $2::timestamptz, attempt, queue, priority FROM r WHERE NOT held";
+    INSERT INTO history(id, attempt, kind, instance_id, message) SELECT id, attempt, 'retried', $3, $5 FROM s";
     let res = sqlx::query(SQL)
         .bind(entry.id)
         .bind(at)
@@ -225,9 +218,9 @@ pub async fn reap_expired_locks(
     WITH a AS (
         DELETE FROM claimed
         WHERE id IN (SELECT id FROM claimed WHERE at < now() - $1 ORDER BY at LIMIT $3 FOR UPDATE SKIP LOCKED)
-        RETURNING id, attempt, queue, priority, instance_id
+        RETURNING id, attempt, flow_key, priority, instance_id
     ), b AS (
-        INSERT INTO enqueued(id, attempt, queue, priority) SELECT id, attempt + 1, queue, priority FROM a
+        INSERT INTO enqueued(id, attempt, flow_key, priority) SELECT id, attempt + 1, flow_key, priority FROM a
     )
     INSERT INTO history(id, attempt, kind, instance_id, message)
     SELECT id, attempt + 1, 'retried', $2, 'lock expired: ' || instance_id FROM a";
@@ -241,7 +234,7 @@ pub async fn reap_expired_locks(
 }
 
 /// Claims up to `prefetch` enqueued jobs for `instance_id` and returns them (`claim_v1`: the
-/// jobs without a queue first, the queues get what is left, in one call and one transaction).
+/// jobs without a flow first, the flows get what is left, in one call and one transaction).
 ///
 /// `claim_v1` reads the jobs in the statement that claims them: a join with `jobs` outside
 /// would use an older snapshot and miss a job enqueued meanwhile, which would stay claimed and
@@ -362,8 +355,8 @@ pub async fn requeue_job(
     WITH p AS (
         DELETE FROM processed WHERE id = $1 RETURNING id, attempt
     ), e AS (
-        INSERT INTO enqueued(id, attempt, queue, priority)
-        SELECT p.id, p.attempt + 1, j.meta->>'queue', coalesce((j.meta->>'priority')::smallint, 0)
+        INSERT INTO enqueued(id, attempt, flow_key, priority)
+        SELECT p.id, p.attempt + 1, j.meta->>'flow_key', coalesce((j.meta->>'priority')::int, 0)
         FROM p INNER JOIN jobs AS j ON j.id = p.id
         RETURNING id, attempt
     )

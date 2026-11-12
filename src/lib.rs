@@ -23,7 +23,7 @@ pub fn app(state: &Arc<AppState>) -> Router {
         .nest("/api/v1", features::history::routes(Arc::clone(state)))
         .nest("/api/v1", features::results::routes(Arc::clone(state)))
         .nest("/api/v1", features::schedules::routes(Arc::clone(state)))
-        .nest("/api/v1", features::queues::routes(Arc::clone(state)))
+        .nest("/api/v1", features::flows::routes(Arc::clone(state)))
         .nest("/api/v1", features::instances::routes(Arc::clone(state)))
         .route_layer(axum::middleware::from_fn_with_state(
             Arc::clone(state),

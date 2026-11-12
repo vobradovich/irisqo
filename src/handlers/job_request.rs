@@ -2,8 +2,7 @@ use super::http::{KEY_RULE, TIME_RULE, is_key};
 use crate::features::schedules::JobSchedule;
 use crate::models::headers::is_reserved_header;
 use crate::models::{
-    HttpMeta, JobCreate, JobMeta, JobRetry, JobSink, PRIORITY_RULE, ParamError, QUEUE_RULE,
-    WorkerOptions, is_queue,
+    FlowKey, HttpMeta, JobCreate, JobMeta, JobRetry, JobSink, ParamError, WorkerOptions,
 };
 use axum::body::Bytes;
 use base64::Engine as _;
@@ -37,7 +36,7 @@ pub enum SinkKind {
 ///
 /// `sink` (`http` with `method`, `url`; `noop`), `retry` (`fixed`, `fibonacci`, `exponential`
 /// with `retry_count`, `retry_delay`, which `fixed` may leave out to retry at once, and
-/// `retry_max_delay` of the last two), `delay` (seconds), `timeout` (milliseconds), `queue`,
+/// `retry_max_delay` of the last two), `delay` (seconds), `timeout` (milliseconds), `flow_key`,
 /// `priority`, `headers`, `body` or `body_base64`, `key`, `at`.
 /// The retry policy defaults to none, the timeout to `--timeout` when the job runs. Fields that
 /// are not known are ignored.
@@ -61,9 +60,9 @@ pub struct JobRequest {
     #[schema(minimum = 1)]
     pub(crate) timeout: Option<u32>,
     /// Flow key of the job: 1 to 128 characters of `a-z 0-9 . _ : -`.
-    pub(crate) queue: Option<String>,
-    /// Higher runs first; for a job without a queue only.
-    pub(crate) priority: Option<i16>,
+    pub(crate) flow_key: Option<String>,
+    /// Higher runs first, among the jobs of its flow if it has one.
+    pub(crate) priority: Option<i32>,
     /// Headers for the target. Names that differ only by case are rejected.
     #[schema(value_type = Option<HashMap<String, String>>)]
     pub(crate) headers: Option<HashMap<String, String>>,
@@ -164,7 +163,7 @@ impl JobRequest {
         }
     }
 
-    /// Sets a job parameter of `/to/` (`_delay`, `_queue`...); `Ok(false)` when `name` is not one.
+    /// Sets a job parameter of `/to/` (`_delay`, `_flow_key`...); `Ok(false)` when `name` is not one.
     pub(crate) fn set_param(&mut self, name: &str, value: &str) -> Result<bool, ParamError> {
         match name {
             "_delay" => {
@@ -184,11 +183,11 @@ impl JobRequest {
             "_retry" => {
                 self.retry = JobRetry::parse(value).map_err(refuse("_retry", JobRetry::RULE))?;
             }
-            "_queue" => self.queue = Some(value.to_owned()),
+            "_flow_key" => self.flow_key = Some(value.to_owned()),
             "_priority" => {
                 self.priority = Some(value.parse().map_err(refuse(
                     "_priority",
-                    "must be an integer from -32768 to 32767",
+                    "must be an integer from -2147483648 to 2147483647",
                 ))?);
             }
             "_key" => self.key = (!value.is_empty()).then(|| value.to_owned()),
@@ -247,13 +246,16 @@ impl JobRequest {
         if self.timeout == Some(0) {
             bad("timeout", "must be a positive number of milliseconds");
         }
-        // an empty queue is none, as in `enqueue_v1`
-        let queue = self.queue.take().filter(|queue| !queue.is_empty());
-        match &queue {
-            Some(queue) if !is_queue(queue) => bad("queue", QUEUE_RULE),
-            Some(_) if self.priority.is_some_and(|p| p != 0) => bad("priority", PRIORITY_RULE),
-            _ => {}
-        }
+        // an empty flow is none, as in `enqueue_v1`
+        let flow_key = self
+            .flow_key
+            .take()
+            .filter(|key| !key.is_empty())
+            .and_then(|key| {
+                FlowKey::try_from(key)
+                    .map_err(|rule| bad("flow_key", rule))
+                    .ok()
+            });
 
         let mut headers = normalize_headers(self.headers.take().unwrap_or_default())
             .map_err(|detail| bad("headers", detail))
@@ -305,7 +307,7 @@ impl JobRequest {
             sink,
             retry: self.retry,
             timeout: self.timeout,
-            queue,
+            flow_key,
             priority: self.priority,
             traceparent: None,
             tracestate: None,

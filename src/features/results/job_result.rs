@@ -183,7 +183,7 @@ impl From<Error> for JobResult {
             Error::JobNotFound(_)
             | Error::ResultNotFound(_)
             | Error::ScheduleNotFound(_)
-            | Error::QueueNotFound(_)
+            | Error::FlowNotFound(_)
             | Error::DbError(_)
             | Error::IoError(_)
             | Error::HttpError(_)

@@ -1,0 +1,41 @@
+<div id="flows" class="table-wrap"{% if list.live %} hx-get="{{ list.table_href }}" hx-trigger="every 2s" hx-swap="outerMorph"{% endif %} hx-target:inherited="this" hx-swap:inherited="outerMorph">
+  {% if list.rows.is_empty() %}
+  <p class="empty">{{ list.empty }}</p>
+  {% else %}
+  <table>
+    <thead>
+      <tr><th scope="col">Flow</th><th scope="col">State</th><th scope="col">Limits</th><th scope="col" class="num">Ready</th><th scope="col" class="num">Processing</th><th scope="col"><span class="sr-only">Actions</span></th></tr>
+    </thead>
+    <tbody>
+      {% for r in list.rows %}
+      <tr>
+        <td class="mono" title="{{ r.id }}">{{ r.id }}</td>
+        <td><span class="status {{ r.state }}"><span>{{ r.state_label }}</span></span></td>
+        <td>{{ r.concurrency }} at once{% if !r.rate.is_empty() %}<br><small class="muted">{{ r.rate }}</small>{% endif %}</td>
+        <td class="num mono">{% if r.counted %}{{ r.ready }}{% endif %}</td>
+        <td class="num mono">{% if r.counted %}{{ r.processing }}{% endif %}</td>
+        <td><div class="actions">
+          {% if r.declared %}
+          <a href="/ui/flows/{{ r.id|urlencode }}/edit" role="button" class="secondary">Edit</a>
+          {% if r.active %}
+          <form method="post" action="/ui/flows/{{ r.id|urlencode }}/pause" hx-post="/ui/flows/{{ r.id|urlencode }}/pause"><button type="submit" class="secondary">Pause</button></form>
+          {% else %}
+          <form method="post" action="/ui/flows/{{ r.id|urlencode }}/resume" hx-post="/ui/flows/{{ r.id|urlencode }}/resume"><button type="submit" class="secondary">Resume</button></form>
+          {% endif %}
+          <form method="post" action="/ui/flows/{{ r.id|urlencode }}/delete" hx-post="/ui/flows/{{ r.id|urlencode }}/delete" hx-confirm="Delete flow {{ r.id }}? Its jobs stay and run one at a time.">
+            <button type="submit" class="secondary danger" aria-label="Delete flow {{ r.id }}">Delete</button>
+          </form>
+          {% else %}
+          <a href="/ui/flows/new?flow_key={{ r.id|urlencode }}" role="button" class="secondary">Declare</a>
+          {% endif %}
+        </div></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+  <nav class="pager" aria-label="Pages">
+    {% if let Some(href) = list.first_href %}<a href="{{ href }}" role="button" class="secondary">First</a>{% endif %}
+    {% if let Some(href) = list.next_href %}<a href="{{ href }}" role="button" class="secondary">Next</a>{% endif %}
+  </nav>
+</div>

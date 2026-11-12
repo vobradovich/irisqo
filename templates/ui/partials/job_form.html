@@ -128,13 +128,13 @@
       {% if let Some(e) = form.error("timeout") %}<p><small id="timeout-error" class="error">Timeout {{ e }}</small></p>{% endif %}
       <p><small class="hint">Network errors, timeouts, 408, 425, 429 and 5xx are retried, with ±20 % jitter and never sooner than Retry-After. Timeout: up to {{ form.max_timeout }} ms.</small></p>
       <div class="row">
-        <label for="queue">Queue (optional)
-          <input id="queue" name="queue" class="mono" maxlength="128" value="{{ form.queue }}"{{ invalid(form, "queue", "queue-error") }}>
-          {{ note(form, "queue", "queue-error", "Queue", "Jobs of one queue run one at a time, in order.") }}
+        <label for="flow_key">Flow (optional)
+          <input id="flow_key" name="flow_key" class="mono" maxlength="128" value="{{ form.flow_key }}"{{ invalid(form, "flow_key", "flow_key-error") }}>
+          {{ note(form, "flow_key", "flow_key-error", "Flow", "Jobs of one flow run one at a time unless the flow is declared; no order.") }}
         </label>
         <label for="priority" class="narrow">Priority
-          <input id="priority" name="priority" type="number" min="-32768" max="32767" placeholder="0" value="{{ form.priority }}"{{ invalid(form, "priority", "priority-error") }}>
-          {{ note(form, "priority", "priority-error", "Priority", "Higher runs first; jobs without a queue only.") }}
+          <input id="priority" name="priority" type="number" min="-2147483648" max="2147483647" placeholder="0" value="{{ form.priority }}"{{ invalid(form, "priority", "priority-error") }}>
+          {{ note(form, "priority", "priority-error", "Priority", "Higher runs first, among the jobs of one flow if it has one.") }}
         </label>
       </div>
     </fieldset>

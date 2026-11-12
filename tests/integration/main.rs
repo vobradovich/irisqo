@@ -10,9 +10,9 @@
 mod api_v1;
 mod common;
 mod delivery;
+mod flows;
 mod limits;
 mod otel;
-mod queues;
 mod reliability;
 mod security;
 mod smoke;

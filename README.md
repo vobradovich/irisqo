@@ -34,13 +34,14 @@ Like QStash or Zeplo, but on **your** Postgres, calling **your** services.
 - [x] Proxy enqueue via `/to/{url}`, idempotency with `_key`
 - [x] Jobs and schedules API (cancel, retry); a job as JSON (`POST /api/v1/jobs`), described by OpenAPI (`/api/v1/openapi.json`)
 - [x] Transactional enqueue: `enqueue_v1(job jsonb)` in the service transaction ([docs/sql.md](docs/sql.md))
+- [x] Flow keys: per-key concurrency, rate, pause; undeclared keys default to 1; no order guarantee; `PUT /api/v1/flows/{id}`, Flows UI
 - [x] Server-rendered UI (htmx, Pico CSS, no CDN)
 - [x] OpenTelemetry (traces, metrics, logs over OTLP)
 - [x] SSRF protections, bearer auth, `problem+json` errors
 
 #### Planned
 
-- [ ] Flow keys: per-key parallelism, rate, pause; dynamic keys default to N = 1; per-host limit; Queues UI and metrics
+- [ ] Flow keys: per-host limit and metrics
 - [ ] Named schedules: run now, miss policy
 - [ ] Callbacks / `then` as child jobs (`parent_id`)
 - [ ] Signed deliveries (`Irisqo-Signature`, HMAC, key rotation)
@@ -122,7 +123,7 @@ GET {{host}}/to/https://postman-echo.com/get?_delay=5
 
 ### Jobs and schedules
 ```
-POST   {{host}}/api/v1/jobs                       a job as JSON: sink, method, url, retry*, timeout, delay | at, queue, priority, headers, body | body_base64, key (200, the job's id)
+POST   {{host}}/api/v1/jobs                       a job as JSON: sink, method, url, retry*, timeout, delay | at, flow_key, priority, headers, body | body_base64, key (200, the job's id)
 GET    {{host}}/api/v1/jobs/{id}                  the job
 GET    {{host}}/api/v1/jobs/{id}/result           its result
 GET    {{host}}/api/v1/jobs/{id}/history          its history
