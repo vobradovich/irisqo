@@ -799,8 +799,9 @@ async fn jobs_without_a_queue_come_first_and_the_queues_get_the_rest(
     .await?;
 
     // the batch is full of jobs without a queue: by priority, then by id; the queue waits
-    let ids =
-        |jobs: Vec<irisqo::models::JobWithAttempt>| jobs.iter().map(|j| j.job.id).collect::<Vec<_>>();
+    let ids = |jobs: Vec<irisqo::models::JobWithAttempt>| {
+        jobs.iter().map(|j| j.job.id).collect::<Vec<_>>()
+    };
     assert_eq!(
         ids(common::fetch(&state, 3).await),
         [urgent, plain[0], plain[1]]

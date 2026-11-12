@@ -49,7 +49,10 @@ pub async fn job_run(app_state: &AppState, job_with_attempt: JobWithAttempt) {
 /// The attempt is a `job.run` span, a child of the request that created the job
 /// (`meta.traceparent`), so retries are siblings. A schedule run instead starts its
 /// own trace with a link to that request: a schedule would grow one trace forever.
-pub async fn job_execute(app_state: &AppState, job_with_attempt: JobWithAttempt) -> Option<Completion> {
+pub async fn job_execute(
+    app_state: &AppState,
+    job_with_attempt: JobWithAttempt,
+) -> Option<Completion> {
     let meta = &job_with_attempt.job.meta;
     let span = tracing::info_span!(
         target: otel::TRACING_TARGET,
@@ -110,7 +113,10 @@ pub async fn job_execute(app_state: &AppState, job_with_attempt: JobWithAttempt)
 async fn job_attempt(app_state: &AppState, job_with_attempt: JobWithAttempt) -> Option<Completion> {
     let instance_id = &app_state.instance_id;
     let JobWithAttempt { job, attempt } = job_with_attempt;
-    let entry = JobEntry { id: job.id, attempt };
+    let entry = JobEntry {
+        id: job.id,
+        attempt,
+    };
     let job_id = job.id;
     debug!({ instance_id, job_id, attempt }, "==> run");
     let job_retry = job.meta.retry;
@@ -490,7 +496,10 @@ async fn retry_or_fail(
     message: &str,
 ) -> Result<(), Error> {
     let instance_id = &app_state.instance_id;
-    let JobEntry { id: job_id, attempt } = entry;
+    let JobEntry {
+        id: job_id,
+        attempt,
+    } = entry;
     let attempt: u16 = attempt.try_into().unwrap_or(u16::MAX);
     let job_retry = job_retry.ok_or(Error::RetriesExceeded)?;
     let delay = job_retry

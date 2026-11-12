@@ -238,7 +238,9 @@ impl StatusFilter {
             StatusFilter::Active => {
                 "SELECT id FROM scheduled UNION ALL SELECT id FROM enqueued UNION ALL SELECT id FROM claimed"
             }
-            StatusFilter::Only(JobStatus::Scheduled) => "SELECT id FROM scheduled WHERE attempt = 0",
+            StatusFilter::Only(JobStatus::Scheduled) => {
+                "SELECT id FROM scheduled WHERE attempt = 0"
+            }
             StatusFilter::Only(JobStatus::Retrying) => "SELECT id FROM scheduled WHERE attempt > 0",
             StatusFilter::Only(JobStatus::Enqueued) => "SELECT id FROM enqueued",
             StatusFilter::Only(JobStatus::Processing) => "SELECT id FROM claimed",
