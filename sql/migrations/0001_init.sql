@@ -335,6 +335,16 @@ LANGUAGE sql SET search_path FROM CURRENT AS $$
     ORDER BY c.priority DESC, c.attempt, c.id
 $$;
 
+CREATE FUNCTION flow_rate_free_v1(p_rate int, p_period int, p_next_at timestamptz)
+RETURNS int
+LANGUAGE sql STABLE PARALLEL SAFE AS $$
+    SELECT CASE
+        WHEN p_rate IS NULL THEN 2147483647
+        ELSE floor(greatest(p_period - greatest(extract(epoch FROM p_next_at - now()), 0), 0)
+                   * p_rate / p_period)::int
+    END
+$$;
+
 CREATE FUNCTION claim_flow_v1(p_instance_id text, p_limit int)
 RETURNS TABLE (
     id          bigint,
@@ -362,7 +372,7 @@ BEGIN
         LEFT JOIN flows f ON f.flow_id = names.flow_key
         WHERE names.flow_key IS NOT NULL
           AND NOT coalesce(f.paused, false)
-          AND coalesce(f.next_at, now()) <= now()
+          AND flow_rate_free_v1(f.rate, f.rate_period, f.next_at) >= 1
           AND (SELECT count(*) FROM claimed c WHERE c.flow_key = names.flow_key) < coalesce(f.concurrency, 1)
     )
     SELECT coalesce(array_agg(l.flow_key), '{}')
@@ -384,7 +394,7 @@ BEGIN
             ORDER BY e.priority DESC, e.attempt, e.id
             LIMIT least(greatest(coalesce(f.concurrency, 1)
                                  - (SELECT count(*) FROM claimed cl WHERE cl.flow_key = u.name), 0),
-                        coalesce(f.rate, 2147483647))
+                        flow_rate_free_v1(f.rate, f.rate_period, f.next_at))
         ) x
         ORDER BY x.id
         LIMIT p_limit
@@ -395,7 +405,7 @@ BEGIN
         SELECT b.id, b.attempt, 'claimed', p_instance_id FROM b
     ), rated AS (
         UPDATE flows f
-        SET next_at = now() + make_interval(secs => f.rate_period::float8 * y.n / f.rate)
+        SET next_at = greatest(f.next_at, now()) + make_interval(secs => f.rate_period::float8 * y.n / f.rate)
         FROM (SELECT b.flow_key, count(*) AS n FROM b GROUP BY b.flow_key) y
         WHERE f.flow_id = y.flow_key AND f.rate IS NOT NULL
     ), c AS (

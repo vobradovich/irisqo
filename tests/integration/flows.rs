@@ -85,6 +85,11 @@ async fn a_flow_is_declared_changed_paused_and_deleted(pool: PgPool) -> anyhow::
         .execute(&pool)
         .await?;
     assert!(common::fetch(&state, 10).await.is_empty());
+    // the list counts the waiting job, next to the flow's own fields
+    let (_, list) = json(&state, Method::GET, &url, "").await;
+    let first = &list["data"][0];
+    assert_eq!(first["flow_id"], "emails", "{list}");
+    assert_eq!((&first["waiting"], &first["processing"]), (&1.into(), &0.into()), "{list}");
     assert_eq!(paused("/resume").await, StatusCode::NO_CONTENT);
     assert_eq!(common::fetch(&state, 10).await.len(), 1);
 
@@ -254,5 +259,32 @@ async fn the_ui_filters_and_pages_the_flows(pool: PgPool) -> anyhow::Result<()> 
     assert!(html.find("q52") < html.find("free-a"));
     let (_, _, html) = send(&state, Method::GET, &format!("{base}?show=all"), false, "").await;
     assert!(!html.contains("free-a") && html.contains("Next"));
+    Ok(())
+}
+
+#[sqlx::test(migrations = "./sql/migrations")]
+async fn the_ui_shows_until_when_the_rate_limit_holds_the_jobs(pool: PgPool) -> anyhow::Result<()> {
+    let state = common::state(pool.clone());
+    let addr = common::spawn_app(&state).await;
+    let base = format!("http://{addr}/ui/flows");
+    sqlx::query(
+        "INSERT INTO flows(flow_id, concurrency, rate, rate_period) VALUES ('q', 8, 1, 3600)",
+    )
+    .execute(&pool)
+    .await?;
+    for id in common::insert_enqueued(&pool, 2).await {
+        sqlx::query("UPDATE enqueued SET flow_key = 'q' WHERE id = $1")
+            .bind(id)
+            .execute(&pool)
+            .await?;
+    }
+    // nothing started yet: two jobs wait, no limit holds them
+    let (_, _, html) = send(&state, Method::GET, &base, false, "").await;
+    assert!(!html.contains("Rate limited") && html.contains("1 per 1 h · 1 left"), "{html}");
+
+    // one start per hour: the second job waits until the bucket has a start free
+    assert_eq!(common::fetch(&state, 10).await.len(), 1);
+    let (_, _, html) = send(&state, Method::GET, &base, false, "").await;
+    assert!(html.contains("Rate limited until") && html.contains("1 per 1 h · 0 left"), "{html}");
     Ok(())
 }

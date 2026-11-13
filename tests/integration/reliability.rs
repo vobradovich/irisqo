@@ -897,6 +897,54 @@ async fn a_paused_flow_gives_nothing_and_a_rate_spaces_the_starts(
 }
 
 #[sqlx::test(migrations = "./sql/migrations")]
+async fn flow_rate_free_counts_the_starts_a_bucket_holds(pool: PgPool) -> anyhow::Result<()> {
+    // no rate, idle, a year idle, half the debt, one start short of a refill, a full debt
+    let free: (i32, i32, i32, i32, i32, i32) = sqlx::query_as(
+        "SELECT flow_rate_free_v1(NULL, 60, NULL),
+                flow_rate_free_v1(10, 60, NULL),
+                flow_rate_free_v1(10, 60, now() - interval '1 year'),
+                flow_rate_free_v1(10, 60, now() + interval '30 seconds'),
+                flow_rate_free_v1(10, 60, now() + interval '59 seconds'),
+                flow_rate_free_v1(10, 60, now() + interval '1 hour')",
+    )
+    .fetch_one(&pool)
+    .await?;
+    assert_eq!(free, (i32::MAX, 10, 10, 5, 0, 0));
+    Ok(())
+}
+
+#[sqlx::test(migrations = "./sql/migrations")]
+async fn a_rate_is_a_bucket_of_one_period_that_refills_one_start_at_a_time(
+    pool: PgPool,
+) -> anyhow::Result<()> {
+    let state = common::state(pool.clone());
+    // 10 per minute: a start every 6 s, a full bucket holds 10
+    sqlx::query(
+        "INSERT INTO flows(flow_id, concurrency, rate, rate_period) VALUES ('q', 100, 10, 60)",
+    )
+    .execute(&pool)
+    .await?;
+    for _ in 0..25 {
+        enqueue_in_flow(&pool, "q").await;
+    }
+    // idle: the whole bucket at once, no more
+    assert_eq!(common::fetch(&state, 64).await.len(), 10);
+    assert!(common::fetch(&state, 64).await.is_empty());
+    // 6 s of the debt paid off: one start is free again, and costs 6 s
+    sqlx::query("UPDATE flows SET next_at = now() + interval '54 seconds' WHERE flow_id = 'q'")
+        .execute(&pool)
+        .await?;
+    assert_eq!(common::fetch(&state, 64).await.len(), 1);
+    assert!(common::fetch(&state, 64).await.is_empty());
+    // a long idle time gives no more than a full bucket
+    sqlx::query("UPDATE flows SET next_at = now() - interval '1 hour' WHERE flow_id = 'q'")
+        .execute(&pool)
+        .await?;
+    assert_eq!(common::fetch(&state, 64).await.len(), 10);
+    Ok(())
+}
+
+#[sqlx::test(migrations = "./sql/migrations")]
 async fn enqueue_v1_needs_a_sink_and_at_excludes_delay(pool: PgPool) -> anyhow::Result<()> {
     let enqueue = |job: serde_json::Value| {
         sqlx::query_scalar::<_, i64>("SELECT enqueue_v1($1::jsonb)")
