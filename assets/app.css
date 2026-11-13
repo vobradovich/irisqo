@@ -356,6 +356,7 @@ a[role="button"].secondary:hover {
 .status.processing,
 .status.assigned { color: var(--st-processing-fg); background: var(--st-processing-bg); }
 .status.retrying,
+.status.limited,
 .status.retried { color: var(--st-retrying-fg); background: var(--st-retrying-bg); }
 .status.completed { color: var(--st-completed-fg); background: var(--st-completed-bg); }
 .status.failed { color: var(--st-failed-fg); background: var(--st-failed-bg); }

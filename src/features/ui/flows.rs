@@ -11,11 +11,12 @@ use axum::{
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Redirect, Response},
 };
+use chrono::Duration;
 use url::form_urlencoded;
 
 use super::{Nav, is_htmx, jobs::FilterLink, server_error};
 use crate::{
-    features::flows::{self, FlowCreate, FlowRequest, FlowRow, UndeclaredFlowRow},
+    features::flows::{self, FlowCreate, FlowListRow, FlowRequest, FlowRow, UndeclaredFlowRow},
     models::{AppState, Error, ParamError},
 };
 
@@ -31,10 +32,19 @@ pub struct FlowRowView {
     pub concurrency: i32,
     /// `5 / s`, empty without a rate limit.
     pub rate: String,
-    /// Only the names without a declaration are counted.
-    pub counted: bool,
-    pub ready: i64,
+    /// Jobs waiting for a place: `100+` over a hundred (the count stops at 101).
+    pub waiting: String,
     pub processing: i64,
+    /// `14:32:18 UTC` while the rate limit holds waiting jobs back (`next_at` is ahead).
+    pub limited_until: Option<String>,
+}
+
+fn waiting(count: i64) -> String {
+    if count > 100 {
+        "100+".to_owned()
+    } else {
+        count.to_string()
+    }
 }
 
 /// Which flows the list shows.
@@ -153,26 +163,40 @@ fn period(secs: i64) -> String {
 }
 
 impl FlowRowView {
-    fn declared(row: &FlowRow) -> Self {
-        let (state, state_label) = if row.paused {
+    fn declared(row: &FlowListRow) -> Self {
+        let flow = &row.flow;
+        let (state, state_label) = if flow.paused {
             ("paused", "Paused")
         } else {
             ("running", "Active")
         };
+        // GCRA (docs/sql.md): `rate_left` is counted by the database, the time the next start is
+        // free is the debt less what the bucket holds
+        let bucket = flow.rate.zip(row.rate_left).map(|(rate, left)| {
+            let slack_ms = i64::from(flow.rate_period) * 1000 * i64::from(rate - 1) / i64::from(rate);
+            let free_at = flow
+                .next_at
+                .map(|at| at - Duration::milliseconds(slack_ms));
+            (rate, left, free_at)
+        });
         FlowRowView {
-            id: row.flow_id.clone(),
+            id: flow.flow_id.clone(),
             declared: true,
-            active: !row.paused,
+            active: !flow.paused,
             state,
             state_label,
-            concurrency: row.concurrency,
-            rate: row
-                .rate
-                .map(|rate| format!("{rate} per {}", period(i64::from(row.rate_period))))
+            concurrency: flow.concurrency,
+            rate: bucket
+                .map(|(rate, left, _)| {
+                    let per = period(i64::from(flow.rate_period));
+                    format!("{rate} per {per} · {left} left")
+                })
                 .unwrap_or_default(),
-            counted: false,
-            ready: 0,
-            processing: 0,
+            waiting: waiting(row.waiting),
+            processing: row.processing,
+            limited_until: bucket
+                .and_then(|(_, left, free_at)| free_at.filter(|_| left == 0 && row.waiting > 0))
+                .map(|at| at.format("%H:%M:%S UTC").to_string()),
         }
     }
 
@@ -185,9 +209,9 @@ impl FlowRowView {
             state_label: "Undeclared",
             concurrency: 1,
             rate: String::new(),
-            counted: true,
-            ready: row.ready,
+            waiting: waiting(row.waiting),
             processing: row.processing,
+            limited_until: None,
         }
     }
 }

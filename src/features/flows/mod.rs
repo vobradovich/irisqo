@@ -1,5 +1,5 @@
 pub use flow_request::{FlowCreate, FlowRequest};
-pub use flow_row::{FlowRow, UndeclaredFlowRow};
+pub use flow_row::{FlowListRow, FlowRow, UndeclaredFlowRow};
 pub use http::routes;
 
 pub mod db;

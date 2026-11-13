@@ -16,13 +16,28 @@ pub struct FlowRow {
     pub next_at: Option<DateTime<Utc>>,
 }
 
+/// A declared flow of the list, with its jobs counted.
+#[derive(Debug, Clone, sqlx::FromRow, Serialize, utoipa::ToSchema)]
+pub struct FlowListRow {
+    #[sqlx(flatten)]
+    #[serde(flatten)]
+    pub flow: FlowRow,
+    /// Enqueued, waiting for a free place; counted up to 101.
+    pub waiting: i64,
+    /// Claimed by an instance.
+    pub processing: i64,
+    /// Starts the rate limit lets through right now (`rate` when idle, one more every
+    /// `rate_period / rate`); `null` without a rate.
+    pub rate_left: Option<i32>,
+}
+
 /// A name that jobs use but nobody declared: it runs one job at a time. Only the names
 /// with jobs in `enqueued` or `claimed` are listed.
 #[derive(Debug, Clone, sqlx::FromRow, Serialize, utoipa::ToSchema)]
 pub struct UndeclaredFlowRow {
     pub flow_id: String,
-    /// Enqueued, waiting for a free place.
-    pub ready: i64,
+    /// Enqueued, waiting for a free place; counted up to 101.
+    pub waiting: i64,
     /// Claimed by an instance.
     pub processing: i64,
 }

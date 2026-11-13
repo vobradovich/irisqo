@@ -46,7 +46,7 @@ CREATE TABLE flows (
                 CHECK (rate > 0),               -- runs per rate_period
     rate_period int NOT NULL DEFAULT 1
                 CHECK (rate_period > 0),        -- seconds
-    next_at     timestamptz NULL,               -- rate limit: nothing starts before this
+    next_at     timestamptz NULL,               -- rate limit (GCRA): when the starts so far are paid off
     paused      boolean NOT NULL DEFAULT false
 );
 ```
@@ -270,16 +270,27 @@ partial index `ix_enqueued_candidates`) in one statement: `enqueued` -> `claimed
 ### claim_flow_v1
 
 `claim_flow_v1(p_instance_id text, p_limit int)` returns the same columns: the jobs of the flows. A flow runs at most
-`concurrency` jobs at once (1 when it is not declared), starts at most `rate` per `rate_period`, and starts nothing
-while it is paused or before `next_at`. No order is promised: a flow gives its jobs by `id`, but a retry or a
-released job goes back with its place lost.
+`concurrency` jobs at once (1 when it is not declared), starts nothing while it is paused, and limits the start rate by
+GCRA (below). No order is promised: a flow gives its jobs by `id`, but a retry or a released job goes back with its
+place lost.
+
+The rate is a leaky bucket kept in one timestamp, `next_at`: the time by which the starts so far are paid off. Every
+start adds `T = rate_period / rate` to it (`next_at = greatest(next_at, now()) + n * T`). The debt is
+`D = max(next_at - now(), 0)` and the bucket holds one period, so `remaining = floor((rate_period - D) * rate /
+rate_period)` starts are free right now: `rate` after an idle period, then one more every `T`. A flow is ready when
+`remaining >= 1` and takes at most `remaining` jobs. `NULL` `next_at` is an empty debt. `flow_rate_free_v1(rate,
+rate_period, next_at)` computes `remaining`: the starts a flow can make right now, `2147483647` without a rate (so an
+undeclared flow is not limited). The flow list reads the same function (`rate_left`, `null` without a rate), so the UI
+and the claim agree. It has no `SET search_path` on purpose: a SQL function with a `SET` clause is not inlined into the
+query that calls it, and it uses only built-ins. Within any window of one period
+at most about `2 * rate` jobs can start (a full bucket, then its refill); the long-run rate is `rate / rate_period`.
 
 Step 1 locks the flows that can start a job (`v_flows`). The locks are taken in a statement of their own: the next
 statement reads `claimed` after them, so two workers never fill the same free place. Inside it, the recursive `names`
 finds the distinct waiting flows (index skip scan on `ix_enqueued_flow`, one probe per name), `ready` keeps the ones
-that are not paused, not rate limited and not full (`MATERIALIZED`, so the lock is taken after these checks).
+that are not paused, have a free start (`remaining >= 1`) and are not full (`MATERIALIZED`, so the lock is taken after these checks).
 
-Step 2 takes the free places of the locked flows (`concurrency - running`, at most `rate`) and the ids of that many
+Step 2 takes the free places of the locked flows (`concurrency - running`, at most `remaining`) and the ids of that many
 jobs per flow (`priority DESC`, `attempt`, `id`), at most `p_limit` in all, deletes them from `enqueued`, writes `history`, inserts into `claimed`, moves `next_at` of a rate-limited flow and returns the jobs.
 
 ### Why the jobs are returned by the claim

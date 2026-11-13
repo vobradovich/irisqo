@@ -1,23 +1,28 @@
 use sqlx::{Pool, Postgres};
 
-use super::{FlowCreate, FlowRow, UndeclaredFlowRow};
+use super::{FlowCreate, FlowListRow, FlowRow, UndeclaredFlowRow};
 use crate::models::Error;
 
-/// A page of the declared flows by name: straight from `flows`. `after` is the last name of
-/// the previous page.
+/// A page of the declared flows by name, with their jobs counted: `waiting` stops at 101 (an
+/// index range of at most 101 entries per flow), `processing` is at most the concurrency.
+/// `after` is the last name of the previous page.
 pub async fn list(
     pool: &Pool<Postgres>,
     after: Option<&str>,
     limit: i64,
     offset: i64,
-) -> Result<Vec<FlowRow>, Error> {
+) -> Result<Vec<FlowListRow>, Error> {
     const SQL: &str = "
-    SELECT flow_id, concurrency, rate, rate_period, paused, next_at
+    SELECT flow_id, concurrency, rate, rate_period, paused, next_at,
+           (SELECT count(*) FROM (SELECT 1 FROM enqueued e WHERE e.flow_key = flows.flow_id LIMIT 101) w) AS waiting,
+           (SELECT count(*) FROM claimed c WHERE c.flow_key = flows.flow_id) AS processing,
+           CASE WHEN rate IS NULL THEN NULL
+                ELSE flow_rate_free_v1(rate, rate_period, next_at) END AS rate_left
     FROM flows
     WHERE flow_id > coalesce($1::text, '')
     ORDER BY flow_id
     LIMIT $2 OFFSET $3";
-    let rows = sqlx::query_as::<_, FlowRow>(SQL)
+    let rows = sqlx::query_as::<_, FlowListRow>(SQL)
         .bind(after)
         .bind(limit)
         .bind(offset)
@@ -57,7 +62,7 @@ pub async fn list_undeclared(
         LIMIT $2 OFFSET $3
     )
     SELECT p.flow_key AS flow_id,
-           (SELECT count(*) FROM enqueued e WHERE e.flow_key = p.flow_key) AS ready,
+           (SELECT count(*) FROM (SELECT 1 FROM enqueued e WHERE e.flow_key = p.flow_key LIMIT 101) w) AS waiting,
            (SELECT count(*) FROM claimed c WHERE c.flow_key = p.flow_key) AS processing
     FROM page p
     ORDER BY p.flow_key";
@@ -97,8 +102,7 @@ pub async fn upsert(pool: &Pool<Postgres>, flow: &FlowCreate) -> Result<(FlowRow
     ON CONFLICT (flow_id) DO UPDATE
         SET concurrency = EXCLUDED.concurrency,
             rate = EXCLUDED.rate, rate_period = EXCLUDED.rate_period, next_at = NULL
-    RETURNING flow_id, concurrency, rate,
-              rate_period, paused, next_at,
+    RETURNING flow_id, concurrency, rate, rate_period, paused, next_at,
               (xmax = 0) AS created";
     let done = sqlx::query_as::<_, Upserted>(SQL)
         .bind(&flow.flow_key)

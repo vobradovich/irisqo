@@ -49,14 +49,14 @@ async fn create_enqueue(
     INSERT INTO enqueued(id, flow_key, priority) SELECT id, $6, $7 FROM a RETURNING id";
 
     let body = job.body_bytes();
-    let (flow, priority) = (job.meta.flow_key.as_ref(), job.meta.priority.unwrap_or(0));
+    let (flow_key, priority) = (job.meta.flow_key.as_ref(), job.meta.priority.unwrap_or(0));
     let job_id = sqlx::query_scalar::<_, i64>(SQL)
         .bind(Json(&job.meta))
         .bind(Json(&job.headers))
         .bind(body)
         .bind(&job.key)
         .bind(instance_id)
-        .bind(flow)
+        .bind(flow_key)
         .bind(priority)
         .fetch_one(pool)
         .await?;
@@ -83,7 +83,7 @@ async fn create_at(
     ";
 
     let body = job.body_bytes();
-    let (flow, priority) = (job.meta.flow_key.as_ref(), job.meta.priority.unwrap_or(0));
+    let (flow_key, priority) = (job.meta.flow_key.as_ref(), job.meta.priority.unwrap_or(0));
 
     let job_id = sqlx::query_scalar::<_, i64>(SQL)
         .bind(Json(&job.meta))
@@ -92,7 +92,7 @@ async fn create_at(
         .bind(&job.key)
         .bind(at)
         .bind(instance_id)
-        .bind(flow)
+        .bind(flow_key)
         .bind(priority)
         .fetch_one(pool)
         .await?;
