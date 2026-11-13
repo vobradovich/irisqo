@@ -94,7 +94,13 @@ pub async fn upsert(
     // the key of a run is `{schedule_id}-{run time, secs}`: a schedule has at most one run in a
     // second, and the run that was cancelled above gave its key back
     let key = format!("{schedule_id}-{}", at.timestamp());
-    let (flow, priority) = (job.meta.flow_key.as_ref(), job.meta.priority.unwrap_or(0));
+    let (flow, priority) = (
+        job.meta
+            .flow_key
+            .as_ref()
+            .map(crate::models::FlowKey::as_str),
+        job.meta.priority.unwrap_or(0),
+    );
     let id = sqlx::query_scalar::<_, i64>(SQL_RUN)
         .bind(Json(&job.meta))
         .bind(Json(&job.headers))

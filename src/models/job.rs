@@ -104,10 +104,10 @@ pub struct JobMeta {
 
 /// The key of a flow, as `enqueue_v1` checks it: 1 to 128 characters of `a-z 0-9 . _ : -`, the
 /// first a letter or a digit. Only [`FlowKey::try_from`] (and the deserialization, which uses it)
-/// makes one, so a `FlowKey` is always valid.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, sqlx::Type, utoipa::ToSchema)]
+/// makes one, so a `FlowKey` is always valid. It has no `sqlx::Type` on purpose: the derive would
+/// add `Decode`, which builds one from a database value without the check. Bind [`FlowKey::as_str`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 #[serde(try_from = "String")]
-#[sqlx(transparent)]
 pub struct FlowKey(String);
 
 impl FlowKey {

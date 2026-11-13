@@ -203,7 +203,11 @@ async fn load_list(state: &AppState, params: &ListParams) -> Result<JobsList, Er
         StatCard {
             label: "Enqueued",
             value: queue.enqueued.to_string(),
-            hint: "waiting for a worker".into(),
+            hint: format!(
+                "{} for workers · {} held by flows",
+                queue.enqueued - queue.held,
+                queue.held
+            ),
         },
         StatCard {
             label: "Processing",
@@ -224,7 +228,7 @@ async fn load_list(state: &AppState, params: &ListParams) -> Result<JobsList, Er
                     .trim_end_matches(" ago")
                     .to_owned()
             },
-            hint: "oldest due job waiting".into(),
+            hint: "oldest due job without a flow".into(),
         },
     ];
     let status_word = match params.status {

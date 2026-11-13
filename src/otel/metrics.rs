@@ -42,7 +42,9 @@ pub struct Metrics {
     pub retention_deleted: Counter<u64>,
     /// `irisqo.queue.depth` {state: scheduled | enqueued | processing}
     pub queue_depth: Gauge<u64>,
-    /// `irisqo.queue.lag`: seconds the oldest due job has been waiting to start
+    /// `irisqo.queue.held`: the enqueued jobs that belong to a flow (a part of `enqueued`)
+    pub queue_held: Gauge<u64>,
+    /// `irisqo.queue.lag`: seconds the oldest due job without a flow has been waiting to start
     pub queue_lag: Gauge<f64>,
 }
 
@@ -108,10 +110,21 @@ pub fn metrics() -> &'static Metrics {
                     "Jobs in the queue, by state (the whole queue, not this instance)",
                 )
                 .build(),
+            queue_held: meter
+                .u64_gauge("irisqo.queue.held")
+                .with_unit("{job}")
+                .with_description(
+                    "Enqueued jobs of a flow: they wait for the limits of their flow (a part of \
+                     the enqueued jobs in irisqo.queue.depth)",
+                )
+                .build(),
             queue_lag: meter
                 .f64_gauge("irisqo.queue.lag")
                 .with_unit("s")
-                .with_description("How long the oldest due job has been waiting to start")
+                .with_description(
+                    "How long the oldest due job without a flow has been waiting to start \
+                     (a flow holds its jobs by its limits, that is no lag)",
+                )
                 .build(),
         }
     })

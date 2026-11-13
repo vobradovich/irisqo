@@ -173,10 +173,9 @@ impl FlowRowView {
         // GCRA (docs/sql.md): `rate_left` is counted by the database, the time the next start is
         // free is the debt less what the bucket holds
         let bucket = flow.rate.zip(row.rate_left).map(|(rate, left)| {
-            let slack_ms = i64::from(flow.rate_period) * 1000 * i64::from(rate - 1) / i64::from(rate);
-            let free_at = flow
-                .next_at
-                .map(|at| at - Duration::milliseconds(slack_ms));
+            let slack_ms =
+                i64::from(flow.rate_period) * 1000 * i64::from(rate - 1) / i64::from(rate);
+            let free_at = flow.next_at.map(|at| at - Duration::milliseconds(slack_ms));
             (rate, left, free_at)
         });
         FlowRowView {
