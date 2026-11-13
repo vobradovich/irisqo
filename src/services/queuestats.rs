@@ -9,7 +9,7 @@ use crate::{db, models::AppState, otel::metrics::metrics};
 /// `count(*)` over the queue tables: often enough for a dashboard, rare enough for the db.
 const STATS_INTERVAL: Duration = Duration::from_secs(15);
 
-/// Records `irisqo.queue.depth` and `irisqo.queue.lag` until shutdown.
+/// Records `irisqo.queue.depth`, `irisqo.queue.held` and `irisqo.queue.lag` until shutdown.
 pub async fn run(app_state: &AppState) {
     let instance_id = &app_state.instance_id;
     info!({ instance_id }, "start");
@@ -49,5 +49,8 @@ pub async fn record(app_state: &AppState) {
             &[KeyValue::new("state", state)],
         );
     }
+    metrics
+        .queue_held
+        .record(u64::try_from(stats.held).unwrap_or_default(), &[]);
     metrics.queue_lag.record(stats.lag, &[]);
 }

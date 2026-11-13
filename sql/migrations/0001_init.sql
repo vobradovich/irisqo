@@ -279,7 +279,9 @@ BEGIN
 
     INSERT INTO stats (name, value, at)
     SELECT v.name, v.value, clock_timestamp()
-    FROM (SELECT count(*) AS n, min(at) AS due
+    FROM (SELECT count(*) AS n,
+                 count(*) FILTER (WHERE flow_key IS NOT NULL) AS held,
+                 min(at) FILTER (WHERE flow_key IS NULL) AS due
           FROM enqueued) AS e,
          (SELECT count(*) AS n, count(*) FILTER (WHERE status = 'failed') AS failed
           FROM processed
@@ -287,6 +289,7 @@ BEGIN
          LATERAL (VALUES
             ('scheduled', (SELECT count(*) FROM scheduled)),
             ('enqueued',  e.n),
+            ('held',      e.held),
             ('claimed',   (SELECT count(*) FROM claimed)),
             ('lag_seconds',
                 (SELECT coalesce(floor(extract(epoch FROM clock_timestamp() - min(d.at))), 0)::bigint

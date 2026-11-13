@@ -199,6 +199,12 @@ CREATE INDEX ix_history_id_seq ON history (id, seq);
 ### Stats
 
 Counters of the UI, counted by `refresh_stats_v1` instead of on every page request: rows per state, `lag_seconds` (age of the oldest due job), `processed_24h`, `failed_24h`, `instances`.
+`enqueued` counts every row of `enqueued`; `held` is the part of them that belongs to a flow (they wait for the limits
+of their flow: concurrency, rate, pause, or for a worker), so `enqueued - held` wait for a worker. `lag_seconds`
+ignores the held jobs: a flow keeps its jobs back by design, so only a job without a flow that waits is a lack of
+workers. A job of a flow that has a free place and waits for a worker is counted as held too (a flow's jobs are not
+told apart by whether the flow is blocked). The same numbers go to `irisqo.queue.depth{state=enqueued}`,
+`irisqo.queue.held` and `irisqo.queue.lag`.
 
 ```sql
 CREATE TABLE stats (

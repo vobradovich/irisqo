@@ -105,7 +105,7 @@ pub async fn upsert(pool: &Pool<Postgres>, flow: &FlowCreate) -> Result<(FlowRow
     RETURNING flow_id, concurrency, rate, rate_period, paused, next_at,
               (xmax = 0) AS created";
     let done = sqlx::query_as::<_, Upserted>(SQL)
-        .bind(&flow.flow_key)
+        .bind(flow.flow_key.as_str())
         .bind(flow.concurrency)
         .bind(flow.rate)
         .bind(flow.rate_period)
