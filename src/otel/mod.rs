@@ -59,6 +59,23 @@ pub fn span_ids(span: &tracing::Span) -> Option<(String, String)> {
     })
 }
 
+/// The `traceparent` of a span, with the sampling flag it really has: what a job made on the
+/// trace of this span continues; `None` when the span is not traced.
+#[must_use]
+pub fn span_traceparent(span: &tracing::Span) -> Option<String> {
+    let cx = span.context();
+    let span_ref = cx.span();
+    let span_context = span_ref.span_context();
+    span_context.is_valid().then(|| {
+        format!(
+            "00-{}-{}-{:02x}",
+            span_context.trace_id(),
+            span_context.span_id(),
+            span_context.trace_flags().to_u8()
+        )
+    })
+}
+
 #[inline]
 #[must_use]
 pub fn current_context() -> Context {

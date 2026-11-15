@@ -80,9 +80,6 @@ pub enum Error {
     #[error("Client Error")]
     ClientError(Box<JobResult>),
 
-    #[error("Response Too Large")]
-    ResponseTooLarge,
-
     /// The target address is not allowed (SSRF): never retried.
     #[error("Blocked target: {0}")]
     BlockedTarget(String),
@@ -121,7 +118,6 @@ impl Error {
             | Error::InvalidParams(_)
             | Error::ServerError(_)
             | Error::ClientError(_)
-            | Error::ResponseTooLarge
             | Error::BlockedTarget(_)
             | Error::RetriesExceeded => false,
         }
@@ -168,7 +164,6 @@ impl From<Error> for Problem {
             | Error::HyperClientError(_)
             | Error::ServerError(_)
             | Error::ClientError(_)
-            | Error::ResponseTooLarge
             | Error::BlockedTarget(_)
             | Error::RetriesExceeded => {
                 let problem = Problem {

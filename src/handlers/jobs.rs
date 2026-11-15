@@ -7,7 +7,7 @@ use crate::{db, db::jobqueue::ActionOutcome, models::AppState};
 use axum::{
     Json, Router,
     body::Bytes,
-    extract::{DefaultBodyLimit, Path, State},
+    extract::{DefaultBodyLimit, Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -21,6 +21,7 @@ pub fn routes(state: Arc<AppState>) -> Router {
             "/jobs",
             post(create).layer(DefaultBodyLimit::max(state.max_body_size)),
         )
+        .route("/jobs", get(list))
         .route("/jobs/{id}", get(get_by_id).delete(delete_by_id))
         .route("/jobs/{id}/cancel", post(cancel))
         .route("/jobs/{id}/retry", post(retry))
@@ -49,6 +50,44 @@ pub(crate) async fn create(
         .map_err(Error::InvalidParams)?;
     let job = create_job(&state, job).await?;
     Ok((job_headers(&job), Json(job)))
+}
+
+#[derive(serde::Deserialize, utoipa::IntoParams)]
+#[into_params(parameter_in = Query)]
+pub(crate) struct JobsFilter {
+    /// The job whose callbacks are listed.
+    parent_id: i64,
+    /// The id of the last job of the previous page: the page starts after it.
+    after: Option<i64>,
+    /// The size of a page: 100 when absent, 1000 at most.
+    #[param(minimum = 1, maximum = 1000)]
+    limit: Option<i64>,
+}
+
+/// The callbacks of a job (`parent_id`), oldest first, the jobs as `GET /jobs/{id}` gives them.
+/// A page with fewer jobs than `limit` is the last one; otherwise the next page is the one
+/// `after` the last job of this one.
+#[utoipa::path(
+    get,
+    path = "/api/v1/jobs",
+    operation_id = "list_jobs",
+    tag = "jobs",
+    params(JobsFilter),
+    responses((status = 200, description = "The callbacks of the job", body = Vec<JobRow>))
+)]
+pub(crate) async fn list(
+    State(state): State<Arc<AppState>>,
+    Query(filter): Query<JobsFilter>,
+) -> Result<Json<Vec<JobRow>>, Problem> {
+    Ok(Json(
+        db::jobqueue::list_by_parent(
+            &state.pool,
+            filter.parent_id,
+            filter.after,
+            filter.limit.unwrap_or(100).clamp(1, 1000),
+        )
+        .await?,
+    ))
 }
 
 /// Deletes the job with its history and result; `204` also when there is no such job.

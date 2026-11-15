@@ -1,16 +1,21 @@
+use crate::models::{CallbackMode, SigningKeys};
 use crate::{
     db,
     features::{
         self,
+        callbacks::JobOutcome,
         results::{self, JobResult, is_retryable_status},
         schedules::JobSchedule,
     },
-    models::{AppState, Error, JobEntry, JobRetry, JobRow, JobSink, JobWithAttempt, targets},
+    models::{
+        AppState, Error, JobCreate, JobEntry, JobRetry, JobRow, JobSink, JobWithAttempt, targets,
+    },
     otel::{self, HeaderInjector, metrics::metrics},
 };
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
-use http_body_util::{BodyExt, Full, Limited};
+use http_body_util::BodyExt;
+use hyper::body::Body;
 use hyper::header::HeaderValue;
 use opentelemetry::{
     Context, KeyValue, global,
@@ -26,14 +31,14 @@ use tracing::{Instrument, field::Empty};
 use tracing::{debug, error, info, warn};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
-const MAX_RESPONSE_BODY: usize = 10 * 1024 * 1024;
-
 /// Final result of a job attempt, to be written to `processed`.
 #[derive(Debug)]
 pub struct Completion {
     pub entry: JobEntry,
     pub schedule_id: Option<String>,
     pub result: JobResult,
+    /// The callback this outcome makes, built with the outcome and written with it.
+    pub callback: Option<JobCreate>,
 }
 
 /// Runs a job and writes its result right away.
@@ -79,11 +84,10 @@ pub async fn job_execute(
     _ = span
         .set_parent(parent)
         .inspect_err(|err| debug!("job.run set_parent error {:?}", err));
-    let ids = otel::span_ids(&span);
     let metrics = metrics();
     metrics.jobs_in_flight.add(1, &[]);
     let start = Instant::now();
-    let mut completion = job_attempt(app_state, job_with_attempt)
+    let completion = job_attempt(app_state, job_with_attempt)
         .instrument(span.clone())
         .await;
     metrics.jobs_in_flight.add(-1, &[]);
@@ -103,16 +107,13 @@ pub async fn job_execute(
             "ERROR"
         },
     );
-    if let (Some(completion), Some((trace_id, span_id))) = (completion.as_mut(), ids) {
-        completion.result.meta.trace_id = Some(trace_id);
-        completion.result.meta.span_id = Some(span_id);
-    }
     completion
 }
 
+/// Runs inside the span of the attempt: its trace and span are kept in the result.
 async fn job_attempt(app_state: &AppState, job_with_attempt: JobWithAttempt) -> Option<Completion> {
     let instance_id = &app_state.instance_id;
-    let JobWithAttempt { job, attempt } = job_with_attempt;
+    let JobWithAttempt { mut job, attempt } = job_with_attempt;
     let entry = JobEntry {
         id: job.id,
         attempt,
@@ -120,12 +121,11 @@ async fn job_attempt(app_state: &AppState, job_with_attempt: JobWithAttempt) -> 
     let job_id = job.id;
     debug!({ instance_id, job_id, attempt }, "==> run");
     let job_retry = job.meta.retry;
-    let schedule_id = job.schedule_id.clone();
     let job_result = match job.meta.sink {
         JobSink::Noop => Ok(JobResult::default()),
-        JobSink::Http(_) => job_run_http(app_state, job, attempt).await,
+        JobSink::Http(_) => job_run_http(app_state, &mut job, attempt).await,
     };
-    let result = match job_result {
+    let mut result = match job_result {
         Ok(result) => result,
         Err(err) => {
             let result = on_error(app_state, entry, job_retry, err).await?;
@@ -133,10 +133,19 @@ async fn job_attempt(app_state: &AppState, job_with_attempt: JobWithAttempt) -> 
             result
         }
     };
+    let span = tracing::Span::current();
+    result.traced(otel::span_ids(&span));
+    // the callback goes on the trace of the attempt, with the sampling flag the span has: it is
+    // built when the result is complete
+    let callback = job.meta.callback.as_ref().and_then(|_| {
+        let trace = otel::span_traceparent(&span);
+        JobOutcome::of(&job, attempt, &result, trace).callback()
+    });
     Some(Completion {
         entry,
-        schedule_id,
+        schedule_id: job.schedule_id,
         result,
+        callback,
     })
 }
 
@@ -174,7 +183,10 @@ pub async fn complete(app_state: &AppState, completions: Vec<Completion>) {
         .into_iter()
         .partition(|c| c.schedule_id.is_some());
     if !plain.is_empty() {
-        let items: Vec<_> = plain.iter().map(|c| (c.entry, &c.result)).collect();
+        let items: Vec<_> = plain
+            .iter()
+            .map(|c| (c.entry, &c.result, c.callback.as_ref()))
+            .collect();
         let total = items.len() as u64;
         _ = write_with_retry(write_pauses(), || {
             results::processed_many(&app_state.pool, &items, instance_id)
@@ -200,7 +212,13 @@ pub async fn complete(app_state: &AppState, completions: Vec<Completion>) {
     }
 }
 
-async fn job_run_http(app_state: &AppState, job: JobRow, attempt: i32) -> Result<JobResult, Error> {
+/// Calls the target of the job. The body of the row is taken out: the one buffer is sent, and
+/// signed when the job is a callback.
+async fn job_run_http(
+    app_state: &AppState,
+    job: &mut JobRow,
+    attempt: i32,
+) -> Result<JobResult, Error> {
     let job_id = job.id;
     // jobs stored before the limit existed may carry a bigger timeout
     let options = &app_state.worker_options;
@@ -209,9 +227,27 @@ async fn job_run_http(app_state: &AppState, job: JobRow, attempt: i32) -> Result
         .timeout
         .unwrap_or(options.timeout)
         .min(options.max_timeout);
-    let schedule_id = job.schedule_id.clone();
-    let mut req = hyper::Request::<Full<Bytes>>::try_from(job)?;
-    add_delivery_headers(req.headers_mut(), job_id, attempt, schedule_id.as_deref());
+    let delivery = job.meta.callback_as;
+    let (mut req, body) = job.take_request()?;
+    // a webhook has the headers of the standard and none of ours
+    if delivery != Some(CallbackMode::Webhook) {
+        add_delivery_headers(
+            req.headers_mut(),
+            job_id,
+            attempt,
+            job.schedule_id.as_deref(),
+        );
+    }
+    // the signed text has the body as it is sent
+    if let (Some(delivery), Some(key)) = (delivery, job.key.as_deref()) {
+        add_callback_headers(
+            req.headers_mut(),
+            delivery,
+            key,
+            &body,
+            options.signing_keys.as_ref(),
+        );
+    }
     let mut attrs = client_attrs(req.method(), req.uri());
     let span = tracing::info_span!(
         target: otel::TRACING_TARGET,
@@ -256,14 +292,8 @@ async fn job_run_http(app_state: &AppState, job: JobRow, attempt: i32) -> Result
             }
         }
         // Body
-        let collected = Limited::new(response.into_body(), MAX_RESPONSE_BODY)
-            .collect()
-            .await
-            .map_err(|err| match err.downcast::<hyper::Error>() {
-                Ok(err) => Error::HyperError(*err),
-                Err(_) => Error::ResponseTooLarge,
-            })?;
-        Ok::<_, Error>((status_code, version, header_hashmap, collected.to_bytes()))
+        let body = read_limited(response.into_body(), options.max_response_size).await?;
+        Ok::<_, Error>((status_code, version, header_hashmap, body))
     };
     let start = Instant::now();
     // '?': timeout; the block yields the request/body result
@@ -271,13 +301,15 @@ async fn job_run_http(app_state: &AppState, job: JobRow, attempt: i32) -> Result
         .instrument(span.clone())
         .await;
     match &exchange {
-        Ok((status_code, ..)) => {
+        Ok((status_code, _, _, body)) => {
             attrs.push(KeyValue::new(
                 "http.response.status_code",
                 i64::from(status_code.as_u16()),
             ));
-            if status_code.is_client_error() || status_code.is_server_error() {
+            if !status_code.is_success() {
                 attrs.push(KeyValue::new("error.type", status_code.as_str().to_owned()));
+            } else if matches!(body, ResponseBody::TooLarge { .. }) {
+                attrs.push(KeyValue::new("error.type", "response_too_large"));
             }
         }
         Err(err) => attrs.push(KeyValue::new("error.type", error_type(err))),
@@ -285,26 +317,88 @@ async fn job_run_http(app_state: &AppState, job: JobRow, attempt: i32) -> Result
     metrics()
         .http_client_duration
         .record(start.elapsed().as_secs_f64(), &attrs);
-    let (status_code, version, header_hashmap, bytes) = exchange.inspect_err(|err| {
+    let (status_code, version, header_hashmap, body) = exchange.inspect_err(|err| {
         span.record("otel.status_code", "ERROR");
         span.record("exception.message", tracing::field::display(err));
     })?;
     // i64: unsigned values are exported as strings
     span.record("http.response.status_code", i64::from(status_code.as_u16()));
-    span.record(
-        "http.response.body.size",
-        i64::try_from(bytes.len()).unwrap_or(i64::MAX),
-    );
+    // a body over the limit is not kept: the result has the status and the headers only
+    let (bytes, too_large) = match body {
+        ResponseBody::Whole(bytes) => {
+            span.record(
+                "http.response.body.size",
+                i64::try_from(bytes.len()).unwrap_or(i64::MAX),
+            );
+            (bytes, None)
+        }
+        ResponseBody::TooLarge { size } => (Bytes::new(), Some(size)),
+    };
     // Result
     let job_result = JobResult::http(status_code, version, Some(header_hashmap), bytes);
     if status_code.is_server_error() {
         span.record("otel.status_code", "ERROR");
         return Err(Error::ServerError(Box::new(job_result)));
     }
-    if status_code.is_client_error() {
+    // a 3xx is not followed and not a success either: it is not worth another attempt
+    if !status_code.is_success() {
         return Err(Error::ClientError(Box::new(job_result)));
     }
+    // a success whose body is not here is not a success of the job
+    if let Some(size) = too_large {
+        span.record("otel.status_code", "ERROR");
+        let max_size = options.max_response_size;
+        let error = match size {
+            Some(size) => format!("response too large: {size} bytes, the limit is {max_size}"),
+            None => format!("response too large: over the limit of {max_size} bytes"),
+        };
+        // a 2xx is never retried: it ends as a failure of the job
+        return Err(Error::ClientError(Box::new(job_result.failed_with(error))));
+    }
     Ok(job_result)
+}
+
+/// A response body as far as `--max-response-size` lets it be read.
+enum ResponseBody {
+    Whole(Bytes),
+    /// Longer than the limit: not read to its end; `size` is the length it declared, if it did.
+    TooLarge {
+        size: Option<usize>,
+    },
+}
+
+/// Reads a response body of `limit` bytes at most: it is too large by its declared length, else
+/// when it has gone over. A body that came in one piece is not copied.
+async fn read_limited(
+    mut body: hyper::body::Incoming,
+    limit: usize,
+) -> Result<ResponseBody, Error> {
+    let declared = body
+        .size_hint()
+        .exact()
+        .and_then(|n| usize::try_from(n).ok());
+    if declared.is_some_and(|size| size > limit) {
+        return Ok(ResponseBody::TooLarge { size: declared });
+    }
+    let mut chunks: Vec<Bytes> = Vec::new();
+    let mut size = 0;
+    while let Some(frame) = body.frame().await {
+        let Ok(data) = frame.map_err(Error::HyperError)?.into_data() else {
+            continue;
+        };
+        size += data.len();
+        if size > limit {
+            return Ok(ResponseBody::TooLarge { size: declared });
+        }
+        if !data.is_empty() {
+            chunks.push(data);
+        }
+    }
+    Ok(ResponseBody::Whole(match chunks.len() {
+        0 => Bytes::new(),
+        1 => chunks.swap_remove(0),
+        _ => chunks.concat().into(),
+    }))
 }
 
 /// Lets the target recognize a redelivery (delivery is at least once): the same
@@ -319,6 +413,32 @@ fn add_delivery_headers(
     headers.insert("irisqo-attempt", attempt.into());
     if let Some(value) = schedule_id.and_then(|s| HeaderValue::from_str(s).ok()) {
         headers.insert("irisqo-schedule-id", value);
+    }
+}
+
+/// The headers a callback gets when it is sent: the key of its job, the time of this delivery
+/// and, when there are signing keys, the signature of `{key}.{timestamp}.{body}`. A webhook
+/// names them as the standard does, a relay as `Irisqo-*`.
+fn add_callback_headers(
+    headers: &mut hyper::HeaderMap,
+    delivery: CallbackMode,
+    key: &str,
+    body: &[u8],
+    signing_keys: Option<&SigningKeys>,
+) {
+    let (key_name, time_name, signature_name) = match delivery {
+        CallbackMode::Webhook => ("webhook-id", "webhook-timestamp", "webhook-signature"),
+        CallbackMode::Relay => ("irisqo-job-key", "irisqo-timestamp", "irisqo-signature"),
+    };
+    let timestamp = Utc::now().timestamp();
+    if let Ok(value) = HeaderValue::from_str(key) {
+        headers.insert(key_name, value);
+    }
+    headers.insert(time_name, timestamp.into());
+    if let Some(keys) = signing_keys
+        && let Ok(value) = HeaderValue::from_str(&keys.sign(key, timestamp, body))
+    {
+        headers.insert(signature_name, value);
     }
 }
 
@@ -342,7 +462,6 @@ fn client_attrs(method: &hyper::Method, uri: &hyper::Uri) -> Vec<KeyValue> {
 fn error_type(err: &Error) -> &'static str {
     match err {
         Error::Timeout(_) => "timeout",
-        Error::ResponseTooLarge => "response_too_large",
         Error::BlockedTarget(_) => "blocked_target",
         Error::HyperClientError(_) | Error::HyperError(_) | Error::IoError(_) => "connection",
         Error::JobNotFound(_)
@@ -364,13 +483,15 @@ async fn processed_scheduled(app_state: &AppState, completion: &Completion) -> R
         entry,
         schedule_id,
         result,
+        callback,
     } = completion;
     let entry = *entry;
     let job_id = entry.id;
     let next_at = schedule_next_at(app_state, schedule_id.as_deref()).await?;
     // Result and next schedule run are written atomically
     let mut tx = app_state.pool.begin().await?;
-    let affected = results::processed(&mut *tx, entry, instance_id, result).await?;
+    let affected =
+        results::processed(&mut *tx, entry, instance_id, result, callback.as_ref()).await?;
     if affected == 0 {
         // The lock was lost (lock expired, instance expired, job deleted): nothing to complete or reschedule
         warn!({ instance_id, job_id }, "job is not locked by this attempt, skip");
@@ -436,7 +557,6 @@ async fn on_error(
         | Error::IoError(_)
         | Error::HttpError(_)
         | Error::InvalidParams(_)
-        | Error::ResponseTooLarge
         | Error::RetriesExceeded => {
             error!({ instance_id, job_id }, "====> error {:?}", err);
             (false, None)
@@ -483,7 +603,6 @@ fn error_message(err: &Error) -> String {
         | Error::HyperError(_)
         | Error::HyperClientError(_)
         | Error::InvalidParams(_)
-        | Error::ResponseTooLarge
         | Error::BlockedTarget(_)
         | Error::RetriesExceeded => None,
     }

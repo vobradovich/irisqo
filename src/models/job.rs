@@ -9,12 +9,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::features::schedules::JobSchedule;
 
-use super::{Error, JobRetry, WorkerOptions};
+use super::{CallbackMode, Error, JobCallback, JobRetry, WorkerOptions};
 
 #[derive(Debug, Clone, sqlx::FromRow, Serialize, utoipa::ToSchema)]
 pub struct JobRow {
     pub id: i64,
     #[sqlx(json)]
+    #[serde(serialize_with = "serialize_meta_shown")]
     pub meta: JobMeta,
     #[sqlx(json(nullable))]
     #[serde(serialize_with = "super::headers::serialize_shown")]
@@ -23,6 +24,11 @@ pub struct JobRow {
     pub body: Option<Vec<u8>>,
     pub schedule_id: Option<String>,
     pub key: Option<String>,
+    /// The job that made this one: a job with a parent is a callback.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    // not in what the claim returns: the runner does not need it
+    #[sqlx(default)]
+    pub parent_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, sqlx::FromRow)]
@@ -55,6 +61,9 @@ impl JobCreate {
     #[must_use]
     pub fn normalized(mut self, options: &WorkerOptions, now: DateTime<Utc>) -> Self {
         self.meta.timeout = self.meta.timeout.map(|ms| ms.min(options.max_timeout));
+        if let Some(callback) = self.meta.callback.as_mut() {
+            callback.timeout = callback.timeout.map(|ms| ms.min(options.max_timeout));
+        }
         self.at = self.at.filter(|at| *at > now);
         if self.meta.traceparent.is_none() {
             (self.meta.traceparent, self.meta.tracestate) = crate::otel::current_trace_headers();
@@ -100,6 +109,38 @@ pub struct JobMeta {
     pub traceparent: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub tracestate: Option<String>,
+    /// The request made when the job reaches its outcome.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub callback: Option<JobCallback>,
+    /// Set on a callback job only, by the callback that made it (no request can set it): the
+    /// mode it is sent in, which says how its delivery is finished and signed.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub callback_as: Option<CallbackMode>,
+}
+
+/// Serializes the meta of a job as the API shows it: the values of the callback headers meant
+/// for the receiver are hidden, as the headers of the job are. The stored meta is not this one.
+fn serialize_meta_shown<S: serde::Serializer>(
+    meta: &JobMeta,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    // only a callback with headers needs a copy to hide them in
+    if meta.callback.as_ref().is_none_or(|c| c.headers.is_none()) {
+        return meta.serialize(serializer);
+    }
+    let mut shown = meta.clone();
+    if let Some(callback) = shown.callback.as_mut() {
+        callback.headers = callback.headers.take().map(|headers| {
+            headers
+                .into_iter()
+                .map(|(name, value)| {
+                    let value = super::headers::shown_value(&name, &value).to_owned();
+                    (name, value)
+                })
+                .collect()
+        });
+    }
+    shown.serialize(serializer)
 }
 
 /// The key of a flow, as `enqueue_v1` checks it: 1 to 128 characters of `a-z 0-9 . _ : -`, the
@@ -173,28 +214,24 @@ pub struct HttpMeta {
     pub url: hyper::Uri,
 }
 
-impl TryFrom<JobRow> for hyper::Request<Full<Bytes>> {
-    type Error = Error;
-
-    fn try_from(value: JobRow) -> Result<Self, Self::Error> {
-        let meta = value.meta;
-        let JobSink::Http(meta) = meta.sink else {
+impl JobRow {
+    /// The request of an HTTP job and its body. The body is taken out of the row (it is empty
+    /// there after): the one buffer is sent and, for a callback, signed, without a copy.
+    pub fn take_request(&mut self) -> Result<(hyper::Request<Full<Bytes>>, Bytes), Error> {
+        let JobSink::Http(http) = &self.meta.sink else {
             return Err(Error::invalid("url", "is not an HTTP URL"));
         };
-
-        let body: Bytes = value.body.map_or(Bytes::new(), Bytes::from);
-        let mut req = hyper::Request::builder().method(meta.method).uri(meta.url);
+        let mut req = hyper::Request::builder()
+            .method(http.method.clone())
+            .uri(http.url.clone());
         // `headers_mut()` is `None` only when the builder already failed: `body()` reports it
-        if let Some(headers) = value.headers
+        if let Some(headers) = &self.headers
             && let Some(headers_mut) = req.headers_mut()
         {
-            for (key, value) in HeaderMap::try_from(&headers)? {
-                if let Some(key) = key {
-                    headers_mut.insert(key, value);
-                }
-            }
-        };
-        Ok(req.body(Full::from(body))?)
+            *headers_mut = HeaderMap::try_from(headers)?;
+        }
+        let body = self.body.take().map(Bytes::from).unwrap_or_default();
+        Ok((req.body(Full::new(body.clone()))?, body))
     }
 }
 
@@ -222,16 +259,17 @@ mod tests {
     #[tokio::test]
     async fn job_row_into_request_err() -> anyhow::Result<()> {
         // arrange
-        let job = JobRow {
+        let mut job = JobRow {
             id: 0,
             meta: JobMeta::default(),
             headers: None,
             body: None,
             schedule_id: None,
             key: None,
+            parent_id: None,
         };
         // act
-        let req = hyper::Request::<Full<Bytes>>::try_from(job);
+        let req = job.take_request();
 
         // assert
         assert!(req.is_err());
@@ -242,7 +280,7 @@ mod tests {
     #[tokio::test]
     async fn job_row_into_request_ok() -> anyhow::Result<()> {
         // arrange
-        let job = JobRow {
+        let mut job = JobRow {
             id: 0,
             meta: JobMeta {
                 sink: JobSink::Http(HttpMeta {
@@ -260,15 +298,19 @@ mod tests {
                 header::CONTENT_LENGTH.to_string(),
                 "123".into(),
             )])),
-            body: None,
+            body: Some(b"payload".to_vec()),
             schedule_id: None,
             key: None,
+            parent_id: None,
         };
         // act
-        let req = hyper::Request::<Full<Bytes>>::try_from(job);
+        let req = job.take_request();
 
         // assert
-        assert!(req.is_ok());
+        let (req, body) = req.expect("request");
+        assert_eq!(req.headers()[header::CONTENT_LENGTH], "123");
+        assert_eq!(body.as_ref(), b"payload");
+        assert!(job.body.is_none(), "the body is taken out of the row");
 
         Ok(())
     }

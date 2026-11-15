@@ -12,7 +12,7 @@
 
   <section class="jobs" aria-label="Jobs">
     <div class="job-cols jobs-head" aria-hidden="true">
-      <span>Job</span><span>Status</span><span>Request</span><span>Attempt</span><span>When</span><span>Key</span><span>Schedule</span>
+      <span>Job</span><span>Status</span><span>Request</span><span>Attempt</span><span>When</span><span>Key</span><span>Source</span>
     </div>
     <ol id="jobs" class="jobs-list">
       {% for job in list.rows %}
@@ -25,7 +25,11 @@
             <span class="mono">{{ job.attempt }}</span>
             <span class="muted" title="{{ job.due_title }}">{{ job.due }}</span>
             <span class="mono muted key" title="{{ job.key|or_empty }}">{{ job.key|or_empty }}</span>
+            {%- if let Some(parent) = job.parent_id %}
+            <span class="mono muted" title="callback of #{{ parent }}"><a href="/ui/jobs/{{ parent }}">↳ #{{ parent }}</a></span>
+            {%- else %}
             <span class="mono muted" title="{{ job.schedule_id|or_empty }}">{{ job.schedule_id|short_id }}</span>
+            {%- endif %}
           </summary>
           <div class="history" hx-morph-skip-children><small class="hint">Loading the history…</small></div>
         </details>

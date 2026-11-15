@@ -1,8 +1,9 @@
 use std::time::Duration;
 
 use crate::features;
+use crate::features::callbacks::JobOutcome;
 use crate::features::results::{self, JobResult};
-use crate::models::{Error, JobCreateRow, JobEntry, JobWithAttempt};
+use crate::models::{Error, JobCreateRow, JobEntry, JobMeta, JobWithAttempt};
 use crate::models::{JobCreate, JobRow};
 use chrono::{DateTime, Utc};
 use sqlx::{FromRow, Pool, Postgres, Row, types::Json};
@@ -122,6 +123,27 @@ pub async fn get_by_id(pool: &Pool<Postgres>, job_id: i64) -> Result<Option<JobR
         .fetch_optional(pool)
         .await?;
     Ok(job)
+}
+
+/// The jobs made by a job (its callbacks), oldest first: a page of `limit` jobs after the job
+/// `after` (the last one of the previous page).
+pub async fn list_by_parent(
+    pool: &Pool<Postgres>,
+    parent_id: i64,
+    after: Option<i64>,
+    limit: i64,
+) -> Result<Vec<JobRow>, Error> {
+    const SQL: &str = "
+    SELECT * FROM jobs
+    WHERE parent_id = $1 AND ($2::bigint IS NULL OR id > $2)
+    ORDER BY id LIMIT $3";
+    let jobs = sqlx::query_as::<_, JobRow>(SQL)
+        .bind(parent_id)
+        .bind(after)
+        .bind(limit)
+        .fetch_all(pool)
+        .await?;
+    Ok(jobs)
 }
 
 pub async fn get_id_by_key(
@@ -278,7 +300,7 @@ pub async fn fetch_job_with_attempt(
                 let result = JobResult::from(Error::from(err));
                 // when this write fails too, the job stays claimed (the lock reaper releases it)
                 // but the rest of the batch must still run
-                _ = results::processed(pool, entry, instance_id, &result)
+                _ = results::processed(pool, entry, instance_id, &result, None)
                     .await
                     .inspect_err(|err| {
                         tracing::error!(job_id = id, "result of an unreadable job: {err:?}");
@@ -318,13 +340,21 @@ async fn outcome(
 }
 
 /// Cancels a pending job (scheduled, or enqueued and not running): it ends as `cancelled`.
-/// A running or processed job is a conflict. A run of a schedule gives its key back: it never
-/// ran, and the schedule may need a run of the same time (`{schedule_id}-{secs}`) again.
-pub async fn cancel<'e, E>(executor: E, job_id: i64, instance_id: &str) -> Result<u64, Error>
-where
-    E: sqlx::Executor<'e, Database = Postgres>,
-{
-    const SQL: &str = "
+/// A running or processed job is a conflict.
+///
+/// The callback uses the attempt actually removed from the queue and commits with the cancellation.
+/// Only a user's cancel makes one: a run that its schedule takes back is not an outcome of the
+/// job that anybody waits for. `taken_back` is `None` for a user's cancel, and for a schedule the
+/// message of the history: the cancel makes no callback.
+pub async fn cancel(
+    conn: &mut sqlx::PgConnection,
+    job_id: i64,
+    instance_id: &str,
+    taken_back: Option<&str>,
+) -> Result<u64, Error> {
+    const SQL_SOURCE: &str = "
+    SELECT meta, key, schedule_id FROM jobs WHERE id = $1 AND meta ? 'callback'";
+    const SQL_CANCEL: &str = "
     WITH s AS (
         DELETE FROM scheduled WHERE id = $1 RETURNING id, attempt
     ), e AS (
@@ -333,18 +363,74 @@ where
         SELECT id, attempt FROM s UNION ALL SELECT id, attempt FROM e
     ), hist AS (
         INSERT INTO history(id, attempt, kind, instance_id, message)
-        SELECT id, attempt, 'cancelled', $2, 'cancelled by a user' FROM c
-    ), k AS (
-        UPDATE jobs SET key = NULL WHERE id IN (SELECT id FROM c) AND schedule_id IS NOT NULL
+        SELECT id, attempt, 'cancelled', $2, $7 FROM c
+    ), p AS (
+        INSERT INTO processed(id, attempt, instance_id, status)
+        SELECT id, attempt, $2, 'cancelled' FROM c
+        RETURNING id, attempt
+    ), cb AS (
+        INSERT INTO jobs(meta, headers, body, key, parent_id)
+        SELECT $3::jsonb, $4::jsonb,
+            CASE WHEN $3::jsonb->>'callback_as' = 'webhook' THEN
+                convert_to(jsonb_set(convert_from($5::bytea, 'UTF8')::jsonb,
+                    '{data,job,attempt}', to_jsonb(p.attempt))::text, 'UTF8')
+            ELSE $5::bytea END,
+            $6::text, p.id
+        FROM p WHERE $3::jsonb IS NOT NULL
+        RETURNING id, parent_id
+    ), cbe AS (
+        INSERT INTO enqueued(id, flow_key, priority)
+        SELECT cb.id, $3::jsonb->>'flow_key', coalesce(($3::jsonb->>'priority')::int, 0) FROM cb
+    ), cbh AS (
+        INSERT INTO history(id, attempt, kind, message)
+        SELECT cb.id, 0, 'enqueued', 'callback of #' || cb.parent_id FROM cb
     )
-    INSERT INTO processed(id, attempt, instance_id, status)
-    SELECT id, attempt, $2, 'cancelled' FROM c";
-    let res = sqlx::query(SQL)
+    SELECT EXISTS (SELECT 1 FROM p)";
+    #[derive(sqlx::FromRow)]
+    struct Source {
+        meta: Json<serde_json::Value>,
+        key: Option<String>,
+        schedule_id: Option<String>,
+    }
+    let source = match taken_back {
+        None => {
+            sqlx::query_as::<_, Source>(SQL_SOURCE)
+                .bind(job_id)
+                .fetch_optional(&mut *conn)
+                .await?
+        }
+        Some(_) => None,
+    };
+    let spawned = source.and_then(|source| {
+        // a meta that cannot be read (written by hand, or by another version) makes no
+        // callback: the job is cancelled all the same
+        let meta: JobMeta = serde_json::from_value(source.meta.0)
+            .inspect_err(|err| tracing::warn!(job_id, "cancel: no callback, the meta: {err}"))
+            .ok()?;
+        // SQL replaces the webhook's placeholder attempt with the one returned by DELETE; a
+        // cancelled job has no trace of an attempt: its own goes on.
+        JobOutcome {
+            id: job_id,
+            key: source.key.as_deref(),
+            schedule_id: source.schedule_id.as_deref(),
+            meta: &meta,
+            attempt: 0,
+            result: &JobResult::cancelled(),
+            trace: None,
+        }
+        .callback()
+    });
+    let cancelled = sqlx::query_scalar::<_, bool>(SQL_CANCEL)
         .bind(job_id)
         .bind(instance_id)
-        .execute(executor)
+        .bind(spawned.as_ref().map(|job| Json(&job.meta)))
+        .bind(spawned.as_ref().map(|job| Json(&job.headers)))
+        .bind(spawned.as_ref().and_then(JobCreate::body_bytes))
+        .bind(spawned.as_ref().and_then(|job| job.key.as_deref()))
+        .bind(taken_back.unwrap_or("cancelled by a user"))
+        .fetch_one(conn)
         .await?;
-    Ok(res.rows_affected())
+    Ok(u64::from(cancelled))
 }
 
 pub async fn cancel_job(
@@ -352,7 +438,10 @@ pub async fn cancel_job(
     job_id: i64,
     instance_id: &str,
 ) -> Result<ActionOutcome, Error> {
-    let affected = cancel(pool, job_id, instance_id).await?;
+    let affected = {
+        let mut conn = pool.acquire().await?;
+        cancel(&mut conn, job_id, instance_id, None).await?
+    };
     outcome(pool, affected, job_id).await
 }
 

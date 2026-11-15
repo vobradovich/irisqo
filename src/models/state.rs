@@ -11,7 +11,9 @@ use sqlx::{
 use std::{fmt::Display, str::FromStr, sync::Arc, time::Duration};
 use tokio_util::sync::CancellationToken;
 
-use super::{AllowTargets, ApiTokens, Environment, TargetPolicy, targets::GuardedResolver};
+use super::{
+    AllowTargets, ApiTokens, Environment, SigningKeys, TargetPolicy, targets::GuardedResolver,
+};
 
 //type DbPool = Pool<Postgres>;
 #[derive(Debug)]
@@ -56,10 +58,14 @@ pub struct WorkerOptions {
     pub timeout: u32,
     /// Upper bound for the per-job `_timeout`, in milliseconds.
     pub max_timeout: u32,
+    /// The longest response body a job takes: a longer one fails the job.
+    pub max_response_size: usize,
     /// On shutdown, how long the running jobs may finish; the rest are released.
     pub shutdown_timeout: Duration,
     /// The addresses a job may call.
     pub targets: Arc<TargetPolicy>,
+    /// Sign the callbacks; `None`: they are not signed.
+    pub signing_keys: Option<SigningKeys>,
 }
 
 /// Extra time on top of `max_timeout` before a lock counts as stuck.
@@ -74,8 +80,10 @@ impl WorkerOptions {
             prefetch: 1,
             timeout: 3000,
             max_timeout: 300_000,
+            max_response_size: DEFAULT_MAX_RESPONSE_SIZE,
             shutdown_timeout: Duration::from_secs(1),
             targets: Arc::new(TargetPolicy::allow_all()),
+            signing_keys: None,
         }
     }
 }
@@ -84,6 +92,7 @@ const LOCK_GRACE: Duration = Duration::from_secs(60);
 const DEFAULT_DB_CONNECTIONS: u32 = 32;
 const DEFAULT_SCHEMA: &str = "irisqo";
 const DEFAULT_MAX_BODY_SIZE: usize = 64 * 1024;
+const DEFAULT_MAX_RESPONSE_SIZE: usize = 64 * 1024;
 
 // Generates `pub struct Options`; `Options::from_vec(vec![])` gives the defaults (tests).
 xflags::xflags! {
@@ -93,6 +102,9 @@ xflags::xflags! {
         optional -p,--port n: u16
         /// Maximum HTTP request body size in bytes. Default: 65536 (64 KiB)
         optional --max-body-size n: usize
+        /// Maximum size of a target's response body in bytes; a longer one fails the job (it is
+        /// not retried). Default: 65536 (64 KiB)
+        optional --max-response-size n: usize
         /// Postgres connection URL, postgres://user:pass@host/db (better set by IRISQO_DB_URL: a flag
         /// shows in ps). Required.
         optional --db-url url: String
@@ -128,6 +140,10 @@ xflags::xflags! {
         /// Bearer tokens for /to/* and /api/v1/*, comma separated, at least 16 characters
         /// each (better set by IRISQO_API_TOKEN: a flag shows in ps). Default: none, open
         optional --api-token list: ApiTokens
+        /// Keys that sign the callbacks, comma separated (several: a rotation), each whsec_ and the
+        /// base64 of 24 to 64 bytes (better set by IRISQO_SIGNING_KEY: a flag shows in ps).
+        /// Default: none, not signed
+        optional --signing-key list: SigningKeys
     }
 }
 
@@ -173,6 +189,7 @@ impl Options {
         let Options {
             port,
             max_body_size,
+            max_response_size,
             db_url,
             db_connections,
             db_schema,
@@ -188,9 +205,11 @@ impl Options {
             env,
             allow_targets,
             api_token,
+            signing_key,
         } = self;
         take(port, "IRISQO_PORT", &var)?;
         take(max_body_size, "IRISQO_MAX_BODY_SIZE", &var)?;
+        take(max_response_size, "IRISQO_MAX_RESPONSE_SIZE", &var)?;
         take(db_url, "IRISQO_DB_URL", &var)?;
         take(db_connections, "IRISQO_DB_CONNECTIONS", &var)?;
         take(db_schema, "IRISQO_DB_SCHEMA", &var)?;
@@ -206,6 +225,7 @@ impl Options {
         take(env, "IRISQO_ENV", &var)?;
         take(allow_targets, "IRISQO_ALLOW_TARGETS", &var)?;
         take(api_token, "IRISQO_API_TOKEN", &var)?;
+        take(signing_key, "IRISQO_SIGNING_KEY", &var)?;
         if let Some(schema) = db_schema {
             check_schema(schema)?;
         }
@@ -296,8 +316,12 @@ impl AppState {
                 prefetch: options.prefetch.unwrap_or(4),
                 timeout: options.timeout.unwrap_or(3000).min(max_timeout),
                 max_timeout,
+                max_response_size: options
+                    .max_response_size
+                    .unwrap_or(DEFAULT_MAX_RESPONSE_SIZE),
                 shutdown_timeout: Duration::from_secs(options.shutdown_timeout.unwrap_or(20)),
                 targets,
+                signing_keys: options.signing_key.clone(),
             },
             trace_url: options
                 .trace_url
@@ -392,6 +416,7 @@ fn options_fall_back_to_the_environment() {
     let vars = |name: &str| match name {
         "IRISQO_PORT" => Some("9000".to_owned()),
         "IRISQO_MAX_BODY_SIZE" => Some("131072".to_owned()),
+        "IRISQO_MAX_RESPONSE_SIZE" => Some("10485760".to_owned()),
         "IRISQO_MAX_TIMEOUT" => Some("1000".to_owned()),
         "IRISQO_ENV" => Some("dev".to_owned()),
         _ => None,
@@ -400,6 +425,7 @@ fn options_fall_back_to_the_environment() {
     options.fill_from(vars).expect("valid");
     assert_eq!(options.port, Some(8000), "the command line wins");
     assert_eq!(options.max_body_size, Some(131072));
+    assert_eq!(options.max_response_size, Some(10_485_760));
     assert_eq!(options.max_timeout, Some(1000));
     assert_eq!(options.environment(), Environment::Development);
     assert_eq!(options.workers, None);

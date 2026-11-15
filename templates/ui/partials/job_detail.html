@@ -35,6 +35,7 @@
     <div><dt>Timeout</dt><dd>{{ job.timeout }}</dd></div>
     <div><dt>Key</dt><dd class="mono">{{ job.key }}</dd></div>
     <div><dt>Schedule</dt><dd class="mono" title="{{ job.row.schedule_id|or_empty }}">{% if job.row.schedule_id.is_some() %}<a href="/ui/schedules">{{ job.row.schedule_id|short_id }}</a>{% else %}-{% endif %}</dd></div>
+    {% if let Some(parent) = job.row.parent_id %}<div><dt>Callback of</dt><dd class="mono"><a href="/ui/jobs/{{ parent }}">#{{ parent }}</a>{% if let Some(callback) = job.callback_of %} · {{ callback }}{% endif %}</dd></div>{% else %}{% if let Some(callback) = job.callback_of %}<div><dt>Callback of</dt><dd class="muted">a deleted job · {{ callback }}</dd></div>{% endif %}{% endif %}
     <div><dt>Trace</dt><dd class="mono">
       {%- if let Some(href) = job.trace_href %}<a href="{{ href }}" rel="noreferrer" target="_blank">open ↗</a>
       {%- else if let Some(r) = job.result %}{% if let Some(t) = r.trace_id %}{{ t }}{% else %}-{% endif %}
@@ -72,6 +73,31 @@
       {% endif %}
     </article>
   </div>
+
+  {% if let Some(callback) = job.callback %}
+  <article class="card">
+    <h2>Callback</h2>
+    <p class="request"><span class="method mono">{{ callback.method }}</span> <span class="mono url-full">{{ callback.url }}</span></p>
+    <dl class="facts">
+      <div><dt>Mode</dt><dd>{{ callback.mode }}</dd></div>
+      <div><dt>Types</dt><dd class="mono">{{ callback.types }}</dd></div>
+      <div><dt>Retry policy</dt><dd>{{ callback.retry_policy }}</dd></div>
+      <div><dt>Timeout</dt><dd>{{ callback.timeout }}</dd></div>
+    </dl>
+    {% if !callback.headers.is_empty() %}
+    <h3>Headers</h3>
+    <dl class="headers mono">
+      {% for (name, value) in callback.headers %}<dt>{{ name }}</dt><dd>{{ value }}</dd>{% endfor %}
+    </dl>
+    {% endif %}
+    <h3>Callback jobs</h3>
+    {% if callback.jobs.is_empty() %}<p class="muted">none yet</p>{% else %}
+    <ul>
+      {% for c in callback.jobs %}<li><a href="/ui/jobs/{{ c.id }}" class="mono">#{{ c.id }}</a> <span class="status {{ c.status }}"><span>{{ c.status.label() }}</span></span></li>{% endfor %}
+    </ul>
+    {% endif %}
+  </article>
+  {% endif %}
 
   <article class="card">
     <h2>History</h2>

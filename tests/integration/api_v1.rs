@@ -355,10 +355,10 @@ async fn a_schedule_through_to_is_declared_the_same_way(pool: PgPool) -> anyhow:
     Ok(())
 }
 
-/// A run that was cancelled gives its key back: the schedule may need a run of that very time
-/// (`{schedule_id}-{secs}`) again, and it must not clash with the cancelled one.
+/// A run of a schedule has the key `{schedule_id}-{ulid}`: the run that continues a cancelled
+/// one at its time does not clash with it.
 #[sqlx::test(migrations = "./sql/migrations")]
-async fn a_cancelled_run_gives_its_key_back(pool: PgPool) -> anyhow::Result<()> {
+async fn a_run_after_a_cancelled_one_has_its_own_key(pool: PgPool) -> anyhow::Result<()> {
     let state = common::state(pool.clone());
     let addr = common::spawn_app(&state).await;
     let json =
@@ -378,8 +378,11 @@ async fn a_cancelled_run_gives_its_key_back(pool: PgPool) -> anyhow::Result<()> 
     )
     .await;
     assert_eq!(cancel.status(), StatusCode::NO_CONTENT);
-    let keys = common::count(&pool, "SELECT count(*) FROM jobs WHERE key IS NULL").await;
-    assert_eq!(keys, 1, "the cancelled run gave its key back");
+    let old: String = sqlx::query_scalar("SELECT key FROM jobs WHERE id = $1")
+        .bind(run)
+        .fetch_one(&pool)
+        .await?;
+    assert!(old.starts_with("nightly-"));
 
     // the run that continues the schedule is at the time of the cancelled one
     let next = irisqo::features::schedules::clone_schedule_at(&pool, run, at, "test").await?;
@@ -388,7 +391,8 @@ async fn a_cancelled_run_gives_its_key_back(pool: PgPool) -> anyhow::Result<()> 
         .bind(next)
         .fetch_one(&pool)
         .await?;
-    assert_eq!(key, format!("nightly-{}", at.timestamp()));
+    assert!(key.starts_with("nightly-"));
+    assert_ne!(key, old);
     Ok(())
 }
 

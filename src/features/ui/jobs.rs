@@ -20,7 +20,7 @@ use crate::{
     db::{
         self,
         jobqueue::ActionOutcome,
-        jobview::{JobQuery, JobStatus, ScheduleFilter, StatusFilter},
+        jobview::{JobQuery, JobStatus, SourceFilter, StatusFilter},
     },
     features::{history, results},
     models::{AppState, Error},
@@ -43,7 +43,7 @@ pub struct FilterLink {
 /// The list as the request asks for it, and the links to change it.
 pub struct JobsList {
     pub status: &'static str,
-    pub schedule: &'static str,
+    pub source: &'static str,
     pub q: String,
     pub live: bool,
     pub live_href: String,
@@ -62,7 +62,7 @@ pub struct JobsList {
 #[derive(Debug, Clone)]
 struct ListParams {
     status: StatusFilter,
-    schedule: ScheduleFilter,
+    source: SourceFilter,
     q: String,
     before: Option<i64>,
     live: bool,
@@ -72,7 +72,7 @@ impl Default for ListParams {
     fn default() -> Self {
         ListParams {
             status: StatusFilter::default(),
-            schedule: ScheduleFilter::default(),
+            source: SourceFilter::default(),
             q: String::new(),
             before: None,
             live: true,
@@ -86,7 +86,7 @@ impl ListParams {
         for (key, value) in form_urlencoded::parse(query.unwrap_or_default().as_bytes()) {
             match key.as_ref() {
                 "status" => params.status = StatusFilter::parse(&value),
-                "schedule" => params.schedule = ScheduleFilter::parse(&value),
+                "source" => params.source = SourceFilter::parse(&value),
                 "q" => params.q = value.trim().to_owned(),
                 "before" => params.before = value.parse().ok(),
                 "live" => params.live = value != "0",
@@ -99,8 +99,8 @@ impl ListParams {
     fn query(&self, status: StatusFilter, before: Option<i64>, live: bool) -> String {
         let mut out = form_urlencoded::Serializer::new(String::new());
         out.append_pair("status", status.as_str());
-        if self.schedule != ScheduleFilter::Any {
-            out.append_pair("schedule", self.schedule.as_str());
+        if self.source != SourceFilter::Any {
+            out.append_pair("source", self.source.as_str());
         }
         if !self.q.is_empty() {
             out.append_pair("q", &self.q);
@@ -163,7 +163,7 @@ fn not_found(state: &AppState, what: String) -> Response {
 async fn load_list(state: &AppState, params: &ListParams) -> Result<JobsList, Error> {
     let query = JobQuery {
         status: params.status,
-        schedule: params.schedule,
+        source: params.source,
         search: (!params.q.is_empty()).then(|| params.q.clone()),
         before: params.before,
         limit: PAGE_SIZE,
@@ -237,7 +237,7 @@ async fn load_list(state: &AppState, params: &ListParams) -> Result<JobsList, Er
     };
     Ok(JobsList {
         status: params.status.as_str(),
-        schedule: params.schedule.as_str(),
+        source: params.source.as_str(),
         q: params.q.clone(),
         live,
         live_href: format!("/ui/jobs/live?{}", params.query(params.status, None, true)),
@@ -289,11 +289,12 @@ pub async fn job_history(State(state): State<Arc<AppState>>, Path(id): Path<i64>
 }
 
 async fn load_job(state: &AppState, id: i64) -> Result<Option<JobDetailView>, Error> {
-    let (view, job, result, history) = tokio::try_join!(
+    let (view, job, result, history, callbacks) = tokio::try_join!(
         db::jobview::get(&state.pool, id),
         db::jobqueue::get_by_id(&state.pool, id),
         results::get_by_id(&state.pool, id),
         history::get_by_id(&state.pool, id, 500, 0),
+        db::jobview::callbacks(&state.pool, id),
     )?;
     let (Some(view), Some(job)) = (view, job) else {
         return Ok(None);
@@ -305,6 +306,7 @@ async fn load_job(state: &AppState, id: i64) -> Result<Option<JobDetailView>, Er
         result.as_ref(),
         history,
         state.trace_url.as_deref(),
+        &callbacks,
         Utc::now(),
     )))
 }
