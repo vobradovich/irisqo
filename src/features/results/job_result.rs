@@ -6,15 +6,21 @@ use bytes::Bytes;
 use hyper::{HeaderMap, StatusCode};
 use serde::{Deserialize, Serialize};
 
-use crate::models::Error;
+use crate::models::{CallbackType, Error};
 
 #[derive(Debug, Clone, Default, Serialize, utoipa::ToSchema)]
 pub struct JobResult {
     pub meta: JobResultMeta,
     pub headers: Option<HashMap<String, String>>,
-    /// The body of the response: a list of bytes.
-    #[schema(value_type = Vec<u8>)]
+    /// The body of the response, base64 (`/result/raw` gives the bytes as they are).
+    #[serde(serialize_with = "serialize_base64")]
+    #[schema(value_type = String, format = Byte)]
     pub body: Bytes,
+}
+
+fn serialize_base64<S: serde::Serializer>(body: &Bytes, serializer: S) -> Result<S::Ok, S::Error> {
+    use base64::Engine as _;
+    serializer.serialize_str(&base64::engine::general_purpose::STANDARD.encode(body))
 }
 
 #[derive(sqlx::FromRow)]
@@ -73,6 +79,10 @@ pub struct HttpResponseMeta {
     #[serde(with = "http_serde::version")]
     #[schema(value_type = String, example = "HTTP/1.1")]
     pub version: hyper::Version,
+    /// A failure that the status does not tell (the response is kept, the job is not done): the
+    /// text of it, as `error` of a result that has no response.
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub error: Option<String>,
 }
 
 impl JobResult {
@@ -87,6 +97,7 @@ impl JobResult {
                 result: JobResultType::Http(HttpResponseMeta {
                     status_code,
                     version,
+                    error: None,
                 }),
                 trace_id: None,
                 span_id: None,
@@ -94,6 +105,28 @@ impl JobResult {
             headers,
             body,
         }
+    }
+
+    /// Marks an HTTP result as a failure of the job: the response is kept, the job is not done.
+    #[must_use]
+    pub(crate) fn failed_with(mut self, error: String) -> JobResult {
+        if let JobResultType::Http(response) = &mut self.meta.result {
+            response.error = Some(error);
+        }
+        self
+    }
+
+    /// Sets the trace and the span of the attempt that produced the result.
+    pub(crate) fn traced(&mut self, ids: Option<(String, String)>) {
+        if let Some((trace_id, span_id)) = ids {
+            self.meta.trace_id = Some(trace_id);
+            self.meta.span_id = Some(span_id);
+        }
+    }
+
+    /// A job cancelled while it waited: no response, no trace.
+    pub fn cancelled() -> JobResult {
+        Self::with_type(JobResultType::Cancelled)
     }
 
     fn with_type(result: JobResultType) -> JobResult {
@@ -143,18 +176,21 @@ impl JobResult {
         }
     }
 
+    /// How the job ended with this result: what its callback is of and `processed.status` is.
+    pub fn callback_type(&self) -> CallbackType {
+        match &self.meta.result {
+            JobResultType::Timeout | JobResultType::Error { .. } => CallbackType::Failed,
+            JobResultType::Cancelled => CallbackType::Cancelled,
+            JobResultType::Http(meta) if meta.error.is_some() || !meta.status_code.is_success() => {
+                CallbackType::Failed
+            }
+            JobResultType::None | JobResultType::Http(_) => CallbackType::Completed,
+        }
+    }
+
     /// `processed.status` for this result.
     pub fn processed_status(&self) -> &'static str {
-        match &self.meta.result {
-            JobResultType::Timeout | JobResultType::Error { .. } => "failed",
-            JobResultType::Cancelled => "cancelled",
-            JobResultType::Http(meta)
-                if meta.status_code.is_client_error() || meta.status_code.is_server_error() =>
-            {
-                "failed"
-            }
-            JobResultType::None | JobResultType::Http(_) => "completed",
-        }
+        self.callback_type().status()
     }
 
     /// What the history says about the attempt: the error, or the HTTP status.
@@ -162,7 +198,10 @@ impl JobResult {
         match &self.meta.result {
             JobResultType::Error { error } => Some(error.clone()),
             JobResultType::Timeout => Some("timeout".into()),
-            JobResultType::Http(meta) => Some(format!("HTTP {}", meta.status_code.as_u16())),
+            JobResultType::Http(meta) => Some(match &meta.error {
+                Some(error) => format!("HTTP {}: {error}", meta.status_code.as_u16()),
+                None => format!("HTTP {}", meta.status_code.as_u16()),
+            }),
             JobResultType::None | JobResultType::Cancelled => None,
         }
     }
@@ -190,7 +229,6 @@ impl From<Error> for JobResult {
             | Error::HyperError(_)
             | Error::HyperClientError(_)
             | Error::InvalidParams(_)
-            | Error::ResponseTooLarge
             | Error::BlockedTarget(_)
             | Error::RetriesExceeded => JobResult::with_type(JobResultType::Error {
                 error: value.to_string(),
@@ -202,6 +240,10 @@ impl From<Error> for JobResult {
 impl IntoResponse for JobResult {
     fn into_response(self) -> axum::response::Response {
         if let JobResultType::Http(meta) = self.meta.result {
+            // the response is not what the job got: a bad gateway answers, not the target
+            if meta.error.is_some() {
+                return StatusCode::BAD_GATEWAY.into_response();
+            }
             let mut response = match self.body.is_empty() {
                 true => meta.status_code.into_response(),
                 false => (meta.status_code, self.body).into_response(),
@@ -256,4 +298,43 @@ fn retry_after_parse() {
     );
     assert_eq!(parse_retry_after("soon", at), None);
     assert_eq!(parse_retry_after("-5", at), None);
+}
+
+#[test]
+fn a_response_that_is_too_large_is_a_failure_with_its_status() {
+    let result = JobResult::http(
+        StatusCode::OK,
+        hyper::Version::HTTP_11,
+        Some(HashMap::from([("etag".into(), "x".into())])),
+        Bytes::new(),
+    );
+    assert_eq!(result.processed_status(), "completed");
+    let result = result.failed_with("response too large: 300 bytes, the limit is 100".to_owned());
+    assert_eq!(result.processed_status(), "failed");
+    assert_eq!(result.status_code(), Some(StatusCode::OK));
+    assert_eq!(
+        result.history_message().as_deref(),
+        Some("HTTP 200: response too large: 300 bytes, the limit is 100")
+    );
+    assert_eq!(result.headers.as_ref().map(HashMap::len), Some(1));
+    assert_eq!(
+        result.into_response().status(),
+        StatusCode::BAD_GATEWAY,
+        "it is not the answer of the target"
+    );
+
+    let json = serde_json::to_value(JobResultMeta {
+        result: JobResultType::Http(HttpResponseMeta {
+            status_code: StatusCode::OK,
+            version: hyper::Version::HTTP_11,
+            error: Some("response too large: over the limit of 100 bytes".to_owned()),
+        }),
+        ..JobResultMeta::default()
+    })
+    .expect("json");
+    // the same key and the same type as the `error` of a result that has no response
+    assert_eq!(
+        json["error"],
+        "response too large: over the limit of 100 bytes"
+    );
 }

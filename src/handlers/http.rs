@@ -5,7 +5,7 @@ use crate::{
     handlers::job_request::{JobRequest, SinkKind},
     models::{
         AppState, Error, JobCreate, JobCreateRow, ParamError, WorkerOptions,
-        headers::forwarded_headers,
+        headers::{callback_headers, forwarded_headers},
     },
     otel::metrics::metrics,
 };
@@ -48,7 +48,9 @@ async fn job_create(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<impl IntoResponse, Problem> {
-    let request = JobRequest::http(&method, &url, forwarded_headers(&headers), body);
+    let mut request = JobRequest::http(&method, &url, forwarded_headers(&headers), body);
+    let callback_headers = callback_headers(&headers);
+    request.callback_headers = (!callback_headers.is_empty()).then_some(callback_headers);
     let job = prepare_job(&state.worker_options, request, query.as_deref(), Utc::now())
         .map_err(Error::InvalidParams)?;
     let job = create_job(&state, job).await?;
@@ -167,13 +169,21 @@ pub fn prepare_job(
 }
 
 /// The job parameters of `/to/`: `_` and the name of the field of [`JobRequest`].
-const JOB_PARAMETERS: [&str; 6] = [
+const JOB_PARAMETERS: [&str; 14] = [
     "_delay",
     "_at",
     "_timeout",
     "_flow_key",
     "_priority",
     "_key",
+    "_callback_url",
+    "_callback_method",
+    "_callback_types",
+    "_callback_mode",
+    "_callback_retry",
+    "_callback_timeout",
+    "_callback_flow_key",
+    "_callback_priority",
 ];
 
 /// The `/to/` parameter of a job field; the field itself when it has none (`url`, `headers`).
@@ -186,7 +196,7 @@ fn query_parameter(field: &'static str) -> &'static str {
 
 /// Stores a prepared job (or returns the existing one with the same key).
 pub async fn create_job(state: &AppState, job: JobCreate) -> Result<JobCreateRow, Error> {
-    debug!(meta = ?job.meta, "create job");
+    debug!(sink = ?job.meta.sink, "create job");
     let job_type = if job.schedule.is_some() {
         "scheduled"
     } else if job.at.is_some() {

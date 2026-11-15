@@ -253,7 +253,9 @@ Each option can also be set by an `IRISQO_` variable, in the environment or a `.
 
 `--max-body-size` (`IRISQO_MAX_BODY_SIZE`) limits the full HTTP request body when submitting a job.
 The default is 65536 bytes (64 KiB). For JSON jobs this includes the metadata, target headers and payload.
-The worker reads up to 10 MiB of the target's response body.
+`--max-response-size` (`IRISQO_MAX_RESPONSE_SIZE`) limits the target's response body, in the bytes it
+sends (a compressed body counts compressed). The default is 65536 bytes (64 KiB). A longer response fails
+the job with `Response Too Large`, and it is not retried: the target has already got the request.
 
 The database URL is required: set `IRISQO_DB_URL` (better than `--db-url`: a flag shows the password in `ps`).
 

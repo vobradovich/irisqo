@@ -85,7 +85,7 @@ CREATE TABLE jobs (
 );
 CREATE UNIQUE INDEX ux_jobs_key  ON jobs (key) WHERE key IS NOT NULL;
 CREATE INDEX ix_jobs_schedule_id ON jobs (schedule_id) WHERE schedule_id IS NOT NULL;
-CREATE INDEX ix_jobs_parent_id   ON jobs (parent_id) WHERE parent_id IS NOT NULL;
+CREATE INDEX ix_jobs_parent_id   ON jobs (parent_id, id) WHERE parent_id IS NOT NULL;
 ```
 
 ## States

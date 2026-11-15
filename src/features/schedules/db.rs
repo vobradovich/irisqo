@@ -1,6 +1,6 @@
 use crate::{
     db,
-    models::{Error, JobCreate, JobCreateRow, JobMeta},
+    models::{Error, JobCreate, JobCreateRow, JobMeta, new_ulid},
 };
 
 use chrono::{DateTime, Utc};
@@ -67,7 +67,9 @@ pub async fn upsert(
     let (Some(schedule_id), Some(schedule)) = (job.key.as_deref(), job.schedule.as_ref()) else {
         return Err(Error::invalid("schedule", "needs an id and a rule"));
     };
-    let Some(at) = schedule.next(job.at.unwrap_or_else(Utc::now)) else {
+    // a run is always in the future: a `job.at` of the past counts as now
+    let now = Utc::now();
+    let Some(at) = schedule.next(job.at.map_or(now, |at| at.max(now))) else {
         return Err(Error::invalid(
             "until",
             "the schedule has no run before it ends",
@@ -89,11 +91,10 @@ pub async fn upsert(
         .fetch_one(&mut *tx)
         .await?;
     if let Some(next_id) = next_id {
-        db::jobqueue::cancel(&mut *tx, next_id, instance_id).await?;
+        let message = Some("replaced: the schedule was declared again");
+        db::jobqueue::cancel(&mut tx, next_id, instance_id, message).await?;
     }
-    // the key of a run is `{schedule_id}-{run time, secs}`: a schedule has at most one run in a
-    // second, and the run that was cancelled above gave its key back
-    let key = format!("{schedule_id}-{}", at.timestamp());
+    let key = format!("{schedule_id}-{}", new_ulid());
     let (flow, priority) = (
         job.meta
             .flow_key
@@ -127,8 +128,7 @@ pub async fn upsert(
 ///
 /// The row of the schedule is locked first (`FOR UPDATE`): a declaration that is in flight is
 /// waited for, and when it has replaced the next run, the job is not the next run any more and
-/// nothing is created. The key of a run is `{schedule_id}-{run time, secs}`: a schedule has at
-/// most one run in a second, and a run that was cancelled gave its key back (see [`db::jobqueue::cancel`]).
+/// nothing is created. The key of a run is `{schedule_id}-{ulid}`.
 pub async fn clone_schedule_at<'e, E>(
     executor: E,
     job_id: i64,
@@ -142,7 +142,7 @@ where
     WITH a AS (
         INSERT INTO jobs(meta, headers, body, schedule_id, key)
         SELECT j.meta, j.headers, j.body, j.schedule_id,
-            j.schedule_id || '-' || extract(epoch FROM $2::timestamptz)::bigint
+            j.schedule_id || '-' || $4::text
         FROM jobs AS j
         INNER JOIN schedules AS s ON s.schedule_id = j.schedule_id
         -- only the latest run continues the schedule (a manually retried old run does not)
@@ -166,6 +166,7 @@ where
         .bind(job_id)
         .bind(at)
         .bind(instance_id)
+        .bind(new_ulid())
         .fetch_optional(executor)
         .await?;
     Ok(job_id)
@@ -188,7 +189,8 @@ pub async fn pause(
         return Ok(false);
     };
     if let Some(next_id) = next_id {
-        db::jobqueue::cancel(&mut *tx, next_id, instance_id).await?;
+        let message = Some("the schedule was paused");
+        db::jobqueue::cancel(&mut tx, next_id, instance_id, message).await?;
     }
     tx.commit().await?;
     Ok(true)

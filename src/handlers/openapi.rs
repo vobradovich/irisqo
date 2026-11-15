@@ -3,6 +3,7 @@
 
 use super::{job_request::JobRequest, jobs};
 use crate::features::{
+    callbacks::CallbackWebhook,
     flows, history, instances, results,
     schedules::{self, ScheduleRequest},
 };
@@ -25,6 +26,7 @@ pub(crate) struct ScheduleBody {
     info(title = "irisqo", description = "Jobs and schedules over HTTP."),
     paths(
         jobs::create,
+        jobs::list,
         jobs::get_by_id,
         jobs::delete_by_id,
         jobs::cancel,
@@ -47,7 +49,14 @@ pub(crate) struct ScheduleBody {
         results::http::result_by_id,
         results::http::result_by_id_raw,
     ),
-    components(schemas(JobRequest, ScheduleBody, JobCreateRow, ParamError, Problem))
+    components(schemas(
+        JobRequest,
+        ScheduleBody,
+        JobCreateRow,
+        ParamError,
+        Problem,
+        CallbackWebhook
+    ))
 )]
 pub struct ApiDoc;
 
@@ -82,7 +91,7 @@ mod tests {
         ids.sort_unstable();
         ids.dedup();
         assert_eq!(ids.len(), operations, "{ids:?}");
-        assert_eq!(operations, 22);
+        assert_eq!(operations, 23);
         // the retry policy is flattened into the job: `allOf` of its fields and the others
         let job = &doc["components"]["schemas"]["JobRequest"]["allOf"];
         let job: serde_json::Map<String, serde_json::Value> = job
@@ -102,6 +111,9 @@ mod tests {
             "retry_count",
             "retry_delay",
             "at",
+            "callback_url",
+            "callback_mode",
+            "callback_retry_count",
         ] {
             assert!(job.get(field).is_some(), "{field}");
         }

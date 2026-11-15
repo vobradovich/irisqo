@@ -1,5 +1,5 @@
 use hyper::{Method, StatusCode};
-use irisqo::db::jobview::{self, JobQuery, JobStatus, ScheduleFilter, StatusFilter};
+use irisqo::db::jobview::{self, JobQuery, JobStatus, SourceFilter, StatusFilter};
 use sqlx::PgPool;
 
 use crate::common;
@@ -104,7 +104,7 @@ async fn list_shows_every_state(pool: PgPool) -> anyhow::Result<()> {
     };
     assert_eq!(statuses(&pool, &q).await.len(), 2);
     let q = JobQuery {
-        schedule: ScheduleFilter::Scheduled,
+        source: SourceFilter::Schedule,
         ..query(StatusFilter::All)
     };
     assert!(statuses(&pool, &q).await.is_empty());

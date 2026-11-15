@@ -8,11 +8,12 @@ use chrono::{DateTime, Utc};
 use crate::{
     db::jobview::{JobStatus, JobView},
     features::{
+        callbacks::{DEFAULT_RETRY, DEFAULT_TIMEOUT},
         history::JobHistoryRow,
         results::{JobResult, JobResultType},
     },
     models::headers::{HIDDEN, shown_value},
-    models::{JobRetry, JobRow, JobSink},
+    models::{CallbackMode, JobRetry, JobRow, JobSink},
 };
 
 /// A header of the target's answer: the value is hidden when the name looks like a
@@ -81,7 +82,7 @@ pub fn max_attempts(retry: Option<JobRetry>) -> u32 {
 pub fn retry_policy(retry: Option<JobRetry>) -> String {
     let up_to = |max: Option<u32>| max.map(|max| format!(" ≤ {max} s")).unwrap_or_default();
     match retry {
-        None => "none".into(),
+        None | Some(JobRetry::Fixed { retry_count: 0, .. }) => "none".into(),
         Some(JobRetry::Fixed {
             retry_count,
             retry_delay,
@@ -120,6 +121,8 @@ pub struct JobRowView {
     pub instance_id: Option<String>,
     pub key: Option<String>,
     pub schedule_id: Option<String>,
+    /// The job that made this one: a job with a parent is a callback.
+    pub parent_id: Option<i64>,
 }
 
 impl JobRowView {
@@ -171,6 +174,7 @@ impl JobRowView {
             instance_id: job.instance_id.clone(),
             key: job.key.clone(),
             schedule_id: job.schedule_id.clone(),
+            parent_id: job.parent_id,
         }
     }
 }
@@ -222,7 +226,10 @@ impl ResultView {
                     http.status_code.as_u16(),
                     http.status_code.canonical_reason().unwrap_or_default()
                 ),
-                format!("{:?}", http.version),
+                match &http.error {
+                    Some(error) => format!("{:?} · {error}", http.version),
+                    None => format!("{:?}", http.version),
+                },
             ),
             JobResultType::Timeout => ("Timeout".into(), String::new()),
             JobResultType::Cancelled => ("Cancelled".into(), String::new()),
@@ -242,10 +249,26 @@ impl ResultView {
     }
 }
 
+/// The callback of a job: what it sends, and the jobs it made.
+#[derive(Debug, Clone)]
+pub struct CallbackView {
+    pub url: String,
+    pub method: String,
+    pub mode: &'static str,
+    pub types: String,
+    pub retry_policy: String,
+    pub timeout: String,
+    pub headers: Vec<(String, String)>,
+    pub jobs: Vec<JobRowView>,
+}
+
 /// A job page.
 #[derive(Debug, Clone)]
 pub struct JobDetailView {
     pub row: JobRowView,
+    /// The mode of the callback this job is.
+    pub callback_of: Option<&'static str>,
+    pub callback: Option<CallbackView>,
     pub created: String,
     pub retry_policy: String,
     pub timeout: String,
@@ -268,9 +291,33 @@ impl JobDetailView {
         result: Option<&JobResult>,
         history: Vec<JobHistoryRow>,
         trace_url: Option<&str>,
+        callbacks: &[JobView],
         now: DateTime<Utc>,
     ) -> Self {
         let result = result.map(ResultView::new);
+        let callback = view.meta.callback.as_ref().map(|callback| CallbackView {
+            url: callback.url.to_string(),
+            method: callback.method().to_string(),
+            mode: callback.mode.as_str(),
+            types: callback
+                .effective_types()
+                .iter()
+                .map(|t| t.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
+            retry_policy: callback.retry.map_or_else(
+                || format!("default ({})", retry_policy(Some(DEFAULT_RETRY))),
+                |retry| retry_policy(Some(retry)),
+            ),
+            timeout: format!("{} ms", callback.timeout.unwrap_or(DEFAULT_TIMEOUT)),
+            headers: sorted_headers(callback.headers.as_ref(), shown_value),
+            jobs: callbacks
+                .iter()
+                .map(|job| JobRowView::new(job, now))
+                .collect(),
+        });
+        // a callback knows the mode it is sent in, also when its parent was deleted
+        let callback_of = view.meta.callback_as.map(CallbackMode::as_str);
         let trace_href = result
             .as_ref()
             .and_then(|r| r.trace_id.as_deref())
@@ -279,6 +326,8 @@ impl JobDetailView {
         let body = job.body.as_deref().unwrap_or_default();
         JobDetailView {
             row: JobRowView::new(view, now),
+            callback_of,
+            callback,
             created: utc(view.created_at),
             retry_policy: retry_policy(view.meta.retry),
             timeout: view

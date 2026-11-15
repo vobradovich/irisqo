@@ -8,6 +8,7 @@
 //! ```
 
 mod api_v1;
+mod callbacks;
 mod common;
 mod delivery;
 mod flows;

@@ -22,11 +22,12 @@
     <form method="get" action="/ui/jobs">
       <input type="hidden" name="status" value="{{ list.status }}">
       {% if !list.live %}<input type="hidden" name="live" value="0">{% endif %}
-      <label for="schedule-filter">Schedule
-        <select id="schedule-filter" name="schedule">
-          <option value="any"{% if list.schedule == "any" %} selected{% endif %}>Any</option>
-          <option value="scheduled"{% if list.schedule == "scheduled" %} selected{% endif %}>Schedule runs</option>
-          <option value="none"{% if list.schedule == "none" %} selected{% endif %}>No schedule</option>
+      <label for="source-filter">Source
+        <select id="source-filter" name="source">
+          <option value="any"{% if list.source == "any" %} selected{% endif %}>Any</option>
+          <option value="schedule"{% if list.source == "schedule" %} selected{% endif %}>Schedule runs</option>
+          <option value="callbacks"{% if list.source == "callbacks" %} selected{% endif %}>Callbacks</option>
+          <option value="direct"{% if list.source == "direct" %} selected{% endif %}>Direct</option>
         </select>
       </label>
       <label for="q" class="grow">Search

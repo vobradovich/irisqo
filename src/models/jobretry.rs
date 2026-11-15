@@ -40,6 +40,13 @@ pub enum JobRetry {
 pub const MAX_RETRY_DELAY: u32 = 24 * 60 * 60;
 
 impl JobRetry {
+    /// No retries, said out loud: where an absent policy means a default (a callback), `none` is
+    /// this one.
+    pub const NONE: Self = Self::Fixed {
+        retry_count: 0,
+        retry_delay: 0,
+    };
+
     /// The form of the `_retry` parameter.
     pub const RULE: &str =
         "must be N, N|fixed|S, N|fibonacci|S|M or N|exponential|S|M (M optional)";

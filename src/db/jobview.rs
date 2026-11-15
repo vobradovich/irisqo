@@ -138,27 +138,33 @@ impl StatusFilter {
     }
 }
 
-/// Jobs with or without a schedule.
+/// Where a job comes from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ScheduleFilter {
+pub enum SourceFilter {
     #[default]
     Any,
-    Scheduled,
-    None,
+    /// A run of a schedule.
+    Schedule,
+    /// The callback of another job.
+    Callbacks,
+    /// Neither a run of a schedule nor a callback.
+    Direct,
 }
 
-impl ScheduleFilter {
-    pub const ALL: [ScheduleFilter; 3] = [
-        ScheduleFilter::Any,
-        ScheduleFilter::Scheduled,
-        ScheduleFilter::None,
+impl SourceFilter {
+    pub const ALL: [SourceFilter; 4] = [
+        SourceFilter::Any,
+        SourceFilter::Schedule,
+        SourceFilter::Callbacks,
+        SourceFilter::Direct,
     ];
 
     pub const fn as_str(self) -> &'static str {
         match self {
-            ScheduleFilter::Any => "any",
-            ScheduleFilter::Scheduled => "scheduled",
-            ScheduleFilter::None => "none",
+            SourceFilter::Any => "any",
+            SourceFilter::Schedule => "schedule",
+            SourceFilter::Callbacks => "callbacks",
+            SourceFilter::Direct => "direct",
         }
     }
 
@@ -173,7 +179,7 @@ impl ScheduleFilter {
 #[derive(Debug, Clone, Default)]
 pub struct JobQuery {
     pub status: StatusFilter,
-    pub schedule: ScheduleFilter,
+    pub source: SourceFilter,
     /// A job id, a key or a part of the URL (a number: the id or the key only).
     pub search: Option<String>,
     /// Keyset paging: jobs with a smaller id.
@@ -188,6 +194,8 @@ pub struct JobView {
     #[sqlx(json)]
     pub meta: JobMeta,
     pub schedule_id: Option<String>,
+    /// The job that made this one: a job with a parent is a callback.
+    pub parent_id: Option<i64>,
     pub key: Option<String>,
     pub created_at: DateTime<Utc>,
     #[sqlx(try_from = "String")]
@@ -203,7 +211,7 @@ pub struct JobView {
 }
 
 const VIEW: &str = "
-    SELECT j.id, j.meta, j.schedule_id, j.key, j.created_at,
+    SELECT j.id, j.meta, j.schedule_id, j.parent_id, j.key, j.created_at,
         CASE
             WHEN s.id IS NOT NULL THEN CASE WHEN s.attempt > 0 THEN 'retrying' ELSE 'scheduled' END
             WHEN e.id IS NOT NULL THEN 'enqueued'
@@ -272,7 +280,10 @@ pub async fn list(pool: &Pool<Postgres>, query: &JobQuery) -> Result<Vec<JobView
         "WITH v AS ({view}
             WHERE ($1::bigint IS NULL OR j.id < $1)
               AND ($2::text IS NULL OR j.id::text = $2 OR j.key = $2 OR ($3::text IS NOT NULL AND j.meta->>'url' ILIKE $3))
-              AND ($4 = 'any' OR ($4 = 'scheduled' AND j.schedule_id IS NOT NULL) OR ($4 = 'none' AND j.schedule_id IS NULL))
+              AND ($4 = 'any'
+                   OR ($4 = 'schedule' AND j.schedule_id IS NOT NULL)
+                   OR ($4 = 'callbacks' AND j.parent_id IS NOT NULL)
+                   OR ($4 = 'direct' AND j.schedule_id IS NULL AND j.parent_id IS NULL))
         )
         SELECT * FROM v
         WHERE $5 = 'all'
@@ -295,9 +306,19 @@ pub async fn list(pool: &Pool<Postgres>, query: &JobQuery) -> Result<Vec<JobView
                 .filter(|s| !s.bytes().all(|b| b.is_ascii_digit()))
                 .map(like_pattern),
         )
-        .bind(query.schedule.as_str())
+        .bind(query.source.as_str())
         .bind(query.status.as_str())
         .bind(query.limit)
+        .fetch_all(pool)
+        .await?;
+    Ok(rows)
+}
+
+/// The callbacks of a job, oldest first.
+pub async fn callbacks(pool: &Pool<Postgres>, parent_id: i64) -> Result<Vec<JobView>, Error> {
+    let sql = format!("{VIEW} WHERE j.parent_id = $1 ORDER BY j.id LIMIT 100");
+    let rows = sqlx::query_as::<_, JobView>(sqlx::AssertSqlSafe(sql))
+        .bind(parent_id)
         .fetch_all(pool)
         .await?;
     Ok(rows)

@@ -52,11 +52,37 @@ pub fn serialize_shown<S: serde::Serializer>(
     }
 }
 
+/// The headers that irisqo sets on a relay callback to say which job it is about: nothing secret.
+/// Any other `irisqo-*` name is a header like the others (`irisqo-forward-authorization` of a
+/// chain carries a token), so it is hidden.
+pub const CALLBACK_METADATA: [&str; 4] = [
+    "irisqo-parent-id",
+    "irisqo-parent-key",
+    "irisqo-parent-status",
+    "irisqo-event-type",
+];
+
 fn is_hidden(name: &str, value: &str) -> bool {
     !value.is_empty()
-        && !OPEN_HEADERS
+        && !CALLBACK_METADATA
             .iter()
+            .chain(&OPEN_HEADERS)
             .any(|open| name.eq_ignore_ascii_case(open))
+}
+
+/// Prefix of the request headers sent to the callback, without the prefix.
+pub const CALLBACK_PREFIX: &str = "irisqo-callback-";
+
+/// The `irisqo-callback-*` headers of a request without the prefix: the headers of its callback.
+pub fn callback_headers(headers: &HeaderMap) -> HashMap<String, String> {
+    headers
+        .iter()
+        .filter_map(|(name, value)| {
+            let name = name.as_str().strip_prefix(CALLBACK_PREFIX)?;
+            let value = value.to_str().ok()?;
+            (!name.is_empty()).then(|| (name.to_owned(), value.to_owned()))
+        })
+        .collect()
 }
 
 /// The headers forwarded to the target: the body ones (`content-type`, `content-encoding`,
@@ -90,6 +116,18 @@ pub fn is_reserved_header(name: &str) -> bool {
             | "traceparent"
             | "tracestate"
     ) || name.starts_with("irisqo-")
+}
+
+/// Headers a client cannot set on a callback (lowercase name): the ones of the target request,
+/// the `webhook-*` of the standard and the `irisqo-*` that irisqo sets itself. The exception is
+/// `irisqo-forward-*` with a header that may be forwarded: it is for the next irisqo of a chain
+/// (`callback_url` is its `/to/`), which forwards it to its target without the prefix.
+#[must_use = "an unchecked header is sent"]
+pub fn is_reserved_callback_header(name: &str) -> bool {
+    match name.strip_prefix(FORWARD_PREFIX) {
+        Some(forwarded) => is_reserved_header(forwarded),
+        None => is_reserved_header(name) || name.starts_with("webhook-"),
+    }
 }
 
 #[cfg(test)]
@@ -142,5 +180,44 @@ mod tests {
             assert_eq!(shown_value(secret, "value"), HIDDEN, "{secret}");
         }
         assert_eq!(shown_value("x-empty", ""), "");
+    }
+
+    #[test]
+    fn only_the_metadata_of_a_callback_is_shown_among_the_irisqo_headers() {
+        for name in CALLBACK_METADATA {
+            assert_eq!(shown_value(name, "1"), "1", "{name}");
+        }
+        assert_eq!(shown_value("Irisqo-Parent-Id", "1"), "1");
+        for secret in ["irisqo-forward-authorization", "irisqo-api-key"] {
+            assert_eq!(shown_value(secret, "secret"), HIDDEN, "{secret}");
+        }
+    }
+
+    #[test]
+    fn a_callback_may_forward_but_not_set_the_headers_of_irisqo() {
+        for ok in [
+            "authorization",
+            "x-own",
+            "irisqo-forward-authorization",
+            "irisqo-forward-x-own",
+        ] {
+            assert!(!is_reserved_callback_header(ok), "{ok}");
+        }
+        for reserved in [
+            "",
+            "host",
+            "content-length",
+            "irisqo-parent-id",
+            "irisqo-event-type",
+            "irisqo-job-id",
+            "irisqo-forward-",
+            "irisqo-forward-host",
+            "irisqo-forward-irisqo-job-id",
+            "irisqo-forward-irisqo-forward-x",
+            "webhook-id",
+            "webhook-signature",
+        ] {
+            assert!(is_reserved_callback_header(reserved), "{reserved}");
+        }
     }
 }
