@@ -94,7 +94,12 @@ pub struct JobCallback {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     #[schema(value_type = Option<u32>, minimum = 1)]
     pub timeout: Option<NonZeroU32>,
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    /// An empty one is none.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "FlowKey::deserialize_optional"
+    )]
     pub flow_key: Option<FlowKey>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub priority: Option<i32>,

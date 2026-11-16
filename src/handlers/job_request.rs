@@ -47,8 +47,8 @@ pub enum SinkKind {
 pub struct JobRequest {
     /// Required.
     pub(crate) sink: Option<SinkKind>,
-    /// An HTTP method, for the `http` sink.
-    #[serde(with = "http_serde::option::method", default)]
+    /// An HTTP method, for the `http` sink, in any case (`post` is `POST`, as in `enqueue_v1`).
+    #[serde(default, deserialize_with = "method")]
     #[schema(schema_with = method_schema)]
     pub(crate) method: Option<Method>,
     /// An `http` or `https` URL, for the `http` sink.
@@ -59,7 +59,7 @@ pub struct JobRequest {
     #[schema(value_type = Option<u32>, minimum = 1)]
     pub(crate) timeout: Option<NonZeroU32>,
     /// Flow key of the job: 1 to 128 characters of `a-z 0-9 . _ : -`; an empty one is none.
-    #[serde(default, deserialize_with = "flow_key")]
+    #[serde(default, deserialize_with = "FlowKey::deserialize_optional")]
     pub(crate) flow_key: Option<FlowKey>,
     /// Higher runs first, among the jobs of its flow if it has one.
     pub(crate) priority: Option<i32>,
@@ -124,6 +124,14 @@ fn at_schema() -> utoipa::openapi::Schema {
     utoipa::openapi::Schema::OneOf(OneOfBuilder::new().item(time).item(seconds).build())
 }
 
+/// An HTTP method in upper case: `post` is `POST`, not a method of its own.
+fn method<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<Method>, D::Error> {
+    Option::<String>::deserialize(deserializer)?
+        .map(|method| Method::from_bytes(method.to_ascii_uppercase().as_bytes()))
+        .transpose()
+        .map_err(de::Error::custom)
+}
+
 /// `at`: an RFC 3339 time (a string) or unix seconds (a number).
 fn at<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<DateTime<Utc>>, D::Error> {
     #[derive(Deserialize)]
@@ -134,17 +142,10 @@ fn at<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<DateTime<Utc>
     }
     let time = match Option::<At>::deserialize(deserializer)? {
         None => return Ok(None),
-        Some(At::Seconds(secs)) => JobSchedule::parse_time(&secs.to_string()),
+        Some(At::Seconds(secs)) => JobSchedule::from_unix_secs(secs),
         Some(At::Time(time)) => JobSchedule::parse_time(&time),
     };
     time.map(Some).ok_or_else(|| de::Error::custom(TIME_RULE))
-}
-
-/// A flow key; an empty one is none, as in `enqueue_v1`.
-fn flow_key<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<FlowKey>, D::Error> {
-    Option::<String>::deserialize(deserializer)?
-        .map_or(Ok(None), |key| FlowKey::parse_optional(&key))
-        .map_err(de::Error::custom)
 }
 
 impl JobRequest {
@@ -580,6 +581,16 @@ mod tests {
             let spec = serde_json::from_str(meta)?;
             assert_eq!(prepare(spec).expect(meta).meta.retry, None, "{meta}");
         }
+
+        // a method in any case, an empty flow key of the callback, unix 0 (now): as in enqueue_v1
+        let job = prepare(serde_json::from_str(
+            r#"{"sink":"http","method":"post","url":"https://example.com","at":0,
+                "callback":{"url":"https://example.com/cb","flow_key":""}}"#,
+        )?)
+        .expect("valid job");
+        assert!(matches!(&job.meta.sink, JobSink::Http(http) if http.method == Method::POST));
+        assert_eq!(job.meta.callback.expect("callback").flow_key, None);
+        assert_eq!(job.at, None, "a time of the past is now");
 
         // a job repeats: the key is the id of the schedule
         let job = prepare(serde_json::from_str(
