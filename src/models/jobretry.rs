@@ -136,26 +136,37 @@ impl JobRetry {
                 .transpose()
         };
         let retry_count: u16 = count.parse().map_err(|_| invalid())?;
-        let (retry_delay, retry_max_delay) = (seconds(delay)?, seconds(max)?);
-        let retry = match (kind, retry_delay, retry_max_delay) {
-            ("fixed", retry_delay, None) => JobRetry::Fixed {
+        Self::from_parts(kind, retry_count, seconds(delay)?, seconds(max)?)
+            .map(Some)
+            .ok_or_else(invalid)
+    }
+
+    /// A policy of `kind` (`fixed`, `fibonacci`, `exponential`); `None` when the kind is not one
+    /// or a backoff has no `retry_delay`, or `fixed` has a `retry_max_delay`.
+    pub fn from_parts(
+        kind: &str,
+        retry_count: u16,
+        retry_delay: Option<u32>,
+        retry_max_delay: Option<u32>,
+    ) -> Option<Self> {
+        match (kind, retry_delay, retry_max_delay) {
+            ("fixed", retry_delay, None) => Some(JobRetry::Fixed {
                 retry_count,
                 retry_delay: retry_delay.unwrap_or(0),
-            },
-            ("fibonacci", Some(retry_delay), retry_max_delay) => JobRetry::Fibonacci {
+            }),
+            ("fibonacci", Some(retry_delay), retry_max_delay) => Some(JobRetry::Fibonacci {
                 retry_count,
                 retry_delay,
                 retry_max_delay,
-            },
-            ("exponential", Some(retry_delay), retry_max_delay) => JobRetry::Exponential {
+            }),
+            ("exponential", Some(retry_delay), retry_max_delay) => Some(JobRetry::Exponential {
                 retry_count,
                 retry_delay,
                 retry_max_delay,
-            },
+            }),
             // a typo must not silently become `fixed`
-            _ => return Err(invalid()),
-        };
-        Ok(Some(retry))
+            _ => None,
+        }
     }
 }
 

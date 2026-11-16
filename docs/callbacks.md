@@ -49,7 +49,8 @@ The callback fields are flat, next to the fields of the job, with the `callback_
 - The other `callback_*` fields need `callback_url`; without it they are refused.
 - `callback_retry` is `none`, `fixed`, `fibonacci` or `exponential`, with the fields of `retry`.
   **`none` means no retries**; it is not the same as leaving the policy out, which takes the
-  default of a callback.
+  default of a callback. `callback_retry_count`, `callback_retry_delay` or
+  `callback_retry_max_delay` without `callback_retry` is refused.
 - `callback_flow_key` lets a receiver be protected like any target: a concurrency or rate
   limit on `https://ship.example` is a flow. It is not inherited: the job's flow limits the
   job's target, the callback goes elsewhere.
