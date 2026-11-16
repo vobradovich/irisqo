@@ -55,9 +55,10 @@ impl JobSchedule {
             })
     }
 
-    /// `true` when `at` is a usable time: after 1970, up to 9999-12-31.
+    /// `true` when `at` is a usable time: from 1970 (unix 0, as `enqueue_v1` takes it) up to
+    /// 9999-12-31.
     pub fn in_range(at: DateTime<Utc>) -> bool {
-        at.timestamp() > 0 && at.year() <= 9999
+        at.timestamp() >= 0 && at.year() <= 9999
     }
 
     /// A time as written in a request: RFC 3339 (`2026-12-31T23:59:59Z`) or unix seconds.

@@ -184,11 +184,18 @@ BEGIN
             THEN 'retry must be an object'
         WHEN v_retry IS NOT NULL AND coalesce(v_policy, '') NOT IN ('fixed', 'fibonacci', 'exponential')
             THEN 'retry.policy must be fixed, fibonacci or exponential'
-        WHEN v_retry IS NOT NULL AND coalesce(v_retry->>'count', '') !~ '^[0-9]{1,4}$'
+        -- the policy is stored as it is: no other field, and numbers as JSON numbers
+        WHEN EXISTS (SELECT 1 FROM jsonb_object_keys(coalesce(v_retry, '{}')) k
+                     WHERE k NOT IN ('policy', 'count', 'delay', 'max_delay'))
+            THEN 'retry may have policy, count, delay and max_delay only'
+        WHEN v_retry IS NOT NULL AND (jsonb_typeof(v_retry->'count') IS DISTINCT FROM 'number'
+                                  OR v_retry->>'count' !~ '^[0-9]{1,4}$')
             THEN 'retry.count must be a number up to 9999'
-        WHEN coalesce(v_retry->>'delay', CASE WHEN v_policy IN ('fibonacci', 'exponential') THEN '' END) !~ '^[0-9]{1,5}$'
+        WHEN jsonb_typeof(v_retry->'delay') NOT IN ('number', 'null')
+             OR coalesce(v_retry->>'delay', CASE WHEN v_policy IN ('fibonacci', 'exponential') THEN '' END) !~ '^[0-9]{1,5}$'
             THEN 'retry.delay must be a number of seconds up to 99999'
-        WHEN v_retry->>'max_delay' !~ '^[0-9]{1,5}$'
+        WHEN jsonb_typeof(v_retry->'max_delay') NOT IN ('number', 'null')
+             OR v_retry->>'max_delay' !~ '^[0-9]{1,5}$'
             THEN 'retry.max_delay must be a number of seconds up to 99999'
         WHEN v_policy = 'fixed' AND v_retry->'max_delay' IS NOT NULL
             THEN 'retry.max_delay is for fibonacci and exponential'
@@ -233,11 +240,18 @@ BEGIN
             THEN 'callback.retry must be an object'
         WHEN v_cb_retry IS NOT NULL AND coalesce(v_cb_policy, '') NOT IN ('fixed', 'fibonacci', 'exponential')
             THEN 'callback.retry.policy must be fixed, fibonacci or exponential'
-        WHEN v_cb_retry IS NOT NULL AND coalesce(v_cb_retry->>'count', '') !~ '^[0-9]{1,4}$'
+        -- the policy is stored as it is: no other field, and numbers as JSON numbers
+        WHEN EXISTS (SELECT 1 FROM jsonb_object_keys(coalesce(v_cb_retry, '{}')) k
+                     WHERE k NOT IN ('policy', 'count', 'delay', 'max_delay'))
+            THEN 'callback.retry may have policy, count, delay and max_delay only'
+        WHEN v_cb_retry IS NOT NULL AND (jsonb_typeof(v_cb_retry->'count') IS DISTINCT FROM 'number'
+                                  OR v_cb_retry->>'count' !~ '^[0-9]{1,4}$')
             THEN 'callback.retry.count must be a number up to 9999'
-        WHEN coalesce(v_cb_retry->>'delay', CASE WHEN v_cb_policy IN ('fibonacci', 'exponential') THEN '' END) !~ '^[0-9]{1,5}$'
+        WHEN jsonb_typeof(v_cb_retry->'delay') NOT IN ('number', 'null')
+             OR coalesce(v_cb_retry->>'delay', CASE WHEN v_cb_policy IN ('fibonacci', 'exponential') THEN '' END) !~ '^[0-9]{1,5}$'
             THEN 'callback.retry.delay must be a number of seconds up to 99999'
-        WHEN v_cb_retry->>'max_delay' !~ '^[0-9]{1,5}$'
+        WHEN jsonb_typeof(v_cb_retry->'max_delay') NOT IN ('number', 'null')
+             OR v_cb_retry->>'max_delay' !~ '^[0-9]{1,5}$'
             THEN 'callback.retry.max_delay must be a number of seconds up to 99999'
         WHEN v_cb_policy = 'fixed' AND v_cb_retry->'max_delay' IS NOT NULL
             THEN 'callback.retry.max_delay is for fibonacci and exponential'
@@ -268,11 +282,7 @@ BEGIN
             'mode', v_cb_mode,
             'types', nullif(v_cb->'types', 'null'::jsonb),
             'headers', nullif(v_cb->'headers', 'null'::jsonb),
-            'retry', CASE WHEN v_cb_retry IS NOT NULL THEN jsonb_build_object(
-                'policy', v_cb_policy,
-                'count', (v_cb_retry->>'count')::int,
-                'delay', coalesce((v_cb_retry->>'delay')::int, 0),
-                'max_delay', (v_cb_retry->>'max_delay')::int) END,
+            'retry', v_cb_retry,  -- checked above; nulls are stripped
             'timeout', (v_cb->>'timeout')::int,
             'flow_key', v_cb_flow,
             'priority', nullif(coalesce((v_cb->>'priority')::int, 0), 0)));
@@ -282,11 +292,7 @@ BEGIN
         'sink', v_sink,
         'method', CASE WHEN v_sink = 'http' THEN upper(coalesce(job->>'method', 'POST')) END,
         'url', CASE WHEN v_sink = 'http' THEN job->>'url' END,
-        'retry', CASE WHEN v_retry IS NOT NULL THEN jsonb_build_object(
-            'policy', v_policy,
-            'count', (v_retry->>'count')::int,
-            'delay', coalesce((v_retry->>'delay')::int, 0),
-            'max_delay', (v_retry->>'max_delay')::int) END,
+        'retry', v_retry,  -- checked above; nulls are stripped
         'timeout', v_timeout,
         'flow_key', v_flow,
         'priority', nullif(v_priority, 0),

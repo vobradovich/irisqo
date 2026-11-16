@@ -169,6 +169,15 @@ impl FlowKey {
             Self::try_from(value.to_owned()).map(Some)
         }
     }
+
+    /// For `deserialize_with`: a flow key of a request, where an empty one is none.
+    pub fn deserialize_optional<'de, D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<Self>, D::Error> {
+        Option::<String>::deserialize(deserializer)?
+            .map_or(Ok(None), |key| Self::parse_optional(&key))
+            .map_err(serde::de::Error::custom)
+    }
 }
 
 impl TryFrom<String> for FlowKey {
