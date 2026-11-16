@@ -148,7 +148,7 @@ async fn form_creates_the_job(pool: PgPool) -> anyhow::Result<()> {
     );
 
     let (method, retry, timeout, auth, key): (String, String, i64, String, String) = sqlx::query_as(
-        "SELECT meta->>'method', meta->>'retry', (meta->>'timeout')::bigint, headers->>'authorization', key FROM jobs",
+        "SELECT meta->>'method', meta#>>'{retry,policy}', (meta->>'timeout')::bigint, headers->>'authorization', key FROM jobs",
     )
     .fetch_one(&pool)
     .await?;

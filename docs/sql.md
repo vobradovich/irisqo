@@ -219,15 +219,17 @@ CREATE TABLE stats (
 ### enqueue_v1
 
 `enqueue_v1(job jsonb) RETURNS bigint`: enqueues inside the caller's transaction (embedded mode) and returns the
-job id. `job` is a flat JSON object, the same fields as `POST /api/v1/jobs` and `PUT /api/v1/schedules/{id}`;
+job id. `job` is a JSON object, the same fields as `POST /api/v1/jobs` but the schedule (`cron`, `interval`, `tz`, `until`);
 `sink` is required (`http` also needs `url`):
 
 ```text
 sink http | noop
 url, method (default POST; sink http), headers (object of strings), body (a string as it is, any other JSON as JSON text with content-type application/json) | body_base64
 at (unix time) and/or delay (seconds; at wins), timeout (ms; none: --timeout when the job runs)
-retry none (default) | fixed | fibonacci | exponential, retry_count,
-      retry_delay (seconds; fixed without it retries at once), retry_max_delay (seconds, backoffs)
+retry (object; none: no retries) { policy fixed | fibonacci | exponential, count,
+      delay (seconds; fixed without it retries at once), max_delay (seconds, backoffs) }
+callback (object; see docs/callbacks.md) { url, method, mode, types, headers, retry (as above),
+      timeout, flow_key, priority }
 flow_key, priority, key (a repeated key returns the existing job id)
 traceparent, tracestate
 ```

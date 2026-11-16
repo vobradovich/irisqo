@@ -62,7 +62,9 @@ impl JobCreate {
     pub fn normalized(mut self, options: &WorkerOptions, now: DateTime<Utc>) -> Self {
         self.meta.timeout = self.meta.timeout.map(|ms| ms.min(options.max_timeout));
         if let Some(callback) = self.meta.callback.as_mut() {
-            callback.timeout = callback.timeout.map(|ms| ms.min(options.max_timeout));
+            callback.timeout = callback
+                .timeout
+                .and_then(|ms| std::num::NonZeroU32::new(ms.get().min(options.max_timeout)));
         }
         self.at = self.at.filter(|at| *at > now);
         if self.meta.traceparent.is_none() {
@@ -91,8 +93,7 @@ pub struct JobMeta {
     #[serde(flatten, default)]
     pub sink: JobSink,
     /// No retries when absent.
-    #[serde(flatten)]
-    #[schema(schema_with = crate::handlers::job_request::retry_schema)]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub retry: Option<JobRetry>,
     /// Milliseconds; the API stores `--timeout` (default 3000) when the request has none.
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -158,6 +159,15 @@ impl FlowKey {
 
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    /// The flow key of a request: an empty one is none, as in `enqueue_v1`.
+    pub fn parse_optional(value: &str) -> Result<Option<Self>, &'static str> {
+        if value.is_empty() {
+            Ok(None)
+        } else {
+            Self::try_from(value.to_owned()).map(Some)
+        }
     }
 }
 

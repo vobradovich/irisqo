@@ -114,7 +114,7 @@ async fn json_job_is_queued_and_delivered(pool: PgPool) -> anyhow::Result<()> {
 
     let json = format!(
         r#"{{"sink":"http","method":"PUT","url":"http://{addr}/echo",
-              "retry":"fixed","retry_count":2,"retry_delay":1,"timeout":5000,
+              "retry":{{"policy":"fixed","count":2,"delay":1}},"timeout":5000,
             "headers":{{"x-a":"b"}},"body":{{"n":1}},"key":"v1-job"}}"#
     );
     let response = post_job(&state, addr, &json).await;

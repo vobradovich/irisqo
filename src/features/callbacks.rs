@@ -147,7 +147,11 @@ impl JobOutcome<'_> {
                 url: callback.url.clone(),
             }),
             retry: callback.retry.or(Some(DEFAULT_RETRY)),
-            timeout: callback.timeout.or(Some(DEFAULT_TIMEOUT)),
+            timeout: Some(
+                callback
+                    .timeout
+                    .map_or(DEFAULT_TIMEOUT, std::num::NonZeroU32::get),
+            ),
             flow_key: callback.flow_key.clone(),
             priority: callback.priority,
             traceparent: self.trace.clone().or_else(|| self.meta.traceparent.clone()),

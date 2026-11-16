@@ -1,9 +1,10 @@
 //! The "New job" form: its state, and the `/to/` request it stands for.
 //!
-//! The form never builds a job by itself: it composes the same `_*` query parameters
-//! a `/to/` call would carry and goes through [`prepare_job`], so the API and the UI
+//! The form never builds a job by itself: it composes the same `_*` parameters a `/to/`
+//! call would carry and goes through [`prepare_job`], so the API and the UI
 //! accept exactly the same jobs, and the preview shows exactly what irisqo parses.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
 
@@ -301,9 +302,6 @@ impl JobForm {
         if self.url.trim().is_empty() {
             errors.insert("url", "is required".into());
         }
-        let query = form_urlencoded::Serializer::new(String::new())
-            .extend_pairs(&params)
-            .finish();
         let method = Method::from_bytes(self.method.as_bytes()).unwrap_or(Method::POST);
         let request = JobRequest::http(
             &method,
@@ -311,12 +309,15 @@ impl JobForm {
             headers,
             Bytes::from(self.body.clone()),
         );
-        match prepare_job(options, request, Some(&query), now) {
+        let params = params
+            .iter()
+            .map(|(name, value)| (Cow::Borrowed(*name), Cow::Borrowed(value.as_str())));
+        match prepare_job(options, request, params, HashMap::new(), now) {
             Ok(job) if errors.is_empty() => Ok(job),
             Ok(_) => Err(errors),
             Err(param_errors) => {
                 for ParamError { parameter, detail } in param_errors {
-                    errors.entry(field_of(parameter)).or_insert(detail);
+                    errors.entry(field_of(&parameter)).or_insert(detail);
                 }
                 Err(errors)
             }
@@ -367,21 +368,22 @@ impl JobForm {
     }
 }
 
-/// The form field of a `/to/` parameter.
+/// The fields of the form that show an error of their own.
+const FIELDS: [&str; 11] = [
+    "url", "headers", "key", "delay", "at", "interval", "cron", "until", "timeout", "flow_key",
+    "priority",
+];
+
+/// The form field of a `/to/` parameter: its name without the `_`, but for the ones that the
+/// form splits or moves; `url` for one that the form has no place for (`method`, `body`).
 fn field_of(param: &str) -> &'static str {
     match param {
-        "_delay" => "delay",
-        "_at" => "at",
-        "_interval" => "interval",
-        "_cron" => "cron",
-        "_until" => "until",
-        "_tz" => "cron",
         "_retry" => "retry_count",
-        "_timeout" => "timeout",
-        "_key" => "key",
-        "_flow_key" => "flow_key",
-        "_priority" => "priority",
-        _ => "url",
+        "_tz" => "cron",
+        param => {
+            let field = param.strip_prefix('_').unwrap_or(param);
+            FIELDS.into_iter().find(|f| *f == field).unwrap_or("url")
+        }
     }
 }
 

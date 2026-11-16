@@ -309,7 +309,12 @@ impl JobDetailView {
                 || format!("default ({})", retry_policy(Some(DEFAULT_RETRY))),
                 |retry| retry_policy(Some(retry)),
             ),
-            timeout: format!("{} ms", callback.timeout.unwrap_or(DEFAULT_TIMEOUT)),
+            timeout: format!(
+                "{} ms",
+                callback
+                    .timeout
+                    .map_or(DEFAULT_TIMEOUT, std::num::NonZeroU32::get)
+            ),
             headers: sorted_headers(callback.headers.as_ref(), shown_value),
             jobs: callbacks
                 .iter()

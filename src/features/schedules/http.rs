@@ -1,6 +1,8 @@
 use super::ScheduleRow;
-use super::schedule_request::prepare_schedule;
-use crate::handlers::http::{create_job, job_headers, parse_body};
+use crate::handlers::{
+    http::{create_job, job_headers, parse_body},
+    job_request::JobRequest,
+};
 use crate::models::{Error, JobCreateRow, Problem};
 use crate::{
     features::{Paging, PagingResult},
@@ -41,7 +43,7 @@ pub fn routes(state: Arc<AppState>) -> Router {
     operation_id = "put_schedule",
     tag = "schedules",
     params(("id" = String, Path, description = "The id of the schedule")),
-    request_body = crate::handlers::openapi::ScheduleBody,
+    request_body = JobRequest,
     responses(
         (status = 200, description = "The run that is next", body = JobCreateRow),
         (status = 400, description = "Invalid fields (RFC 9457 problem with `errors`)", body = Problem, content_type = "application/problem+json"),
@@ -52,12 +54,8 @@ pub(crate) async fn upsert(
     Path(schedule_id): Path<String>,
     body: Bytes,
 ) -> Result<impl IntoResponse, Problem> {
-    // the job and the rule are two views of one body
-    let (job, spec) = (
-        parse_body(&body, "schedule")?,
-        parse_body(&body, "schedule")?,
-    );
-    let job = prepare_schedule(&state.worker_options, &schedule_id, job, spec, Utc::now())
+    let job = parse_body::<JobRequest>(&body, "schedule")?
+        .validate_schedule(&schedule_id, &state.worker_options, Utc::now())
         .map_err(Error::InvalidParams)?;
     let run = create_job(&state, job).await?;
     let mut headers = job_headers(&run);

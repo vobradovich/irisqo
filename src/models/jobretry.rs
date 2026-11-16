@@ -2,35 +2,41 @@ use super::Error;
 use serde::{Deserialize, Serialize};
 
 /// The retry policy of a job; a job without one (`Option::None`) is not retried.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "retry", rename_all = "snake_case")]
+/// In JSON an object: `{"policy": "exponential", "count": 5, "delay": 2, "max_delay": 300}`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
+#[serde(tag = "policy", rename_all = "snake_case", deny_unknown_fields)]
 pub enum JobRetry {
     /// The same delay before every retry; no delay retries at once.
     Fixed {
         /// The number of retries before fail job.
+        #[serde(rename = "count")]
         retry_count: u16,
         /// The delay in seconds between retries.
-        #[serde(default)]
+        #[serde(rename = "delay", default)]
         retry_delay: u32,
     },
-    /// `retry_delay` × 1, 1, 2, 3, 5, 8, …
+    /// `delay` × 1, 1, 2, 3, 5, 8, …
     Fibonacci {
         /// The number of retries before fail job.
+        #[serde(rename = "count")]
         retry_count: u16,
         /// The base delay in seconds between retries.
+        #[serde(rename = "delay")]
         retry_delay: u32,
-        /// The longest delay in seconds; [`MAX_RETRY_DELAY`] when absent.
-        #[serde(skip_serializing_if = "Option::is_none", default)]
+        /// The longest delay in seconds; 24 hours when absent.
+        #[serde(rename = "max_delay", skip_serializing_if = "Option::is_none", default)]
         retry_max_delay: Option<u32>,
     },
-    /// `retry_delay` × 1, 2, 4, 8, 16, …
+    /// `delay` × 1, 2, 4, 8, 16, …
     Exponential {
         /// The number of retries before fail job.
+        #[serde(rename = "count")]
         retry_count: u16,
         /// The base delay in seconds between retries.
+        #[serde(rename = "delay")]
         retry_delay: u32,
-        /// The longest delay in seconds; [`MAX_RETRY_DELAY`] when absent.
-        #[serde(skip_serializing_if = "Option::is_none", default)]
+        /// The longest delay in seconds; 24 hours when absent.
+        #[serde(rename = "max_delay", skip_serializing_if = "Option::is_none", default)]
         retry_max_delay: Option<u32>,
     },
 }
@@ -136,36 +142,25 @@ impl JobRetry {
                 .transpose()
         };
         let retry_count: u16 = count.parse().map_err(|_| invalid())?;
-        Self::from_parts(kind, retry_count, seconds(delay)?, seconds(max)?)
-            .map(Some)
-            .ok_or_else(invalid)
-    }
-
-    /// A policy of `kind` (`fixed`, `fibonacci`, `exponential`); `None` when the kind is not one
-    /// or a backoff has no `retry_delay`, or `fixed` has a `retry_max_delay`.
-    pub fn from_parts(
-        kind: &str,
-        retry_count: u16,
-        retry_delay: Option<u32>,
-        retry_max_delay: Option<u32>,
-    ) -> Option<Self> {
-        match (kind, retry_delay, retry_max_delay) {
-            ("fixed", retry_delay, None) => Some(JobRetry::Fixed {
+        match (kind, seconds(delay)?, seconds(max)?) {
+            ("fixed", retry_delay, None) => Ok(Some(JobRetry::Fixed {
                 retry_count,
                 retry_delay: retry_delay.unwrap_or(0),
-            }),
-            ("fibonacci", Some(retry_delay), retry_max_delay) => Some(JobRetry::Fibonacci {
+            })),
+            ("fibonacci", Some(retry_delay), retry_max_delay) => Ok(Some(JobRetry::Fibonacci {
                 retry_count,
                 retry_delay,
                 retry_max_delay,
-            }),
-            ("exponential", Some(retry_delay), retry_max_delay) => Some(JobRetry::Exponential {
-                retry_count,
-                retry_delay,
-                retry_max_delay,
-            }),
+            })),
+            ("exponential", Some(retry_delay), retry_max_delay) => {
+                Ok(Some(JobRetry::Exponential {
+                    retry_count,
+                    retry_delay,
+                    retry_max_delay,
+                }))
+            }
             // a typo must not silently become `fixed`
-            _ => None,
+            _ => Err(invalid()),
         }
     }
 }
@@ -231,19 +226,24 @@ mod tests {
     #[test]
     fn deserialize() {
         let read = |s: &str| serde_json::from_str::<JobRetry>(s).ok();
+        assert_eq!(read(r#"{"policy":"fixed","count":3}"#), Some(fixed(3, 0)));
         assert_eq!(
-            read(r#"{"retry":"fixed","retry_count":3}"#),
-            Some(fixed(3, 0))
-        );
-        assert_eq!(
-            read(r#"{"retry":"exponential","retry_count":3,"retry_delay":1,"retry_max_delay":9}"#),
+            read(r#"{"policy":"exponential","count":3,"delay":1,"max_delay":9}"#),
             Some(JobRetry::Exponential {
                 retry_count: 3,
                 retry_delay: 1,
                 retry_max_delay: Some(9)
             })
         );
-        assert_eq!(read(r#"{"retry":"fibonacci","retry_count":3}"#), None);
+        // a backoff needs its delay, a policy its kind, `fixed` has no max
+        for s in [
+            r#"{"policy":"fibonacci","count":3}"#,
+            r#"{"count":3}"#,
+            r#"{"policy":"fixd","count":3}"#,
+            r#"{"policy":"fixed","count":3,"max_delay":9}"#,
+        ] {
+            assert_eq!(read(s), None, "{s}");
+        }
         assert_eq!(
             serde_json::to_string(&JobRetry::Fibonacci {
                 retry_count: 3,
@@ -251,7 +251,7 @@ mod tests {
                 retry_max_delay: None
             })
             .unwrap(),
-            r#"{"retry":"fibonacci","retry_count":3,"retry_delay":1}"#
+            r#"{"policy":"fibonacci","count":3,"delay":1}"#
         );
     }
 
