@@ -1,3 +1,5 @@
+use std::{borrow::Cow, collections::HashMap};
+
 use axum::http::StatusCode;
 use tokio::time::error::Elapsed;
 
@@ -13,17 +15,75 @@ pub const INVALID_PARAMS_TYPE: &str =
 #[derive(Debug, serde::Serialize, utoipa::ToSchema)]
 pub struct ParamError {
     /// The query parameter (`_delay`) or `url`.
-    pub parameter: &'static str,
+    #[schema(value_type = String)]
+    pub parameter: Cow<'static, str>,
     /// What is wrong, for a human: "must be a number of seconds".
     pub detail: String,
 }
 
 impl ParamError {
-    pub fn new(parameter: &'static str, detail: impl Into<String>) -> Self {
+    pub fn new(parameter: impl Into<Cow<'static, str>>, detail: impl Into<String>) -> Self {
         Self {
-            parameter,
+            parameter: parameter.into(),
             detail: detail.into(),
         }
+    }
+}
+
+/// What is wrong with a timeout that does not parse.
+pub const MILLISECONDS_RULE: &str = "must be a positive number of milliseconds";
+
+/// What is wrong with a priority that does not parse.
+pub const PRIORITY_RULE: &str = "must be an integer from -2147483648 to 2147483647";
+
+/// Parameters as text by name (`/to/` without the `_` of its parameters): each one is parsed
+/// on its own, and each one that does not parse is an error, named `prefix` and its name.
+pub struct Params<'a> {
+    values: &'a HashMap<String, String>,
+    prefix: &'static str,
+    errors: Vec<ParamError>,
+}
+
+impl<'a> Params<'a> {
+    pub fn new(values: &'a HashMap<String, String>, prefix: &'static str) -> Self {
+        Self {
+            values,
+            prefix,
+            errors: Vec::new(),
+        }
+    }
+
+    /// The parameter `name` as it is.
+    pub fn raw(&self, name: &str) -> Option<&'a str> {
+        self.values.get(name).map(String::as_str)
+    }
+
+    /// The parameter `name` parsed; `None` when it is absent, or when it does not parse, with an
+    /// error that says `rule`.
+    pub fn parse<T>(
+        &mut self,
+        name: &'static str,
+        rule: &str,
+        parse: impl FnOnce(&str) -> Option<T>,
+    ) -> Option<T> {
+        let parsed = parse(self.raw(name)?);
+        if parsed.is_none() {
+            self.error(name, rule);
+        }
+        parsed
+    }
+
+    pub fn error(&mut self, name: &'static str, detail: impl Into<String>) {
+        let parameter = match self.prefix {
+            "" => Cow::Borrowed(name),
+            prefix => Cow::Owned(format!("{prefix}{name}")),
+        };
+        self.errors.push(ParamError::new(parameter, detail));
+    }
+
+    /// The errors of the parameters that did not parse.
+    pub fn into_errors(self) -> Vec<ParamError> {
+        self.errors
     }
 }
 
@@ -90,7 +150,7 @@ pub enum Error {
 
 impl Error {
     /// One invalid parameter.
-    pub fn invalid(parameter: &'static str, detail: impl Into<String>) -> Self {
+    pub fn invalid(parameter: impl Into<Cow<'static, str>>, detail: impl Into<String>) -> Self {
         Error::InvalidParams(vec![ParamError::new(parameter, detail)])
     }
 

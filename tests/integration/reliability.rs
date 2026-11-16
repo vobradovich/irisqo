@@ -617,7 +617,8 @@ async fn enqueue_v1_stores_the_retry_policy(pool: PgPool) -> anyhow::Result<()> 
     let url = "http://localhost/x";
 
     assert_eq!(
-        enqueue(json!({"sink": "http", "url": url, "retry": "fixed", "retry_count": 3})).await?,
+        enqueue(json!({"sink": "http", "url": url, "retry": {"policy": "fixed", "count": 3}}))
+            .await?,
         Some(JobRetry::Fixed {
             retry_count: 3,
             retry_delay: 0
@@ -625,8 +626,8 @@ async fn enqueue_v1_stores_the_retry_policy(pool: PgPool) -> anyhow::Result<()> 
     );
     assert_eq!(
         enqueue(
-            json!({"sink": "http", "url": url, "retry": "exponential", "retry_count": 5,
-            "retry_delay": 2, "retry_max_delay": 60})
+            json!({"sink": "http", "url": url, "retry": {"policy": "exponential", "count": 5,
+            "delay": 2, "max_delay": 60}})
         )
         .await?,
         Some(JobRetry::Exponential {
@@ -639,17 +640,26 @@ async fn enqueue_v1_stores_the_retry_policy(pool: PgPool) -> anyhow::Result<()> 
 
     for (job, error) in [
         (
-            json!({"sink": "http", "url": url, "retry": "fixd", "retry_count": 3}),
-            "retry must be",
+            json!({"sink": "http", "url": url, "retry": {"policy": "fixd", "count": 3}}),
+            "retry.policy must be",
         ),
         (
-            json!({"sink": "http", "url": url, "retry": "exponential", "retry_count": 3}),
-            "retry_delay must be",
+            json!({"sink": "http", "url": url, "retry": "fixed"}),
+            "retry must be an object",
         ),
         (
-            json!({"sink": "http", "url": url, "retry": "fibonacci", "retry_count": 3, "retry_delay": 1,
-                "retry_max_delay": "x"}),
-            "retry_max_delay must be",
+            json!({"sink": "http", "url": url, "retry": {"policy": "exponential", "count": 3}}),
+            "retry.delay must be",
+        ),
+        (
+            json!({"sink": "http", "url": url, "retry": {"policy": "fibonacci", "count": 3,
+                "delay": 1, "max_delay": "x"}}),
+            "retry.max_delay must be",
+        ),
+        (
+            json!({"sink": "http", "url": url, "retry": {"policy": "fixed", "count": 3,
+                "max_delay": 9}}),
+            "retry.max_delay is for",
         ),
     ] {
         let err = enqueue(job).await.expect_err("rejected");
@@ -850,7 +860,7 @@ async fn a_full_flow_does_not_cost_its_backlog(pool: PgPool) -> anyhow::Result<(
         .execute(&pool)
         .await?;
     sqlx::query(
-        "WITH a AS (INSERT INTO jobs(meta) SELECT jsonb_build_object('retry', 'none', 'timeout', 10000, 'sink', 'noop') FROM generate_series(1, 100000) RETURNING id)
+        "WITH a AS (INSERT INTO jobs(meta) SELECT jsonb_build_object('timeout', 10000, 'sink', 'noop') FROM generate_series(1, 100000) RETURNING id)
          INSERT INTO enqueued(id, flow_key) SELECT id, 'q' FROM a",
     )
     .execute(&pool)

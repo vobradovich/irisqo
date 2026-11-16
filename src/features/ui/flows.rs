@@ -1,7 +1,7 @@
 //! Flows: the list with its limits and backlog, and the forms to declare, change, pause,
 //! resume and delete a flow.
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::{borrow::Cow, collections::BTreeMap, sync::Arc};
 
 use askama::Template;
 use askama_web::WebTemplate;
@@ -224,7 +224,7 @@ pub struct FlowForm {
     pub concurrency: String,
     pub rate: String,
     pub rate_period: String,
-    pub errors: BTreeMap<&'static str, String>,
+    pub errors: BTreeMap<Cow<'static, str>, String>,
 }
 
 impl FlowForm {
@@ -281,7 +281,7 @@ impl FlowForm {
     }
 
     /// The same checks as the API; an empty field is a missing one.
-    fn checked(&self) -> Result<FlowCreate, BTreeMap<&'static str, String>> {
+    fn checked(&self) -> Result<FlowCreate, BTreeMap<Cow<'static, str>, String>> {
         fn number<T: std::str::FromStr>(
             value: &str,
             field: &'static str,
@@ -323,7 +323,7 @@ impl FlowForm {
     }
 }
 
-fn into_map(errors: Vec<ParamError>) -> BTreeMap<&'static str, String> {
+fn into_map(errors: Vec<ParamError>) -> BTreeMap<Cow<'static, str>, String> {
     errors
         .into_iter()
         .map(|e| (e.parameter, e.detail))
@@ -507,7 +507,7 @@ pub async fn flow_edit(State(state): State<Arc<AppState>>, Path(id): Path<String
 fn invalid(
     state: &AppState,
     mut form: FlowForm,
-    errors: BTreeMap<&'static str, String>,
+    errors: BTreeMap<Cow<'static, str>, String>,
 ) -> Response {
     form.errors = errors;
     (StatusCode::UNPROCESSABLE_ENTITY, form_page(state, form)).into_response()
@@ -522,7 +522,7 @@ pub async fn flow_create(State(state): State<Arc<AppState>>, body: Bytes) -> Res
     // a new flow must not replace the limits of one that is declared
     match flows::db::get_by_id(&state.pool, &form.flow_key).await {
         Ok(Some(_)) => {
-            let errors = BTreeMap::from([("flow_key", "is declared already".to_owned())]);
+            let errors = BTreeMap::from([("flow_key".into(), "is declared already".to_owned())]);
             return invalid(&state, form, errors);
         }
         Ok(None) => {}

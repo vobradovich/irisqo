@@ -2,24 +2,10 @@
 //! from it.
 
 use super::{job_request::JobRequest, jobs};
-use crate::features::{
-    callbacks::CallbackWebhook,
-    flows, history, instances, results,
-    schedules::{self, ScheduleRequest},
-};
+use crate::features::{callbacks::CallbackWebhook, flows, history, instances, results, schedules};
 use crate::models::{JobCreateRow, ParamError, Problem};
 use axum::{Json, Router, routing::get};
-use utoipa::{OpenApi, ToSchema};
-
-/// The body of `PUT /api/v1/schedules/{id}`: the job of every run and when it runs.
-#[derive(ToSchema)]
-#[allow(dead_code)]
-pub(crate) struct ScheduleBody {
-    #[serde(flatten)]
-    job: JobRequest,
-    #[serde(flatten)]
-    schedule: ScheduleRequest,
-}
+use utoipa::OpenApi;
 
 #[derive(OpenApi)]
 #[openapi(
@@ -49,14 +35,7 @@ pub(crate) struct ScheduleBody {
         results::http::result_by_id,
         results::http::result_by_id_raw,
     ),
-    components(schemas(
-        JobRequest,
-        ScheduleBody,
-        JobCreateRow,
-        ParamError,
-        Problem,
-        CallbackWebhook
-    ))
+    components(schemas(JobRequest, JobCreateRow, ParamError, Problem, CallbackWebhook))
 )]
 pub struct ApiDoc;
 
@@ -92,35 +71,29 @@ mod tests {
         ids.dedup();
         assert_eq!(ids.len(), operations, "{ids:?}");
         assert_eq!(operations, 23);
-        // the retry policy is flattened into the job: `allOf` of its fields and the others
-        let job = &doc["components"]["schemas"]["JobRequest"]["allOf"];
-        let job: serde_json::Map<String, serde_json::Value> = job
-            .as_array()
-            .expect("allOf")
-            .iter()
-            .filter_map(|part| part["properties"].as_object())
-            .flatten()
-            .map(|(name, schema)| (name.clone(), schema.clone()))
-            .collect();
+        let schemas = &doc["components"]["schemas"];
+        let job = schemas["JobRequest"]["properties"]
+            .as_object()
+            .expect("properties");
         for field in [
-            "sink",
-            "url",
-            "flow_key",
-            "priority",
-            "retry",
-            "retry_count",
-            "retry_delay",
-            "at",
-            "callback_url",
-            "callback_mode",
-            "callback_retry_count",
+            "sink", "url", "flow_key", "priority", "retry", "at", "callback",
         ] {
             assert!(job.get(field).is_some(), "{field}");
         }
         assert!(job.get("body_raw").is_none(), "an internal field");
-        assert_eq!(job["retry_count"]["maximum"], 65535);
-        assert_eq!(job["retry_count"]["minimum"], 0);
-        // `at` is a time or unix seconds; `method` and `retry` are lists of values
+        for field in ["url", "mode", "retry", "timeout"] {
+            assert!(
+                schemas["JobCallback"]["properties"].get(field).is_some(),
+                "{field}"
+            );
+        }
+        // the policy is an object tagged by `policy`
+        assert!(
+            schemas["JobRetry"].to_string().contains("fibonacci"),
+            "{}",
+            schemas["JobRetry"]
+        );
+        // `at` is a time or unix seconds; `method` is a list of values
         assert_eq!(
             job["at"]["oneOf"].as_array().map(Vec::len),
             Some(2),
@@ -132,23 +105,15 @@ mod tests {
                 .as_array()
                 .is_some_and(|v| v.contains(&"GET".into()))
         );
-        assert!(
-            job["retry"]["enum"]
-                .as_array()
-                .is_some_and(|v| v.contains(&"fibonacci".into()))
-        );
         // optional fields are not required
         assert!(
             !doc["components"]["schemas"]["JobRequest"]
                 .to_string()
                 .contains("\"required\"")
         );
-        // the body of a schedule is the job and the rule together
-        let body = &doc["components"]["schemas"]["ScheduleBody"]["allOf"];
-        assert_eq!(body.as_array().map(Vec::len), Some(2), "{body}");
-        let rule = &doc["components"]["schemas"]["ScheduleRequest"]["properties"];
+        // a job repeats with the fields of a schedule
         for field in ["cron", "interval", "tz", "until"] {
-            assert!(rule.get(field).is_some(), "{field}");
+            assert!(job.get(field).is_some(), "{field}");
         }
     }
 }

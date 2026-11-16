@@ -1,10 +1,9 @@
 use crate::models::Problem;
 use crate::{
     db,
-    features::schedules::{JobSchedule, ScheduleRule},
     handlers::job_request::{JobRequest, SinkKind},
     models::{
-        AppState, Error, JobCreate, JobCreateRow, ParamError, WorkerOptions,
+        AppState, Error, JobCallback, JobCreate, JobCreateRow, ParamError, WorkerOptions,
         headers::{callback_headers, forwarded_headers},
     },
     otel::metrics::metrics,
@@ -21,7 +20,7 @@ use chrono::{DateTime, Utc};
 use hyper::Method;
 use opentelemetry::KeyValue;
 
-use std::sync::Arc;
+use std::{borrow::Cow, collections::HashMap, sync::Arc};
 #[allow(unused_imports)]
 use tracing::{debug, error, info, warn};
 use url::{Url, form_urlencoded};
@@ -48,11 +47,15 @@ async fn job_create(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<impl IntoResponse, Problem> {
-    let mut request = JobRequest::http(&method, &url, forwarded_headers(&headers), body);
-    let callback_headers = callback_headers(&headers);
-    request.callback_headers = (!callback_headers.is_empty()).then_some(callback_headers);
-    let job = prepare_job(&state.worker_options, request, query.as_deref(), Utc::now())
-        .map_err(Error::InvalidParams)?;
+    let request = JobRequest::http(&method, &url, forwarded_headers(&headers), body);
+    let job = prepare_job(
+        &state.worker_options,
+        request,
+        form_urlencoded::parse(query.unwrap_or_default().as_bytes()),
+        callback_headers(&headers),
+        Utc::now(),
+    )
+    .map_err(Error::InvalidParams)?;
     let job = create_job(&state, job).await?;
     Ok((StatusCode::CREATED, job_headers(&job)))
 }
@@ -76,67 +79,46 @@ pub fn job_headers(job: &JobCreateRow) -> HeaderMap {
 }
 
 /// Validates a job requested through `/to/{url}?{query}` (`input` is [`JobRequest::http`], the UI
-/// form builds the same) and builds the job: every invalid parameter is reported, not only the
-/// first one. `_*` parameters are the job's, the others stay on the URL.
-pub fn prepare_job(
+/// form builds the same; `params` are the pairs of the query) and builds the job: every invalid
+/// parameter is reported, not only the first one. The `_*` parameters of the job and of its
+/// callback are theirs, the others stay on the URL. `callback_headers` are the
+/// `Irisqo-Callback-*` headers, which go to the callback.
+pub fn prepare_job<'a>(
     options: &WorkerOptions,
-    mut input: JobRequest,
-    query: Option<&str>,
+    input: JobRequest,
+    params: impl IntoIterator<Item = (Cow<'a, str>, Cow<'a, str>)>,
+    callback_headers: HashMap<String, String>,
     now: DateTime<Utc>,
 ) -> Result<JobCreate, Vec<ParamError>> {
-    let mut errors = Vec::new();
-    let mut rule: Option<(ScheduleRule, &'static str)> = None;
-    let mut until: Option<DateTime<Utc>> = None;
-    let mut tz: Option<chrono_tz::Tz> = None;
     let mut url = input.url.as_deref().and_then(|url| Url::parse(url).ok());
-
-    let mut bad = |parameter, detail: &str| errors.push(ParamError::new(parameter, detail));
-    for (name, value) in form_urlencoded::parse(query.unwrap_or_default().as_bytes()) {
-        match name.as_ref() {
-            "_interval" => match value.parse() {
-                Ok(parsed @ ScheduleRule::Interval(_)) => rule = Some((parsed, "_interval")),
-                _ => bad("_interval", "must be a positive number of seconds"),
-            },
-            "_cron" => match ScheduleRule::parse_cron(&value) {
-                Ok(parsed) => rule = Some((parsed, "_cron")),
-                Err(err) => bad("_cron", &err.detail),
-            },
-            "_tz" => match value.parse() {
-                Ok(parsed) => tz = Some(parsed),
-                Err(_) => bad("_tz", TZ_RULE),
-            },
-            "_until" => match JobSchedule::parse_time(&value) {
-                Some(t) => until = Some(t),
-                None => bad("_until", TIME_RULE),
-            },
-            _ => match input.set_param(&name, &value) {
-                Ok(true) => {}
-                Err(err) => bad(err.parameter, &err.detail),
-                // the target's own query parameter
-                Ok(false) => {
-                    if let Some(url) = url.as_mut() {
-                        if value.is_empty() {
-                            url.query_pairs_mut().append_key_only(&name);
-                        } else {
-                            url.query_pairs_mut().append_pair(&name, &value);
-                        }
+    let (mut job, mut callback) = (HashMap::new(), HashMap::new());
+    for (name, value) in params {
+        let field =
+            name.strip_prefix('_')
+                .and_then(|param| match param.strip_prefix("callback_") {
+                    Some(field) if JobCallback::PARAMS.contains(&field) => {
+                        Some((&mut callback, field))
                     }
-                }
-            },
+                    _ if JobRequest::PARAMS.contains(&param) => Some((&mut job, param)),
+                    _ => None,
+                });
+        match (field, url.as_mut()) {
+            (Some((params, field)), _) => _ = params.insert(field.to_owned(), value.into_owned()),
+            // the target's own query parameter
+            (None, Some(url)) if value.is_empty() => {
+                _ = url.query_pairs_mut().append_key_only(&name)
+            }
+            (None, Some(url)) => _ = url.query_pairs_mut().append_pair(&name, &value),
+            (None, None) => {}
         }
     }
-    if until.is_some() && rule.is_none() {
-        errors.push(ParamError::new(
-            "_until",
-            "applies to _cron and _interval only",
-        ));
-    }
-    let rule_parameter = rule.as_ref().map(|(_, parameter)| *parameter);
-    let schedule = rule.map(|(rule, _)| JobSchedule {
-        rule,
-        tz: tz.unwrap_or_default(),
-        until,
-    });
+
+    let (mut input, mut errors) = input.with_params(&job);
+    input.callback =
+        JobCallback::from_params(&callback, callback_headers).unwrap_or_else(|found| {
+            errors.extend(found);
+            None
+        });
     // `noop://…` is the `noop` sink: nothing is called
     if url.as_ref().is_some_and(|url| url.scheme() == "noop") {
         input.sink = Some(SinkKind::Noop);
@@ -145,53 +127,30 @@ pub fn prepare_job(
     input.url = Some(url.map(String::from).unwrap_or_default());
     let job = input
         .validate(options, now)
-        .map_err(|found| {
-            errors.extend(
-                found
-                    .into_iter()
-                    .map(|err| ParamError::new(query_parameter(err.parameter), err.detail)),
-            );
-        })
-        .ok()
-        .map(|job| JobCreate { schedule, ..job });
-    // a schedule runs at least once
-    if let Some(job) = &job
-        && let Some((schedule, parameter)) = job.schedule.as_ref().zip(rule_parameter)
-        && schedule.next(job.at.unwrap_or(now)).is_none()
-    {
-        let parameter = if until.is_some() { "_until" } else { parameter };
-        errors.push(ParamError::new(
-            parameter,
-            "the schedule has no run before it ends",
-        ));
+        .map_err(|found| errors.extend(found))
+        .ok();
+    if errors.is_empty() {
+        job.ok_or(errors)
+    } else {
+        Err(errors
+            .into_iter()
+            .map(|err| ParamError::new(query_parameter(err.parameter), err.detail))
+            .collect())
     }
-    job.filter(|_| errors.is_empty()).ok_or(errors)
 }
 
-/// The job parameters of `/to/`: `_` and the name of the field of [`JobRequest`].
-const JOB_PARAMETERS: [&str; 14] = [
-    "_delay",
-    "_at",
-    "_timeout",
-    "_flow_key",
-    "_priority",
-    "_key",
-    "_callback_url",
-    "_callback_method",
-    "_callback_types",
-    "_callback_mode",
-    "_callback_retry",
-    "_callback_timeout",
-    "_callback_flow_key",
-    "_callback_priority",
-];
-
-/// The `/to/` parameter of a job field; the field itself when it has none (`url`, `headers`).
-fn query_parameter(field: &'static str) -> &'static str {
-    JOB_PARAMETERS
-        .into_iter()
-        .find(|parameter| parameter.strip_prefix('_') == Some(field))
-        .unwrap_or(field)
+/// The `/to/` parameter of a field: `_` and its name (`_delay`, `_callback_url`), the field
+/// itself when it is not one (`url`, `headers`).
+fn query_parameter(field: Cow<'static, str>) -> Cow<'static, str> {
+    let param = match field.strip_prefix("callback.") {
+        Some(name) => JobCallback::PARAMS.contains(&name),
+        None => JobRequest::PARAMS.contains(&&*field),
+    };
+    if param {
+        Cow::Owned(format!("_{}", field.replace('.', "_")))
+    } else {
+        field
+    }
 }
 
 /// Stores a prepared job (or returns the existing one with the same key).
@@ -239,8 +198,8 @@ pub(crate) fn is_key(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::FlowKey;
-    use std::collections::HashMap;
+    use crate::features::schedules::JobSchedule;
+    use crate::models::{CallbackType, FlowKey, JobRetry};
 
     fn prepare_query(query: &str) -> Result<JobCreate, Vec<ParamError>> {
         prepare_job(
@@ -251,7 +210,8 @@ mod tests {
                 HashMap::new(),
                 Bytes::new(),
             ),
-            Some(query),
+            form_urlencoded::parse(query.as_bytes()),
+            HashMap::new(),
             Utc::now(),
         )
     }
@@ -292,11 +252,85 @@ mod tests {
     }
 
     #[test]
+    fn callback_parameters_make_the_callback() {
+        let callback = prepare_query(
+            "_callback_url=https%3A%2F%2Fme.example%2Fcb&_callback_method=put&_callback_retry=none&_callback_priority=3&_callback_types=irisqo.job.failed&_callback_timeout=500",
+        )
+        .expect("valid")
+        .meta
+        .callback
+        .expect("callback");
+        assert_eq!(callback.url.to_string(), "https://me.example/cb");
+        assert_eq!(callback.method, Some(Method::PUT));
+        assert_eq!(callback.retry, Some(JobRetry::NONE));
+        assert_eq!(callback.priority, Some(3));
+        assert_eq!(callback.types, Some(vec![CallbackType::Failed]));
+        assert_eq!(callback.timeout.map(std::num::NonZeroU32::get), Some(500));
+        // none of them: no callback, and the callback parameters are not the target's
+        for query in ["", "_callback_url="] {
+            let job = prepare_query(query).expect("valid");
+            assert!(job.meta.callback.is_none(), "{query}");
+        }
+        // the headers go to the callback, and need its url
+        let prepare = |query: &str| {
+            let request = JobRequest::http(
+                &Method::GET,
+                "https://example.com",
+                HashMap::new(),
+                Bytes::new(),
+            );
+            let headers = HashMap::from([("x-own".to_owned(), "1".to_owned())]);
+            prepare_job(
+                &WorkerOptions::for_tests(),
+                request,
+                form_urlencoded::parse(query.as_bytes()),
+                headers,
+                Utc::now(),
+            )
+        };
+        let job = prepare("_callback_url=https%3A%2F%2Fme.example").expect("valid");
+        assert_eq!(
+            job.meta.callback.and_then(|c| c.headers).map(|h| h.len()),
+            Some(1)
+        );
+        assert_eq!(
+            prepare("").expect_err("no url")[0].parameter,
+            "_callback_url"
+        );
+        let url = "_callback_url=https%3A%2F%2Fme.example";
+        for (query, parameter) in [
+            ("_callback_mode=relay".to_owned(), "_callback_url"),
+            (format!("{url}&_callback_mode=final"), "_callback_mode"),
+            (format!("{url}&_callback_method=GET"), "_callback_method"),
+            (
+                format!("{url}&_callback_types=completed"),
+                "_callback_types",
+            ),
+            (
+                format!("{url}&_callback_retry=3|fibonacci"),
+                "_callback_retry",
+            ),
+            (format!("{url}&_callback_timeout=0"), "_callback_timeout"),
+            (
+                format!("{url}&_callback_flow_key=Bad"),
+                "_callback_flow_key",
+            ),
+            (
+                "_callback_url=ftp%3A%2F%2Fme.example".to_owned(),
+                "_callback_url",
+            ),
+        ] {
+            let errors = prepare_query(&query).expect_err(&query);
+            assert_eq!(errors[0].parameter, parameter, "{query}");
+        }
+    }
+
+    #[test]
     fn noop_is_a_target_scheme() {
         let options = WorkerOptions::for_tests();
         let prepare = |url| {
             let request = JobRequest::http(&Method::POST, url, HashMap::new(), Bytes::new());
-            prepare_job(&options, request, None, Utc::now())
+            prepare_job(&options, request, [], HashMap::new(), Utc::now())
         };
         let job = prepare("noop://bench").expect("valid");
         assert_eq!(job.meta.sink, crate::models::JobSink::Noop);
@@ -310,7 +344,8 @@ mod tests {
             prepare_job(
                 &options,
                 JobRequest::http(&Method::GET, url, HashMap::new(), Bytes::new()),
-                None,
+                [],
+                HashMap::new(),
                 Utc::now(),
             )
         };

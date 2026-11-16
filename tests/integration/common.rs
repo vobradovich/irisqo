@@ -167,7 +167,7 @@ pub async fn count(pool: &PgPool, sql: &'static str) -> i64 {
 pub async fn insert_enqueued(pool: &PgPool, n: i32) -> Vec<i64> {
     sqlx::query_scalar(
         "WITH a AS (
-            INSERT INTO jobs(meta) SELECT '{\"sink\": \"noop\", \"retry\": \"none\", \"timeout\": 1000}'::jsonb
+            INSERT INTO jobs(meta) SELECT '{\"sink\": \"noop\", \"timeout\": 1000}'::jsonb
             FROM generate_series(1, $1) RETURNING id
         )
         INSERT INTO enqueued(id) SELECT id FROM a RETURNING id",

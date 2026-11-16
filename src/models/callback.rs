@@ -1,9 +1,9 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, num::NonZeroU32};
 
 use hyper::{Method, Uri};
 use serde::{Deserialize, Serialize};
 
-use super::{FlowKey, JobRetry};
+use super::{FlowKey, JobRetry, MILLISECONDS_RULE, PRIORITY_RULE, ParamError, Params};
 
 /// The format of a callback: what it sends and how.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, utoipa::ToSchema)]
@@ -88,12 +88,12 @@ pub struct JobCallback {
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub headers: Option<HashMap<String, String>>,
     /// The default of a callback when absent (see `features::callbacks`).
-    #[serde(flatten)]
-    #[schema(schema_with = crate::handlers::job_request::retry_schema)]
+    #[serde(skip_serializing_if = "Option::is_none", default)]
     pub retry: Option<JobRetry>,
     /// Milliseconds; the default of a callback when absent.
     #[serde(skip_serializing_if = "Option::is_none", default)]
-    pub timeout: Option<u32>,
+    #[schema(value_type = Option<u32>, minimum = 1)]
+    pub timeout: Option<NonZeroU32>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub flow_key: Option<FlowKey>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -101,6 +101,76 @@ pub struct JobCallback {
 }
 
 impl JobCallback {
+    /// The fields of a callback that come as text, one by one: the `_callback_*` parameters of
+    /// `/to/` without their prefix.
+    pub const PARAMS: [&str; 8] = [
+        "url", "method", "mode", "types", "retry", "timeout", "flow_key", "priority",
+    ];
+
+    /// The callback that `params` (fields of [`Self::PARAMS`] and their values) and `headers`
+    /// describe: `Ok(None)` when they say nothing (an empty `url` alone is nothing), every wrong
+    /// field in the `Err` as `callback.<field>`. What a callback must be besides its types (the
+    /// target, the method, the headers) is checked with the job.
+    pub fn from_params(
+        params: &HashMap<String, String>,
+        headers: HashMap<String, String>,
+    ) -> Result<Option<Self>, Vec<ParamError>> {
+        if headers.is_empty()
+            && params
+                .iter()
+                .all(|(name, value)| name == "url" && value.is_empty())
+        {
+            return Ok(None);
+        }
+        let mut p = Params::new(params, "callback.");
+        let url = if p.raw("url").is_some_and(|url| !url.is_empty()) {
+            p.parse("url", "is not a valid URL", |v| Uri::try_from(v).ok())
+        } else {
+            p.error(
+                "url",
+                "is required by the other callback parameters and headers",
+            );
+            None
+        };
+        let method = p.parse("method", "is not a valid HTTP method", |v| v.parse().ok());
+        let mode = p.parse("mode", "must be webhook or relay", |v| match v {
+            "webhook" => Some(CallbackMode::Webhook),
+            "relay" => Some(CallbackMode::Relay),
+            _ => None,
+        });
+        let types = p.parse("types", CallbackType::RULE, |v| {
+            v.split(',')
+                .map(|t| CallbackType::parse(t.trim()))
+                .collect()
+        });
+        // `none` is a policy of its own: no retries, not the default of a callback
+        let retry = p.parse("retry", JobRetry::RULE, |v| {
+            JobRetry::parse(v).ok().map(|r| r.unwrap_or(JobRetry::NONE))
+        });
+        let timeout = p.parse("timeout", MILLISECONDS_RULE, |v| v.parse().ok());
+        let flow_key = p
+            .parse("flow_key", FlowKey::RULE, |v| {
+                FlowKey::parse_optional(v).ok()
+            })
+            .flatten();
+        let priority = p.parse("priority", PRIORITY_RULE, |v| v.parse().ok());
+        let errors = p.into_errors();
+        match url {
+            Some(url) if errors.is_empty() => Ok(Some(Self {
+                url,
+                method,
+                mode: mode.unwrap_or_default(),
+                types,
+                headers: (!headers.is_empty()).then_some(headers),
+                retry,
+                timeout,
+                flow_key,
+                priority,
+            })),
+            _ => Err(errors),
+        }
+    }
+
     pub fn method(&self) -> Method {
         self.method.clone().unwrap_or(Method::POST)
     }

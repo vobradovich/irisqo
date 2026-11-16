@@ -1,19 +1,20 @@
-use super::http::{KEY_RULE, TIME_RULE, is_key};
-use crate::features::schedules::JobSchedule;
+use super::http::{KEY_RULE, TIME_RULE, TZ_RULE, is_key};
+use crate::features::schedules::{JobSchedule, ScheduleRule};
 use crate::models::headers::{is_reserved_callback_header, is_reserved_header};
 use crate::models::{
-    CallbackMode, CallbackType, FlowKey, HttpMeta, JobCallback, JobCreate, JobMeta, JobRetry,
-    JobSink, ParamError, WorkerOptions,
+    FlowKey, HttpMeta, JobCallback, JobCreate, JobMeta, JobRetry, JobSink, MILLISECONDS_RULE,
+    PRIORITY_RULE, ParamError, Params, WorkerOptions,
 };
 use axum::body::Bytes;
 use base64::Engine as _;
 use chrono::{DateTime, Utc};
+use chrono_tz::Tz;
 use hyper::{
     Method, Uri,
     header::{HeaderName, HeaderValue},
 };
-use serde::Deserialize;
-use serde_json::{Value, value::RawValue};
+use serde::{Deserialize, Deserializer, de};
+use serde_json::value::RawValue;
 use std::{collections::HashMap, num::NonZeroU32};
 use utoipa::{
     ToSchema,
@@ -31,14 +32,15 @@ pub enum SinkKind {
     Noop,
 }
 
-/// JSON job format v1, flat like `enqueue_v1`, the `/to/` query and the "New job" form: the one
+/// JSON job format v1, as `enqueue_v1` takes it, the `/to/` query and the "New job" form: the one
 /// description of a job that every way to create one fills (JSON by serde, `/to/` and the form
-/// by [`JobRequest::set_param`]) and [`JobRequest::validate`] checks.
+/// by [`JobRequest::with_params`]) and [`JobRequest::validate`] checks.
 ///
-/// `sink` (`http` with `method`, `url`; `noop`), `retry` (`fixed`, `fibonacci`, `exponential`
-/// with `retry_count`, `retry_delay`, which `fixed` may leave out to retry at once, and
-/// `retry_max_delay` of the last two), `delay` (seconds), `timeout` (milliseconds), `flow_key`,
-/// `priority`, `headers`, `body` or `body_base64`, `key`, `at`.
+/// `sink` (`http` with `method`, `url`; `noop`), `retry` (an object: `policy` of `fixed`,
+/// `fibonacci`, `exponential` with `count`, `delay`, which `fixed` may leave out to retry at
+/// once, and `max_delay` of the last two), `callback` (an object, see [`JobCallback`]),
+/// `delay` (seconds), `timeout` (milliseconds), `flow_key`, `priority`, `headers`, `body` or
+/// `body_base64`, `key`, `at`; `cron` or `interval` with `tz` and `until` repeat the job.
 /// The retry policy defaults to none, the timeout to `--timeout` when the job runs. Fields that
 /// are not known are ignored.
 #[derive(Debug, Default, Deserialize, ToSchema)]
@@ -46,22 +48,19 @@ pub struct JobRequest {
     /// Required.
     pub(crate) sink: Option<SinkKind>,
     /// An HTTP method, for the `http` sink.
+    #[serde(with = "http_serde::option::method", default)]
     #[schema(schema_with = method_schema)]
-    pub(crate) method: Option<String>,
+    pub(crate) method: Option<Method>,
     /// An `http` or `https` URL, for the `http` sink.
     pub(crate) url: Option<String>,
-    /// The retry policy: `retry` is `fixed` (with `retry_count`, `retry_delay` optional),
-    /// `fibonacci` or `exponential` (with `retry_count`, `retry_delay`, `retry_max_delay` optional).
-    /// None, or one that does not parse, means no retries: a client generated from the API
-    /// description sends what it has.
-    #[serde(flatten)]
-    #[schema(schema_with = retry_schema)]
+    /// The retry policy; no retries when absent.
     pub(crate) retry: Option<JobRetry>,
     /// Milliseconds; `--timeout` when absent.
     #[schema(value_type = Option<u32>, minimum = 1)]
     pub(crate) timeout: Option<NonZeroU32>,
-    /// Flow key of the job: 1 to 128 characters of `a-z 0-9 . _ : -`.
-    pub(crate) flow_key: Option<String>,
+    /// Flow key of the job: 1 to 128 characters of `a-z 0-9 . _ : -`; an empty one is none.
+    #[serde(default, deserialize_with = "flow_key")]
+    pub(crate) flow_key: Option<FlowKey>,
     /// Higher runs first, among the jobs of its flow if it has one.
     pub(crate) priority: Option<i32>,
     /// Headers for the target. Names that differ only by case are rejected.
@@ -73,46 +72,31 @@ pub struct JobRequest {
     /// Base64 of a binary body, not together with `body`.
     pub(crate) body_base64: Option<String>,
     /// When the job runs: an RFC 3339 time (a string) or unix seconds (a number). Wins over `delay`.
+    #[serde(default, deserialize_with = "at")]
     #[schema(schema_with = at_schema)]
-    pub(crate) at: Option<Value>,
+    pub(crate) at: Option<DateTime<Utc>>,
     /// Seconds from now, when `at` is not set.
     pub(crate) delay: Option<u32>,
-    /// A repeated key returns the existing job.
+    /// A repeated key returns the existing job. With `cron` or `interval` it is the id of the
+    /// schedule (a new one when absent), and a repeated key changes the schedule.
     pub(crate) key: Option<String>,
-    /// An `http` or `https` URL: a request that irisqo makes when the job reaches its outcome.
-    pub(crate) callback_url: Option<String>,
-    /// `POST` (the default) or `PUT`.
-    #[serde(with = "http_serde::option::method", default)]
-    #[schema(schema_with = callback_method_schema)]
-    pub(crate) callback_method: Option<Method>,
-    /// `webhook` (the default): JSON as Standard Webhooks, signed when the server has a key.
-    /// `relay`: the response of the job as it is, with `Irisqo-*` headers.
-    pub(crate) callback_mode: Option<CallbackMode>,
-    /// The types that make a callback: `irisqo.job.completed`, `irisqo.job.failed`,
-    /// `irisqo.job.cancelled`. A `webhook`: all three when absent; a `relay`: `completed`.
-    pub(crate) callback_types: Option<Vec<CallbackType>>,
-    /// Headers for the callback, kept like `headers`.
-    #[schema(value_type = Option<HashMap<String, String>>)]
-    pub(crate) callback_headers: Option<HashMap<String, String>>,
-    /// The retry policy of the callback, as `retry`: the default of a callback when absent
-    /// (10 retries over about three days).
-    pub(crate) callback_retry: Option<String>,
-    pub(crate) callback_retry_count: Option<u16>,
-    pub(crate) callback_retry_delay: Option<u32>,
-    pub(crate) callback_retry_max_delay: Option<u32>,
-    /// Milliseconds; 30000 when absent.
-    #[schema(value_type = Option<u32>, minimum = 1)]
-    pub(crate) callback_timeout: Option<NonZeroU32>,
-    /// Flow key of the callback: not the one of the job.
-    pub(crate) callback_flow_key: Option<String>,
-    /// Higher runs first, among the jobs without a flow or in its flow.
-    pub(crate) callback_priority: Option<i32>,
+    /// Repeats the job: a cron expression of 5 fields (or 6 with seconds first), or `interval`,
+    /// not both.
+    pub(crate) cron: Option<String>,
+    /// Repeats the job every so many seconds.
+    pub(crate) interval: Option<u32>,
+    /// The IANA zone of `cron` (`Europe/Berlin`), default UTC.
+    #[schema(value_type = Option<String>)]
+    pub(crate) tz: Option<Tz>,
+    /// When the schedule ends, as `at`: no run after it.
+    #[serde(default, deserialize_with = "at")]
+    #[schema(schema_with = at_schema)]
+    pub(crate) until: Option<DateTime<Utc>>,
+    /// A request that irisqo makes when the job reaches its outcome. Its `url` is required.
+    pub(crate) callback: Option<JobCallback>,
     /// The body as it came (`/to/`, the form): it is sent as it is, `body` is not looked at.
     #[serde(skip)]
     pub(crate) body_raw: Option<Bytes>,
-    /// The retry policy of the callback as `/to/` gives it (`_callback_retry`).
-    #[serde(skip)]
-    pub(crate) callback_retry_policy: Option<JobRetry>,
 }
 
 /// A string of one of `values`, for the API description.
@@ -123,34 +107,8 @@ fn one_of(values: &[&str]) -> utoipa::openapi::Object {
         .build()
 }
 
-fn callback_method_schema() -> utoipa::openapi::Object {
-    one_of(&["POST", "PUT"])
-}
-
 fn method_schema() -> utoipa::openapi::Object {
     one_of(&["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"])
-}
-
-/// An integer from `min` to `max`, for the API description.
-fn integer(min: i64, max: i64) -> utoipa::openapi::Object {
-    ObjectBuilder::new()
-        .schema_type(Type::Integer)
-        .minimum(Some(min))
-        .maximum(Some(max))
-        .build()
-}
-
-/// The fields of [`JobRetry`], all optional: a job without a policy has none of them.
-pub(crate) fn retry_schema() -> utoipa::openapi::Object {
-    ObjectBuilder::new()
-        .property(
-            "retry",
-            one_of(&["none", "fixed", "fibonacci", "exponential"]),
-        )
-        .property("retry_count", integer(0, u16::MAX.into()))
-        .property("retry_delay", integer(0, u32::MAX.into()))
-        .property("retry_max_delay", integer(1, u32::MAX.into()))
-        .build()
 }
 
 /// An RFC 3339 time or unix seconds.
@@ -166,19 +124,27 @@ fn at_schema() -> utoipa::openapi::Schema {
     utoipa::openapi::Schema::OneOf(OneOfBuilder::new().item(time).item(seconds).build())
 }
 
-fn parse_at(at: &Value) -> Option<DateTime<Utc>> {
-    match at {
-        Value::Number(n) => n
-            .as_i64()
-            .and_then(|secs| DateTime::from_timestamp(secs, 0)),
-        Value::String(s) => JobSchedule::parse_time(s),
-        Value::Null | Value::Bool(_) | Value::Array(_) | Value::Object(_) => None,
+/// `at`: an RFC 3339 time (a string) or unix seconds (a number).
+fn at<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<DateTime<Utc>>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum At {
+        Seconds(i64),
+        Time(String),
     }
+    let time = match Option::<At>::deserialize(deserializer)? {
+        None => return Ok(None),
+        Some(At::Seconds(secs)) => JobSchedule::parse_time(&secs.to_string()),
+        Some(At::Time(time)) => JobSchedule::parse_time(&time),
+    };
+    time.map(Some).ok_or_else(|| de::Error::custom(TIME_RULE))
 }
 
-/// For `map_err`: a parameter whose value does not parse.
-fn refuse<E>(parameter: &'static str, rule: &'static str) -> impl FnOnce(E) -> ParamError {
-    move |_| ParamError::new(parameter, rule)
+/// A flow key; an empty one is none, as in `enqueue_v1`.
+fn flow_key<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<FlowKey>, D::Error> {
+    Option::<String>::deserialize(deserializer)?
+        .map_or(Ok(None), |key| FlowKey::parse_optional(&key))
+        .map_err(de::Error::custom)
 }
 
 impl JobRequest {
@@ -191,7 +157,7 @@ impl JobRequest {
     ) -> Self {
         Self {
             sink: Some(SinkKind::Http),
-            method: Some(method.to_string()),
+            method: Some(method.clone()),
             url: Some(url.to_owned()),
             headers: Some(headers),
             body_raw: Some(body),
@@ -199,135 +165,42 @@ impl JobRequest {
         }
     }
 
-    /// Sets a job parameter of `/to/` (`_delay`, `_flow_key`...); `Ok(false)` when `name` is not one.
-    pub(crate) fn set_param(&mut self, name: &str, value: &str) -> Result<bool, ParamError> {
-        match name {
-            "_delay" => {
-                self.delay = Some(
-                    value
-                        .parse()
-                        .map_err(refuse("_delay", "must be a number of seconds"))?,
-                );
-            }
-            "_at" => self.at = Some(Value::String(value.to_owned())),
-            "_timeout" => {
-                self.timeout = Some(value.parse().map_err(refuse(
-                    "_timeout",
-                    "must be a positive number of milliseconds",
-                ))?);
-            }
-            "_retry" => {
-                self.retry = JobRetry::parse(value).map_err(refuse("_retry", JobRetry::RULE))?;
-            }
-            "_flow_key" => self.flow_key = Some(value.to_owned()),
-            "_priority" => {
-                self.priority = Some(value.parse().map_err(refuse(
-                    "_priority",
-                    "must be an integer from -2147483648 to 2147483647",
-                ))?);
-            }
-            "_key" => self.key = (!value.is_empty()).then(|| value.to_owned()),
-            "_callback_url" => self.callback_url = (!value.is_empty()).then(|| value.to_owned()),
-            "_callback_mode" => {
-                self.callback_mode = Some(match value {
-                    "webhook" => CallbackMode::Webhook,
-                    "relay" => CallbackMode::Relay,
-                    _ => {
-                        return Err(ParamError::new(
-                            "_callback_mode",
-                            "must be webhook or relay",
-                        ));
-                    }
-                });
-            }
-            "_callback_method" => {
-                self.callback_method = Some(
-                    value
-                        .parse()
-                        .map_err(refuse("_callback_method", "is not a valid HTTP method"))?,
-                );
-            }
-            "_callback_types" => {
-                self.callback_types = Some(
-                    value
-                        .split(',')
-                        .map(|t| CallbackType::parse(t.trim()))
-                        .collect::<Option<_>>()
-                        .ok_or_else(|| ParamError::new("_callback_types", CallbackType::RULE))?,
-                );
-            }
-            "_callback_retry" => {
-                self.callback_retry_policy = Some(
-                    JobRetry::parse(value)
-                        .map_err(refuse("_callback_retry", JobRetry::RULE))?
-                        .unwrap_or(JobRetry::NONE),
-                );
-            }
-            "_callback_timeout" => {
-                self.callback_timeout = Some(value.parse().map_err(refuse(
-                    "_callback_timeout",
-                    "must be a positive number of milliseconds",
-                ))?);
-            }
-            "_callback_flow_key" => self.callback_flow_key = Some(value.to_owned()),
-            "_callback_priority" => {
-                self.callback_priority = Some(value.parse().map_err(refuse(
-                    "_callback_priority",
-                    "must be an integer from -2147483648 to 2147483647",
-                ))?);
-            }
-            _ => return Ok(false),
-        }
-        Ok(true)
-    }
+    /// The fields of a job that come as text, one by one: the `_*` parameters of `/to/` without
+    /// their `_`.
+    pub(crate) const PARAMS: [&str; 11] = [
+        "delay", "at", "timeout", "retry", "flow_key", "priority", "key", "cron", "interval", "tz",
+        "until",
+    ];
 
-    /// The retry policy of the callback: from `/to/`, or from the `callback_retry*` fields.
-    /// `None` is a policy that is not given (the default of a callback); `none` is
-    /// [`JobRetry::NONE`]. A policy that is not valid is an error.
-    fn callback_retry(&self) -> Result<Option<JobRetry>, &'static str> {
-        if self.callback_retry_policy.is_some() {
-            return Ok(self.callback_retry_policy);
-        }
-        match self.callback_retry.as_deref() {
-            // the fields of a policy without its kind would silently be the default
-            None if self.has_callback_retry_fields() => Err(
-                "is required by callback_retry_count, callback_retry_delay and callback_retry_max_delay",
-            ),
-            None => Ok(None),
-            Some("" | "none") => Ok(Some(JobRetry::NONE)),
-            Some(kind) => self
-                .callback_retry_count
-                .and_then(|count| {
-                    JobRetry::from_parts(
-                        kind,
-                        count,
-                        self.callback_retry_delay,
-                        self.callback_retry_max_delay,
-                    )
+    /// The request with the fields of [`Self::PARAMS`] in `params` (`/to/` sets nothing else of
+    /// them), and the errors of the ones that do not parse, named by their field. The fields are
+    /// checked by [`Self::validate`].
+    pub(crate) fn with_params(self, params: &HashMap<String, String>) -> (Self, Vec<ParamError>) {
+        let mut p = Params::new(params, "");
+        let request = Self {
+            delay: p.parse("delay", "must be a number of seconds", |v| v.parse().ok()),
+            at: p.parse("at", TIME_RULE, JobSchedule::parse_time),
+            timeout: p.parse("timeout", MILLISECONDS_RULE, |v| v.parse().ok()),
+            retry: p
+                .parse("retry", JobRetry::RULE, |v| JobRetry::parse(v).ok())
+                .flatten(),
+            flow_key: p
+                .parse("flow_key", FlowKey::RULE, |v| {
+                    FlowKey::parse_optional(v).ok()
                 })
-                .map(Some)
-                .ok_or(CALLBACK_RETRY_RULE),
-        }
-    }
-
-    fn has_callback_retry_fields(&self) -> bool {
-        self.callback_retry_count.is_some()
-            || self.callback_retry_delay.is_some()
-            || self.callback_retry_max_delay.is_some()
-    }
-
-    /// Whether a field of the callback other than `callback_url` is set.
-    fn has_callback_fields(&self) -> bool {
-        self.has_callback_retry_fields()
-            || self.callback_mode.is_some()
-            || self.callback_method.is_some()
-            || self.callback_types.is_some()
-            || self.callback_headers.is_some()
-            || self.callback_retry.is_some()
-            || self.callback_retry_policy.is_some()
-            || self.callback_timeout.is_some()
-            || self.callback_flow_key.is_some()
-            || self.callback_priority.is_some()
+                .flatten(),
+            priority: p.parse("priority", PRIORITY_RULE, |v| v.parse().ok()),
+            key: p
+                .raw("key")
+                .filter(|key| !key.is_empty())
+                .map(str::to_owned),
+            cron: p.raw("cron").map(str::to_owned),
+            interval: p.parse("interval", INTERVAL_RULE, |v| v.parse().ok()),
+            tz: p.parse("tz", TZ_RULE, |v| v.parse().ok()),
+            until: p.parse("until", TIME_RULE, JobSchedule::parse_time),
+            ..self
+        };
+        (request, p.into_errors())
     }
 
     /// Validates the description of a job: every invalid field is reported, not only the first.
@@ -343,15 +216,7 @@ impl JobRequest {
             None => None,
             Some(SinkKind::Noop) => Some(JobSink::Noop),
             Some(SinkKind::Http) => {
-                let method = errors
-                    .required("method", self.method.as_deref())
-                    .and_then(|m| {
-                        errors.check(
-                            "method",
-                            m.parse::<Method>()
-                                .map_err(|_| "is not a valid HTTP method"),
-                        )
-                    });
+                let method = errors.required("method", self.method.take());
                 let url = errors
                     .required("url", self.url.as_deref())
                     .and_then(|url| errors.check("url", parse_url(url)));
@@ -363,7 +228,6 @@ impl JobRequest {
         if let Some(sink) = &sink {
             errors.check("url", sink.check(options));
         }
-        let flow_key = errors.flow_key("flow_key", self.flow_key.take());
 
         let mut headers = errors
             .check(
@@ -401,86 +265,36 @@ impl JobRequest {
                 Bytes::from(json.get().to_owned())
             }
         };
+
+        let callback = self
+            .callback
+            .take()
+            .map(|callback| check_callback(callback, options, &mut errors));
+        // `at` wins over `delay`
+        let at = self.at.or_else(|| {
+            self.delay
+                .map(|secs| now + chrono::Duration::seconds(i64::from(secs)))
+        });
+        let schedule = self.schedule(&mut errors);
+        // a schedule runs at least once; a time of the past is now
+        if let Some(parameter) = schedule
+            .as_ref()
+            .and_then(|schedule| schedule.never_runs(at.map_or(now, |at| at.max(now))))
+        {
+            errors.add(parameter, "the schedule has no run before it ends");
+        }
         if self.key.as_deref().is_some_and(|key| !is_key(key)) {
             errors.add("key", KEY_RULE);
         }
-        let at = self
-            .at
-            .as_ref()
-            .and_then(|at| errors.check("at", parse_at(at).ok_or(TIME_RULE)));
-
-        let callback = match self.callback_url.take() {
-            None => {
-                if self.has_callback_fields() {
-                    errors.add("callback_url", "is required by the other callback fields");
-                }
-                None
-            }
-            Some(url) => {
-                let url = errors.check("callback_url", parse_url(&url)).filter(|url| {
-                    let sink = JobSink::Http(HttpMeta {
-                        method: Method::POST,
-                        url: url.clone(),
-                    });
-                    errors.check("callback_url", sink.check(options)).is_some()
-                });
-                // `post` deserializes as a method of its own: it is `POST`
-                let method = self.callback_method.take().and_then(|method| {
-                    errors.check(
-                        "callback_method",
-                        [Method::POST, Method::PUT]
-                            .into_iter()
-                            .find(|known| known.as_str().eq_ignore_ascii_case(method.as_str()))
-                            .ok_or("must be POST or PUT"),
-                    )
-                });
-                let retry = errors
-                    .check("callback_retry", self.callback_retry())
-                    .flatten();
-                if self.callback_types.as_ref().is_some_and(Vec::is_empty) {
-                    errors.add(
-                        "callback_types",
-                        "cannot be empty: no callback is no callback_url",
-                    );
-                }
-                let flow_key = errors.flow_key("callback_flow_key", self.callback_flow_key.take());
-                let headers = self
-                    .callback_headers
-                    .take()
-                    .and_then(|headers| {
-                        errors.check(
-                            "callback_headers",
-                            normalize_headers(headers, is_reserved_callback_header),
-                        )
-                    })
-                    .filter(|headers| !headers.is_empty());
-                url.map(|url| JobCallback {
-                    url,
-                    method,
-                    mode: self.callback_mode.unwrap_or_default(),
-                    types: self.callback_types.take(),
-                    headers,
-                    retry,
-                    timeout: self.callback_timeout.map(NonZeroU32::get),
-                    flow_key,
-                    priority: self.callback_priority,
-                })
-            }
-        };
 
         let Some(sink) = sink.filter(|_| errors.0.is_empty()) else {
             return Err(errors.0);
         };
-        // `at` wins over `delay`
-        let at = at.or_else(|| {
-            self.delay
-                .map(|secs| now + chrono::Duration::seconds(i64::from(secs)))
-        });
         let meta = JobMeta {
             sink,
             retry: self.retry,
             timeout: self.timeout.map(NonZeroU32::get),
-            flow_key,
+            flow_key: self.flow_key,
             priority: self.priority,
             traceparent: None,
             tracestate: None,
@@ -492,15 +306,114 @@ impl JobRequest {
             headers: Some(headers),
             body,
             at,
-            schedule: None,
+            schedule,
             key: self.key,
         }
         .normalized(options, now))
     }
 }
 
-const CALLBACK_RETRY_RULE: &str = "must be none, or fixed, fibonacci or exponential with \
-    callback_retry_count (and callback_retry_delay for the last two)";
+impl JobRequest {
+    /// Validates a schedule with the job of its runs: the body of `PUT /api/v1/schedules/{id}`,
+    /// a job with `cron` or `interval` whose key is the id. Every invalid field is reported.
+    pub(crate) fn validate_schedule(
+        mut self,
+        schedule_id: &str,
+        options: &WorkerOptions,
+        now: DateTime<Utc>,
+    ) -> Result<JobCreate, Vec<ParamError>> {
+        let mut errors = Vec::new();
+        if is_key(schedule_id) {
+            self.key = Some(schedule_id.to_owned());
+        } else {
+            self.key = None;
+            errors.push(ParamError::new("id", KEY_RULE));
+        }
+        if self.cron.is_none() && self.interval.is_none() {
+            errors.push(ParamError::new("cron", "cron or interval is required"));
+        }
+        let job = self
+            .validate(options, now)
+            .map_err(|found| errors.extend(found))
+            .ok();
+        job.filter(|_| errors.is_empty()).ok_or(errors)
+    }
+
+    /// The schedule of `cron` or `interval`, `tz` and `until`; `None` when the job does not
+    /// repeat.
+    fn schedule(&mut self, errors: &mut Errors) -> Option<JobSchedule> {
+        let rule = match (self.cron.take(), self.interval) {
+            (None, None) => {
+                // `tz` without a cron is the zone of nothing, `until` ends nothing
+                if self.until.is_some() {
+                    errors.add("until", "applies to cron and interval only");
+                }
+                return None;
+            }
+            (Some(_), Some(_)) => {
+                errors.add("cron", "cannot be set together with interval");
+                None
+            }
+            (Some(cron), None) => ScheduleRule::parse_cron(&cron)
+                .map_err(|err| errors.0.push(err))
+                .ok(),
+            (None, Some(0)) => {
+                errors.add("interval", INTERVAL_RULE);
+                None
+            }
+            (None, Some(interval)) => Some(ScheduleRule::Interval(interval)),
+        };
+        Some(JobSchedule {
+            rule: rule?,
+            tz: self.tz.unwrap_or_default(),
+            until: self.until,
+        })
+    }
+}
+
+/// What is wrong with an interval that does not parse or is 0.
+const INTERVAL_RULE: &str = "must be a positive number of seconds";
+
+/// What the types of a [`JobCallback`] do not say, however it was made: the target, the method,
+/// the headers. Errors go to `errors` (`callback.<field>`); the callback is normalized.
+fn check_callback(
+    mut callback: JobCallback,
+    options: &WorkerOptions,
+    errors: &mut Errors,
+) -> JobCallback {
+    let target = JobSink::Http(HttpMeta {
+        method: Method::POST,
+        url: callback.url.clone(),
+    });
+    errors.check("callback.url", target.check(options));
+    // `post` deserializes as a method of its own: it is `POST`
+    callback.method = callback.method.take().and_then(|method| {
+        errors.check(
+            "callback.method",
+            [Method::POST, Method::PUT]
+                .into_iter()
+                .find(|known| known.as_str().eq_ignore_ascii_case(method.as_str()))
+                .ok_or("must be POST or PUT"),
+        )
+    });
+    if callback.types.as_ref().is_some_and(Vec::is_empty) {
+        errors.add(
+            "callback.types",
+            "cannot be empty: no callback is no callback.url",
+        );
+    }
+    callback.headers = callback
+        .headers
+        .take()
+        .and_then(|headers| {
+            errors.check(
+                "callback.headers",
+                normalize_headers(headers, is_reserved_callback_header),
+            )
+        })
+        .filter(|headers| !headers.is_empty());
+    callback
+}
 
 fn parse_url(url: &str) -> Result<Uri, &'static str> {
     Uri::try_from(url).map_err(|_| "is not a valid URL")
@@ -531,12 +444,6 @@ impl Errors {
         }
         value
     }
-
-    /// A flow key; an empty one is none, as in `enqueue_v1`.
-    fn flow_key(&mut self, parameter: &'static str, key: Option<String>) -> Option<FlowKey> {
-        key.filter(|key| !key.is_empty())
-            .and_then(|key| self.check(parameter, FlowKey::try_from(key)))
-    }
 }
 
 fn normalize_headers(
@@ -560,6 +467,7 @@ fn normalize_headers(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::CallbackType;
 
     #[test]
     fn json_job_preparation() -> anyhow::Result<()> {
@@ -597,7 +505,7 @@ mod tests {
         assert_eq!(
             errors
                 .iter()
-                .map(|error| error.parameter)
+                .map(|error| error.parameter.as_ref())
                 .collect::<Vec<_>>(),
             ["url", "headers", "key"]
         );
@@ -609,16 +517,31 @@ mod tests {
         // typed fields are refused by the JSON itself
         for meta in [
             r#"{"sink":"noop","timeout":0}"#,
-            r#"{"sink":"noop","callback_types":["completed"]}"#,
+            r#"{"sink":"noop","callback":{"url":"https://example.com","types":["completed"]}}"#,
+            // a policy has its kind, a backoff its delay, and a retry is an object
+            r#"{"sink":"noop","retry":{"count":3}}"#,
+            r#"{"sink":"noop","retry":{"policy":"fixd","count":3}}"#,
+            r#"{"sink":"noop","retry":{"policy":"fibonacci","count":3}}"#,
+            r#"{"sink":"noop","retry":"fixed","retry_count":3}"#,
+            // a callback has its url
+            r#"{"sink":"noop","callback":{}}"#,
+            r#"{"sink":"noop","callback":{"timeout":5}}"#,
+            r#"{"sink":"noop","callback":{"url":"https://example.com","retry":{"count":0}}}"#,
+            r#"{"sink":"noop","callback":{"url":"https://example.com","timeout":0}}"#,
+            // a method, a flow key, a time
+            r#"{"sink":"http","url":"https://example.com","method":"BAD METHOD"}"#,
+            r#"{"sink":"noop","flow_key":"Bad Name"}"#,
+            r#"{"sink":"noop","at":"tomorrow"}"#,
+            r#"{"sink":"noop","at":true}"#,
         ] {
             assert!(serde_json::from_str::<JobRequest>(meta).is_err(), "{meta}");
         }
 
         // callbacks: the retry fields, the method in any case, an empty list of types
         let spec = serde_json::from_str(
-            r#"{"sink":"noop","callback_url":"https://example.com/cb","callback_method":"put",
-                "callback_retry":"fixed","callback_retry_count":10,"callback_retry_delay":30,
-                "callback_types":["irisqo.job.failed"]}"#,
+            r#"{"sink":"noop","callback":{"url":"https://example.com/cb","method":"put",
+                "retry":{"policy":"fixed","count":10,"delay":30},
+                "types":["irisqo.job.failed"]}}"#,
         )?;
         let callback = prepare(spec)
             .expect("callback")
@@ -636,51 +559,52 @@ mod tests {
         assert_eq!(callback.types, Some(vec![CallbackType::Failed]));
         for (meta, parameter) in [
             (
-                r#"{"sink":"noop","callback_url":"https://example.com","callback_retry":"fibonacci"}"#,
-                "callback_retry",
+                r#"{"sink":"noop","callback":{"url":"https://example.com","method":"GET"}}"#,
+                "callback.method",
             ),
             (
-                r#"{"sink":"noop","callback_url":"https://example.com","callback_method":"GET"}"#,
-                "callback_method",
+                r#"{"sink":"noop","callback":{"url":"https://example.com","types":[]}}"#,
+                "callback.types",
             ),
             (
-                r#"{"sink":"noop","callback_url":"https://example.com","callback_types":[]}"#,
-                "callback_types",
-            ),
-            (r#"{"sink":"noop","callback_timeout":5}"#, "callback_url"),
-            // the fields of a callback policy without its kind: not the default in silence
-            (
-                r#"{"sink":"noop","callback_url":"https://example.com","callback_retry_count":0}"#,
-                "callback_retry",
-            ),
-            (
-                r#"{"sink":"noop","callback_retry_count":0}"#,
-                "callback_url",
+                r#"{"sink":"noop","callback":{"url":"https://example.com","headers":{"Host":"x"}}}"#,
+                "callback.headers",
             ),
         ] {
             let errors = prepare(serde_json::from_str(meta)?).expect_err(meta);
             assert_eq!(errors[0].parameter, parameter, "{meta}");
         }
 
-        // a retry that is not a policy means no retries, not an error (see `JobRequest::retry`)
-        for meta in [
-            r#"{"sink":"noop","retry":"fixd"}"#,
-            r#"{"sink":"noop","retry":"fibonacci","retry_count":3}"#,
-            r#"{"sink":"noop","retry":"none"}"#,
-        ] {
+        // no retry, or null: no retries
+        for meta in [r#"{"sink":"noop"}"#, r#"{"sink":"noop","retry":null}"#] {
             let spec = serde_json::from_str(meta)?;
             assert_eq!(prepare(spec).expect(meta).meta.retry, None, "{meta}");
         }
 
-        // the structure: no sink, no url, no method, a bad method
+        // a job repeats: the key is the id of the schedule
+        let job = prepare(serde_json::from_str(
+            r#"{"sink":"noop","key":"nightly","cron":"0 9 * * *","tz":"Europe/Berlin"}"#,
+        )?)
+        .expect("a schedule");
+        assert_eq!(job.key.as_deref(), Some("nightly"));
+        assert_eq!(job.schedule.map(|s| s.tz), Some(chrono_tz::Europe::Berlin));
+        for (meta, parameter) in [
+            (r#"{"sink":"noop","interval":0}"#, "interval"),
+            (
+                r#"{"sink":"noop","cron":"* * * * *","interval":60}"#,
+                "cron",
+            ),
+            (r#"{"sink":"noop","until":"2100-01-01T00:00:00Z"}"#, "until"),
+        ] {
+            let errors = prepare(serde_json::from_str(meta)?).expect_err(meta);
+            assert_eq!(errors[0].parameter, parameter, "{meta}");
+        }
+
+        // the structure: no sink, no url, no method
         for (meta, parameter) in [
             (r#"{"url":"https://example.com"}"#, "sink"),
             (r#"{"sink":"http"}"#, "method"),
             (r#"{"sink":"http","url":"https://example.com"}"#, "method"),
-            (
-                r#"{"sink":"http","url":"https://example.com","method":"BAD METHOD"}"#,
-                "method",
-            ),
             (r#"{"sink":"http","method":"GET"}"#, "url"),
         ] {
             let spec = serde_json::from_str(meta)?;
@@ -692,14 +616,18 @@ mod tests {
 
     #[test]
     fn parameters_fill_the_same_fields() {
-        let mut input = JobRequest::default();
-        for (name, value) in [
-            ("_delay", "5"),
-            ("_retry", "3|fibonacci|2|60"),
-            ("_key", ""),
-        ] {
-            assert!(input.set_param(name, value).expect(name));
-        }
+        let params = |pairs: &[(&str, &str)]| {
+            pairs
+                .iter()
+                .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+                .collect::<HashMap<_, _>>()
+        };
+        let (input, errors) = JobRequest::default().with_params(&params(&[
+            ("delay", "5"),
+            ("retry", "3|fibonacci|2|60"),
+            ("key", ""),
+        ]));
+        assert!(errors.is_empty(), "{errors:?}");
         assert_eq!((input.delay, input.key.as_deref()), (Some(5), None));
         assert_eq!(
             input.retry,
@@ -709,7 +637,134 @@ mod tests {
                 retry_max_delay: Some(60)
             })
         );
-        assert!(!input.set_param("a", "b").expect("not ours"));
-        assert!(input.set_param("_delay", "soon").is_err());
+        // every one that does not parse, named by its field
+        let (input, errors) = JobRequest::default().with_params(&params(&[
+            ("delay", "soon"),
+            ("timeout", "0"),
+            ("priority", "high"),
+            ("flow_key", "q"),
+        ]));
+        // the others are kept, for `validate` to check them
+        assert_eq!(input.flow_key.as_ref().map(FlowKey::as_str), Some("q"));
+        let mut names: Vec<_> = errors.iter().map(|e| e.parameter.as_ref()).collect();
+        names.sort_unstable();
+        assert_eq!(names, ["delay", "priority", "timeout"]);
+    }
+
+    fn declare(json: &str) -> Result<JobCreate, Vec<ParamError>> {
+        schedule_as("nightly", json)
+    }
+
+    fn schedule_as(schedule_id: &str, json: &str) -> Result<JobCreate, Vec<ParamError>> {
+        serde_json::from_str::<JobRequest>(json)
+            .expect("job")
+            .validate_schedule(schedule_id, &WorkerOptions::for_tests(), Utc::now())
+    }
+
+    fn schedule_parameters(errors: &[ParamError]) -> Vec<&str> {
+        errors
+            .iter()
+            .map(|error| error.parameter.as_ref())
+            .collect()
+    }
+
+    const META: &str = r#""sink":"http","method":"POST","url":"https://example.com""#;
+
+    #[test]
+    fn a_schedule_comes_with_the_job_of_its_runs() {
+        let job = declare(&format!(
+            r#"{{{META},"cron":"*/5 * * * *","until":"2100-01-01T00:00:00Z"}}"#
+        ))
+        .expect("valid schedule");
+        assert!(matches!(
+            job.schedule,
+            Some(JobSchedule {
+                rule: ScheduleRule::Cron(_),
+                ..
+            })
+        ));
+        assert_eq!(
+            job.schedule.as_ref().and_then(|s| s.until),
+            JobSchedule::from_unix_secs(4_102_444_800)
+        );
+        assert_eq!(
+            JobSchedule::parse_time("2100-01-01T00:00:00Z"),
+            JobSchedule::parse_time("4102444800"),
+            "the same time as RFC 3339 and as unix seconds"
+        );
+        assert_eq!(job.key.as_deref(), Some("nightly"));
+
+        let job = declare(&format!(r#"{{{META},"interval":300}}"#)).expect("valid schedule");
+        assert_eq!(
+            job.schedule,
+            Some(JobSchedule {
+                rule: ScheduleRule::Interval(300),
+                tz: Tz::UTC,
+                until: None
+            })
+        );
+        assert_eq!(
+            job.key.as_deref(),
+            Some("nightly"),
+            "the id of the schedule"
+        );
+    }
+
+    #[test]
+    fn every_invalid_field_is_reported() {
+        let errors = declare(
+            r#"{"sink":"http","method":"POST","url":"ftp://example.com",
+                "cron":"* * * * *","interval":60}"#,
+        )
+        .expect_err("invalid schedule");
+        assert_eq!(schedule_parameters(&errors), ["url", "cron"]);
+        // a time or a zone that is not one is refused by the JSON itself
+        for field in [r#""until":"soon""#, r#""tz":"Mars/Base""#] {
+            let json = format!("{{{META},{field}}}");
+            assert!(
+                serde_json::from_str::<JobRequest>(&json).is_err(),
+                "{field}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_schedule_is_cron_or_interval() {
+        for (schedule, parameter) in [
+            ("", "cron"),
+            (r#","cron":"nope""#, "cron"),
+            (r#","cron":"300""#, "cron"),
+            (r#","interval":0"#, "interval"),
+        ] {
+            let errors = declare(&format!("{{{META}{schedule}}}")).expect_err("invalid schedule");
+            assert_eq!(schedule_parameters(&errors), [parameter], "{schedule}");
+        }
+    }
+
+    #[test]
+    fn a_cron_schedule_has_a_time_zone() {
+        let job = declare(&format!(
+            r#"{{{META},"cron":"0 9 * * *","tz":"Europe/Berlin"}}"#
+        ))
+        .expect("valid schedule");
+        assert_eq!(job.schedule.map(|s| s.tz), Some(chrono_tz::Europe::Berlin));
+        let job = declare(&format!(r#"{{{META},"cron":"0 9 * * *"}}"#)).expect("valid schedule");
+        assert_eq!(job.schedule.map(|s| s.tz), Some(Tz::UTC));
+    }
+
+    #[test]
+    fn the_id_is_a_key() {
+        let errors = schedule_as("a\u{1}b", &format!(r#"{{{META},"interval":60}}"#))
+            .expect_err("invalid id");
+        assert_eq!(schedule_parameters(&errors), ["id"]);
+    }
+
+    #[test]
+    fn a_schedule_runs_at_least_once() {
+        let errors = declare(&format!(
+            r#"{{{META},"interval":3600,"until":"1970-01-01T00:00:01Z"}}"#
+        ))
+        .expect_err("no run before until");
+        assert_eq!(schedule_parameters(&errors), ["until"]);
     }
 }

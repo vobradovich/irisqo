@@ -1,6 +1,6 @@
 pub use apitokens::ApiTokens;
 pub use environment::Environment;
-pub use error::{Error, INVALID_PARAMS_TYPE, ParamError};
+pub use error::{Error, INVALID_PARAMS_TYPE, MILLISECONDS_RULE, PRIORITY_RULE, ParamError, Params};
 
 pub use callback::{CallbackMode, CallbackType, JobCallback};
 pub use job::FlowKey;

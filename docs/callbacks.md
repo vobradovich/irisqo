@@ -12,58 +12,58 @@ Event types are `irisqo.job.completed`, `irisqo.job.failed` and `irisqo.job.canc
 
 ## Modes
 
-`callback_mode` names the format of the delivery.
+`callback.mode` names the format of the delivery.
 
-| `callback_mode` | Fires on | Body sent | Headers |
+| `mode` | Fires on | Body sent | Headers |
 |---|---|---|---|
 | `webhook` (default) | `completed`, `failed`, `cancelled` | JSON, as Standard Webhooks: `type`, `timestamp`, `data` | `webhook-*` |
-| `relay` | `completed` by default; any of the types with `callback_types` | the response of the job, byte for byte, on `completed`; no body on the others | `Irisqo-*` |
+| `relay` | `completed` by default; any of the types with `types` | the response of the job, byte for byte, on `completed`; no body on the others | `Irisqo-*` |
 
 A job has at most one callback, and an outcome makes at most one callback job.
 
 - **Want to know how it ended?** `webhook`.
 - **Want the result to go on to the next service?** `relay`. A job that did not complete relays
-  no body, only headers, and only when `callback_types` asks for it.
+  no body, only headers, and only when `types` asks for it.
 
 The mode defines the payload: `relay` sends the response of the job as it is, `webhook` builds
-its own JSON. Which outcomes make a callback is not the mode's: `callback_types` chooses.
+its own JSON. Which outcomes make a callback is not the mode's: `types` chooses.
 
 ## Request
 
-The callback fields are flat, next to the fields of the job, with the `callback_` prefix. In
-`/to/` they are query parameters with `_callback_`, as the job's own are with `_`.
+The callback is an object, `callback`, of the job. In `/to/` its fields are query parameters with
+`_callback_`, as the job's own are with `_`.
 
-| JSON | `/to/` | Meaning | When absent |
+| JSON (`callback.`) | `/to/` | Meaning | When absent |
 |---|---|---|---|
-| `callback_url` | `_callback_url` | `http` or `https` URL; sets the callback | no callback |
-| `callback_mode` | `_callback_mode` | `webhook` or `relay` | `webhook` |
-| `callback_method` | `_callback_method` | `POST` or `PUT` | `POST` |
-| `callback_types` | `_callback_types` (comma separated) | the types that make a callback (see Types) | `webhook`: `irisqo.job.completed`, `irisqo.job.failed`, `irisqo.job.cancelled`; `relay`: `irisqo.job.completed` |
-| `callback_headers` | `Irisqo-Callback-*` headers | headers for the callback | none |
-| `callback_retry`, `callback_retry_count`, `callback_retry_delay`, `callback_retry_max_delay` | `_callback_retry` (`N\|kind\|S\|M`, as `_retry`) | retry policy | the default of a callback (see Delivery), not the job's |
-| `callback_timeout` | `_callback_timeout` | milliseconds, at least 1 | the default of a callback (see Delivery), not the job's |
-| `callback_flow_key` | `_callback_flow_key` | flow of the callback, as `flow_key` | none (not inherited) |
-| `callback_priority` | `_callback_priority` | an integer; higher runs first, among the jobs without a flow or in its flow | 0 (not inherited) |
+| `url` | `_callback_url` | `http` or `https` URL; sets the callback | no callback |
+| `mode` | `_callback_mode` | `webhook` or `relay` | `webhook` |
+| `method` | `_callback_method` | `POST` or `PUT` | `POST` |
+| `types` | `_callback_types` (comma separated) | the types that make a callback (see Types) | `webhook`: `irisqo.job.completed`, `irisqo.job.failed`, `irisqo.job.cancelled`; `relay`: `irisqo.job.completed` |
+| `headers` | `Irisqo-Callback-*` headers | headers for the callback | none |
+| `retry` (`policy`, `count`, `delay`, `max_delay`, as the `retry` of the job) | `_callback_retry` (`N\|kind\|S\|M`, as `_retry`) | retry policy | the default of a callback (see Delivery), not the job's |
+| `timeout` | `_callback_timeout` | milliseconds, at least 1 | the default of a callback (see Delivery), not the job's |
+| `flow_key` | `_callback_flow_key` | flow of the callback, as `flow_key` | none (not inherited) |
+| `priority` | `_callback_priority` | an integer; higher runs first, among the jobs without a flow or in its flow | 0 (not inherited) |
 
-- The method is `POST` unless `callback_method` says `PUT`; any other method is refused.
-- The other `callback_*` fields need `callback_url`; without it they are refused.
-- `callback_retry` is `none`, `fixed`, `fibonacci` or `exponential`, with the fields of `retry`.
-  **`none` means no retries**; it is not the same as leaving the policy out, which takes the
-  default of a callback. `callback_retry_count`, `callback_retry_delay` or
-  `callback_retry_max_delay` without `callback_retry` is refused.
-- `callback_flow_key` lets a receiver be protected like any target: a concurrency or rate
+- The method is `POST` unless `method` says `PUT`; any other method is refused.
+- `callback` needs its `url`; without it the callback is refused.
+- `retry` is an object like the `retry` of a job: `policy` is `fixed`, `fibonacci` or
+  `exponential`, with `count`, `delay` and `max_delay`; a policy without its `policy` is
+  refused. **`{"policy": "fixed", "count": 0}` means no retries** (`_callback_retry=none` in
+  `/to/`); it is not the same as leaving the policy out, which takes the default of a callback.
+- `flow_key` lets a receiver be protected like any target: a concurrency or rate
   limit on `https://ship.example` is a flow. It is not inherited: the job's flow limits the
   job's target, the callback goes elsewhere.
-- A callback runs as soon as it is made; there is no `callback_delay` or `callback_at`.
-- `callback_types` takes the full types, one spelling everywhere (`completed` alone is refused);
-  an unknown type is refused, and so is an empty list (no callback is no `callback_url`).
-- `callback_headers` are kept like the forwarded headers of a job: the API and the UI show
+- A callback runs as soon as it is made; there is no callback `delay` or `at`.
+- `types` takes the full types, one spelling everywhere (`completed` alone is refused);
+  an unknown type is refused, and so is an empty list (no callback is no `url`).
+- `headers` are kept like the forwarded headers of a job: the API and the UI show
   their names, and the values of the open ones only (`Content-Type`, `Accept`...); any other
   value reads `••••`.
 
 ### Headers of a callback
 
-`callback_headers` must be headers that can be sent:
+`callback.headers` must be headers that can be sent:
 
 - a name is a header name (letters, digits and ``!#$%&'*+-.^_`|~``) and a value has no control
   characters;
@@ -84,11 +84,13 @@ The API (`POST /api/v1/jobs`, `/to/`) refuses a request that breaks this with a 
 ```json
 {
   "sink": "http", "method": "POST", "url": "https://pay.example/charge",
-  "retry": "exponential", "retry_count": 5, "retry_delay": 2,
+  "retry": { "policy": "exponential", "count": 5, "delay": 2 },
   "key": "order-42",
-  "callback_url": "https://me.example/hooks/irisqo",
-  "callback_headers": { "Authorization": "Bearer cb-secret" },
-  "callback_retry": "fixed", "callback_retry_count": 10, "callback_retry_delay": 30
+  "callback": {
+    "url": "https://me.example/hooks/irisqo",
+    "headers": { "Authorization": "Bearer cb-secret" },
+    "retry": { "policy": "fixed", "count": 10, "delay": 30 }
+  }
 }
 ```
 
@@ -104,8 +106,8 @@ the target.
 
 ### `enqueue_v1`
 
-Takes the same flat `callback_*` fields as the JSON request, with the same checks, except the
-names of `callback_headers` (see above).
+Takes the same `callback` object as the JSON request, with the same checks, except the
+names of `callback.headers` (see above).
 
 ## Success
 
@@ -130,7 +132,7 @@ attempt: it ends the job at once, as a 4xx other than 408, 425 and 429 does.
 A type is a dot-separated name that always has the same payload; a receiver can route on the
 prefix (`irisqo.job.*`).
 
-**`callback_types`** says which types make a callback. The filter works when the outcome is
+**`callback.types`** says which types make a callback. The filter works when the outcome is
 recorded: a type that is not listed makes no callback job, and nothing is written for it.
 `relay` takes any of the types too: on a type that is not `irisqo.job.completed` it sends no
 body, only the headers (see `relay`).
@@ -217,7 +219,7 @@ webhook-id: cb_01jc3k8x2m9q5r7t4v6w8y0z1a   ← the key of the callback job; the
 webhook-timestamp: 1763028009             ← unix seconds, of this delivery; new on every retry
 webhook-signature: v1,g0hM9SsE+OTPJTGt/tmIKtSyZlE3uFJELVlNIOLJ1OE=     ← see Signature
 traceparent: …
-Authorization: Bearer cb-secret           ← from callback_headers
+Authorization: Bearer cb-secret           ← from callback.headers
 ```
 
 - `webhook-id` is the key of the callback job, `cb_` and a new lowercase ULID, made when the
@@ -247,7 +249,7 @@ Irisqo-Event-Type: irisqo.job.completed   ← the type: route on it without the 
 Irisqo-Timestamp: 1763028009              ← unix seconds, of this delivery; new on every retry
 Irisqo-Signature: v1,K5oZfzN95Z9UVu1…     ← see Signature
 traceparent: 00-4bf92f…-…-01              ← the trace of the job goes on
-Authorization: Bearer for-ship            ← from callback_headers
+Authorization: Bearer for-ship            ← from callback.headers
 
 {"order_id": 7, "amount": 990}            ← the body of the response, byte for byte
 ```
@@ -261,12 +263,12 @@ Authorization: Bearer for-ship            ← from callback_headers
   `data.job` of a webhook. `Irisqo-Parent-Key` lets a receiver find its own record
   (`order-42`) without parsing the body.
 - An empty response (204, `noop`) relays an empty body.
-- A header of `callback_headers` wins over one taken from the response.
+- A header of `callback.headers` wins over one taken from the response.
 - The relayed request is the end: a callback has no callback of its own.
 
 ### `relay` of a job that did not complete
 
-With `callback_types` that name `irisqo.job.failed` or `irisqo.job.cancelled`, `relay` sends
+With `callback.types` that name `irisqo.job.failed` or `irisqo.job.cancelled`, `relay` sends
 the headers and **no body**: there is no response to relay (a failed one is for `webhook`, which
 gives it whole). Nothing is taken from the response either, so no `Content-Type`:
 
@@ -294,11 +296,13 @@ retries, timeout and callback:
 ```json
 {
   "sink": "http", "method": "POST", "url": "https://pay.example/charge",
-  "callback_mode": "relay",
-  "callback_url": "https://irisqo.example/to/https://ship.example/orders?_retry=5|exponential|2&_callback_url=https://me.example/hooks/irisqo",
-  "callback_headers": {
-    "Authorization": "Bearer <irisqo api token>",
-    "Irisqo-Forward-Authorization": "Bearer for-ship"
+  "callback": {
+    "mode": "relay",
+    "url": "https://irisqo.example/to/https://ship.example/orders?_retry=5|exponential|2&_callback_url=https://me.example/hooks/irisqo",
+    "headers": {
+      "Authorization": "Bearer <irisqo api token>",
+      "Irisqo-Forward-Authorization": "Bearer for-ship"
+    }
   }
 }
 ```
@@ -356,7 +360,7 @@ names differ.
 - **Its own retries.** A callback that fails is retried with its policy and ends `failed` like
   any job. It does not change the status of the job that made it.
 - **Its own defaults.** A callback is retried hard and for long, as the standard asks, and not
-  as the job is: without `callback_retry` and `callback_timeout` it takes the default of a
+  as the job is: without `callback.retry` and `callback.timeout` it takes the default of a
   callback, the same in every mode: `exponential`, 10 retries, delay 300 s, longest delay
   86400 s (about three days in all, with jitter), and a timeout of 30 s (capped by
   `--max-timeout`). A job without retries does not lose its callback to one failure of the
@@ -414,7 +418,7 @@ the callbacks.
 
 - A callback: `Callback of #42`, a link, and its mode (`a deleted job` when the job that made it
   is gone).
-- A job with a callback: the callback's URL, mode, retry and timeout (`callback_headers` as
+- A job with a callback: the callback's URL, mode, retry and timeout (`callback.headers` as
   the job's own headers: names, and the values of the open ones), and its callback jobs with
   their status.
 
@@ -422,12 +426,12 @@ the callbacks.
 
 - **Signed deliveries.** The receiver checks the signature (see Signature) and needs no secret
   in the job. Without a signing key, a receiver can check a secret header that the job brings in
-  `callback_headers` / `Irisqo-Callback-*`.
-- `relay` sends the response body and its three body headers, plus `callback_headers` and the
+  `callback.headers` / `Irisqo-Callback-*`.
+- `relay` sends the response body and its three body headers, plus `callback.headers` and the
   `Irisqo-*` delivery headers; no other header of the response leaves irisqo.
 - `webhook` sends the whole result in the body, response headers included (`Set-Cookie` too):
   the receiver of a callback sees what irisqo saw. Point it at a service you trust, and sign.
-- The values of `callback_headers` are never given back by the API or the UI, except the open
+- The values of `callback.headers` are never given back by the API or the UI, except the open
   ones; they are not written to the log.
 
 ## Limits

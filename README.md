@@ -30,7 +30,7 @@ Like QStash or Zeplo, but on **your** Postgres, calling **your** services.
 - [x] Persistent queue on Postgres
 - [x] Multi-instance scaling (heartbeats, lock reaping, graceful shutdown)
 - [x] Retries with backoff, delays, timeouts
-- [x] Schedules: interval and cron, time zones, `until`; declared by `PUT /api/v1/schedules/{id}`
+- [x] Schedules: interval and cron, time zones, `until`; declared by `PUT /api/v1/schedules/{id}`, or by a job with `cron` or `interval` (`POST /api/v1/jobs`, `/to/`), whose `key` is the id
 - [x] Proxy enqueue via `/to/{url}`, idempotency with `_key`
 - [x] Jobs and schedules API (cancel, retry); a job as JSON (`POST /api/v1/jobs`), described by OpenAPI (`/api/v1/openapi.json`)
 - [x] Transactional enqueue: `enqueue_v1(job jsonb)` in the service transaction ([docs/sql.md](docs/sql.md))
@@ -105,12 +105,13 @@ GET {{host}}/to/https://postman-echo.com/get?_retry=3|fibonacci|5
 GET {{host}}/to/https://postman-echo.com/get?_retry=8|exponential|2|300
 ```
 
-In JSON (`POST /api/v1/jobs`, `PUT /api/v1/schedules/{id}`, `enqueue_v1`): `retry` (`fixed`, `fibonacci`, `exponential`),
-`retry_count`, `retry_delay`, `retry_max_delay`.
+In JSON (`POST /api/v1/jobs`, `PUT /api/v1/schedules/{id}`, `enqueue_v1`): `retry` is an object,
+`{"policy": "exponential", "count": 8, "delay": 2, "max_delay": 300}` (`policy`: `fixed`, `fibonacci`,
+`exponential`; `max_delay` for the last two).
 
 Retried: network errors, timeouts, `408`, `425`, `429` and `5xx`. Any other `4xx` fails the job at once.
 Delays get ±20 % jitter, never come sooner than the response `Retry-After` (seconds or HTTP-date),
-and are capped at 24 hours unless the policy sets them (`retry_delay` of `fixed`, `retry_max_delay`).
+and are capped at 24 hours unless the policy sets them (`delay` of `fixed`, `max_delay`).
 
 ### Timeout
 `_timeout` sets the request timeout in milliseconds (default `--timeout`, 3000), capped by `--max-timeout` (default 300000).

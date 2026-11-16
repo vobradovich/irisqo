@@ -43,6 +43,18 @@ impl JobSchedule {
         })
     }
 
+    /// The field that makes a schedule with no run from `from` on: `until` when it ends it,
+    /// else its rule (`cron`, `interval`); `None` when it runs.
+    pub fn never_runs(&self, from: DateTime<Utc>) -> Option<&'static str> {
+        self.next(from)
+            .is_none()
+            .then_some(match (&self.until, &self.rule) {
+                (Some(_), _) => "until",
+                (None, ScheduleRule::Interval(_)) => "interval",
+                (None, ScheduleRule::Cron(_)) => "cron",
+            })
+    }
+
     /// `true` when `at` is a usable time: after 1970, up to 9999-12-31.
     pub fn in_range(at: DateTime<Utc>) -> bool {
         at.timestamp() > 0 && at.year() <= 9999
