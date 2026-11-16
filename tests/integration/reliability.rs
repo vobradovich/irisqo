@@ -661,6 +661,30 @@ async fn enqueue_v1_stores_the_retry_policy(pool: PgPool) -> anyhow::Result<()> 
                 "max_delay": 9}}),
             "retry.max_delay is for",
         ),
+        (
+            json!({"sink": "http", "url": url, "retry": {"policy": "fixed", "count": 3,
+                "backoff": 2}}),
+            "retry may have policy, count, delay and max_delay only",
+        ),
+        (
+            json!({"sink": "http", "url": url, "retry": {"policy": "fixed", "count": "3"}}),
+            "retry.count must be",
+        ),
+        (
+            json!({"sink": "http", "url": url, "retry": {"policy": "exponential", "count": 3,
+                "delay": "2"}}),
+            "retry.delay must be",
+        ),
+        (
+            json!({"sink": "http", "url": url, "callback": {"url": url,
+                "retry": {"policy": "fixed", "count": 3, "backoff": 2}}}),
+            "callback.retry may have policy, count, delay and max_delay only",
+        ),
+        (
+            json!({"sink": "http", "url": url, "callback": {"url": url,
+                "retry": {"policy": "fixed", "count": "3"}}}),
+            "callback.retry.count must be",
+        ),
     ] {
         let err = enqueue(job).await.expect_err("rejected");
         assert!(err.to_string().contains(error), "{err}");

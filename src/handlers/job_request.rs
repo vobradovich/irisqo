@@ -3,7 +3,7 @@ use crate::features::schedules::{JobSchedule, ScheduleRule};
 use crate::models::headers::{is_reserved_callback_header, is_reserved_header};
 use crate::models::{
     FlowKey, HttpMeta, JobCallback, JobCreate, JobMeta, JobRetry, JobSink, MILLISECONDS_RULE,
-    PRIORITY_RULE, ParamError, Params, WorkerOptions,
+    PRIORITY_RULE, ParamError, Params, WorkerOptions, deserialize_method,
 };
 use axum::body::Bytes;
 use base64::Engine as _;
@@ -48,7 +48,7 @@ pub struct JobRequest {
     /// Required.
     pub(crate) sink: Option<SinkKind>,
     /// An HTTP method, for the `http` sink, in any case (`post` is `POST`, as in `enqueue_v1`).
-    #[serde(default, deserialize_with = "method")]
+    #[serde(default, deserialize_with = "deserialize_method")]
     #[schema(schema_with = method_schema)]
     pub(crate) method: Option<Method>,
     /// An `http` or `https` URL, for the `http` sink.
@@ -122,14 +122,6 @@ fn at_schema() -> utoipa::openapi::Schema {
         .format(Some(SchemaFormat::KnownFormat(KnownFormat::Int64)))
         .examples([1_893_456_000]);
     utoipa::openapi::Schema::OneOf(OneOfBuilder::new().item(time).item(seconds).build())
-}
-
-/// An HTTP method in upper case: `post` is `POST`, not a method of its own.
-fn method<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<Method>, D::Error> {
-    Option::<String>::deserialize(deserializer)?
-        .map(|method| Method::from_bytes(method.to_ascii_uppercase().as_bytes()))
-        .transpose()
-        .map_err(de::Error::custom)
 }
 
 /// `at`: an RFC 3339 time (a string) or unix seconds (a number).
@@ -387,16 +379,13 @@ fn check_callback(
         url: callback.url.clone(),
     });
     errors.check("callback.url", target.check(options));
-    // `post` deserializes as a method of its own: it is `POST`
-    callback.method = callback.method.take().and_then(|method| {
-        errors.check(
-            "callback.method",
-            [Method::POST, Method::PUT]
-                .into_iter()
-                .find(|known| known.as_str().eq_ignore_ascii_case(method.as_str()))
-                .ok_or("must be POST or PUT"),
-        )
-    });
+    if callback
+        .method
+        .as_ref()
+        .is_some_and(|method| ![Method::POST, Method::PUT].contains(method))
+    {
+        errors.add("callback.method", "must be POST or PUT");
+    }
     if callback.types.as_ref().is_some_and(Vec::is_empty) {
         errors.add(
             "callback.types",
