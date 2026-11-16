@@ -72,7 +72,8 @@ pub struct JobCallback {
     pub url: Uri,
     /// `POST` when absent; only `POST` and `PUT` pass the check of the input.
     #[serde(
-        with = "http_serde::option::method",
+        serialize_with = "http_serde::option::method::serialize",
+        deserialize_with = "deserialize_method",
         skip_serializing_if = "Option::is_none",
         default
     )]
@@ -103,6 +104,22 @@ pub struct JobCallback {
     pub flow_key: Option<FlowKey>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub priority: Option<i32>,
+}
+
+/// An HTTP method in upper case: `post` is `POST`, not a method of its own.
+pub fn parse_method(method: &str) -> Option<Method> {
+    Method::from_bytes(method.to_ascii_uppercase().as_bytes()).ok()
+}
+
+/// An optional HTTP method in upper case, as [`parse_method`].
+pub fn deserialize_method<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Method>, D::Error> {
+    Option::<String>::deserialize(deserializer)?
+        .map(|method| {
+            parse_method(&method).ok_or_else(|| serde::de::Error::custom("invalid HTTP method"))
+        })
+        .transpose()
 }
 
 impl JobCallback {
@@ -137,7 +154,7 @@ impl JobCallback {
             );
             None
         };
-        let method = p.parse("method", "is not a valid HTTP method", |v| v.parse().ok());
+        let method = p.parse("method", "is not a valid HTTP method", parse_method);
         let mode = p.parse("mode", "must be webhook or relay", |v| match v {
             "webhook" => Some(CallbackMode::Webhook),
             "relay" => Some(CallbackMode::Relay),

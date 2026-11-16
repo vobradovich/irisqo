@@ -511,7 +511,8 @@ async fn callback_retry_none_is_not_the_default(pool: PgPool) -> anyhow::Result<
             .expect("callback")
     }
     let no_retries = |meta: &serde_json::Value| {
-        meta["retry"] == serde_json::json!({"policy": "fixed", "count": 0, "delay": 0})
+        serde_json::from_value::<irisqo::models::JobRetry>(meta["retry"].clone()).ok()
+            == Some(irisqo::models::JobRetry::NONE)
     };
 
     // the JSON API
