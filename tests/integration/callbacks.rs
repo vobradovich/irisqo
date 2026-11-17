@@ -640,7 +640,7 @@ async fn a_callback_may_carry_the_forward_headers_of_a_chain(pool: PgPool) -> an
         &json,
     )
     .await;
-    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.status(), StatusCode::CREATED);
     let id = common::header(&response, "irisqo-job-id")
         .and_then(|v| v.parse::<i64>().ok())
         .expect("job id");

@@ -3,7 +3,7 @@ use crate::handlers::{
     http::{create_job, job_headers, parse_body},
     job_request::JobRequest,
 };
-use crate::models::{Error, JobCreateRow, ParamError, Problem};
+use crate::models::{Error, JobCreateRow, Problem};
 use crate::{
     features::{Paging, PagingResult},
     models::AppState,
@@ -36,7 +36,8 @@ pub fn routes(state: Arc<AppState>) -> Router {
 
 /// Declares a schedule: created with its first run, or changed (it keeps its id, the waiting run
 /// is cancelled and replaced by one with the new job and rule; a paused schedule is resumed).
-/// `200` with the run that is next (`id`, `schedule_id`, `key`) and the same in the headers.
+/// Returns `201` for a new schedule or `200` for an update, with the next run's identifiers
+/// in the body and headers.
 /// The same as `POST /api/v1/jobs` with the id as `key` and `cron` or `interval`.
 #[utoipa::path(
     put,
@@ -46,7 +47,8 @@ pub fn routes(state: Arc<AppState>) -> Router {
     params(("id" = String, Path, description = "The id of the schedule")),
     request_body = JobRequest,
     responses(
-        (status = 200, description = "The run that is next", body = JobCreateRow),
+        (status = 201, description = "The first run of a new schedule", body = JobCreateRow),
+        (status = 200, description = "The next run of an updated schedule", body = JobCreateRow),
         (status = 400, description = "Invalid fields (RFC 9457 problem with `errors`)", body = Problem, content_type = "application/problem+json"),
     )
 )]
@@ -59,28 +61,23 @@ pub(crate) async fn upsert(
     if request.cron.is_none() && request.interval.is_none() {
         Err(Error::invalid("cron", "cron or interval is required"))?;
     }
+    // the key is the id of the path, and its error is the error of "id"
     request.key = Some(schedule_id.clone());
-    // the key is the id of the path
     let job = request
         .validate(&state.worker_options, Utc::now())
-        .map_err(|errors| {
-            Error::InvalidParams(
-                errors
-                    .into_iter()
-                    .map(|e| match e.parameter.as_ref() {
-                        "key" => ParamError::new("id", e.detail),
-                        _ => e,
-                    })
-                    .collect(),
-            )
+        .map_err(|mut errors| {
+            for e in errors.iter_mut().filter(|e| e.parameter == "key") {
+                e.parameter = "id".into();
+            }
+            Error::InvalidParams(errors)
         })?;
-    let run = create_job(&state, job).await?;
+    let (run, status) = create_job(&state, job).await?;
     let mut headers = job_headers(&run);
     // the schedule is what was declared
     if let Ok(location) = HeaderValue::from_str(&format!("/api/v1/schedules/{schedule_id}")) {
         headers.insert("location", location);
     }
-    Ok((headers, Json(run)))
+    Ok((status, headers, Json(run)))
 }
 
 /// A page of the schedules, by id.

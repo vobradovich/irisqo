@@ -17,7 +17,7 @@ async fn job_without_sink_completes(pool: PgPool) -> anyhow::Result<()> {
         },
         ..JobCreate::default()
     };
-    let created = db::jobqueue::create(&pool, job, &state.instance_id).await?;
+    let (created, _) = db::jobqueue::create(&pool, job, &state.instance_id).await?;
 
     assert_eq!(common::run_enqueued(&state).await, 1);
 

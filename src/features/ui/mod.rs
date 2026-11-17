@@ -212,7 +212,7 @@ async fn create_job_from_form(
         }),
     };
     let (status, form, trigger) = match outcome {
-        Ok(row) => {
+        Ok((row, _)) => {
             let mut fresh = JobForm::default().with_limits(&state.worker_options);
             fresh.created = Some(Created {
                 id: row.id,

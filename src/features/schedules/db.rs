@@ -38,12 +38,12 @@ pub async fn get_all(
 /// first run. An existing one keeps its id and takes the new rule and job: its waiting run is
 /// cancelled, as by a pause, and replaced by a new one (a paused schedule is resumed). A run
 /// that is already running goes on, but does not continue the schedule. A job is never changed:
-/// the new run is a new job.
+/// the new run is a new job. Returns the run and whether the schedule itself is new.
 pub async fn upsert(
     pool: &Pool<Postgres>,
     job: JobCreate,
     instance_id: &str,
-) -> Result<JobCreateRow, Error> {
+) -> Result<(JobCreateRow, bool), Error> {
     // the row is created, or its rule is changed and it stays locked until the commit: two
     // declarations of a schedule follow each other; it gives the run that is waiting
     const SQL_SCHEDULE: &str = "
@@ -52,7 +52,7 @@ pub async fn upsert(
     ON CONFLICT (schedule_id) DO UPDATE
         SET rule = EXCLUDED.rule, tz = EXCLUDED.tz,
             until = EXCLUDED.until, paused = false
-    RETURNING next_id";
+    RETURNING next_id, (xmax = 0) AS created";
     const SQL_RUN: &str = "
     WITH a AS (
         INSERT INTO jobs(meta, headers, body, key, schedule_id) VALUES ($1, $2, $3, $4, $5) RETURNING id
@@ -83,7 +83,7 @@ pub async fn upsert(
     );
 
     let mut tx = pool.begin().await?;
-    let next_id = sqlx::query_scalar::<_, Option<i64>>(SQL_SCHEDULE)
+    let (next_id, created) = sqlx::query_as::<_, (Option<i64>, bool)>(SQL_SCHEDULE)
         .bind(&schedule_id)
         .bind(&rule)
         .bind(tz.name())
@@ -115,11 +115,14 @@ pub async fn upsert(
         .fetch_one(&mut *tx)
         .await?;
     tx.commit().await?;
-    Ok(JobCreateRow {
-        id,
-        schedule_id: Some(schedule_id),
-        key: Some(key),
-    })
+    Ok((
+        JobCreateRow {
+            id,
+            schedule_id: Some(schedule_id),
+            key: Some(key),
+        },
+        created,
+    ))
 }
 
 /// Clones the job as the next run of its schedule.
