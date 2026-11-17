@@ -615,10 +615,7 @@ async fn enqueue_v1_stores_the_retry_policy(pool: PgPool) -> anyhow::Result<()> 
 
     assert_eq!(
         enqueue(json!({"url": url, "retry": {"policy": "fixed", "count": 3}})).await?,
-        Some(JobRetry::Fixed {
-            retry_count: 3,
-            retry_delay: 0
-        })
+        Some(JobRetry::Fixed { count: 3, delay: 0 })
     );
     assert_eq!(
         enqueue(
@@ -627,23 +624,15 @@ async fn enqueue_v1_stores_the_retry_policy(pool: PgPool) -> anyhow::Result<()> 
         )
         .await?,
         Some(JobRetry::Exponential {
-            retry_count: 5,
-            retry_delay: 2,
-            retry_max_delay: Some(60)
+            count: 5,
+            delay: 2,
+            max_delay: Some(60)
         })
     );
     assert_eq!(enqueue(json!({"url": url })).await?, None);
-    // the text of `_retry`; `none` is no retries, said out loud
+    // no retries, said out loud
     assert_eq!(
-        enqueue(json!({"url": url, "retry": "5|exponential|2|60"})).await?,
-        Some(JobRetry::Exponential {
-            retry_count: 5,
-            retry_delay: 2,
-            retry_max_delay: Some(60)
-        })
-    );
-    assert_eq!(
-        enqueue(json!({"url": url, "retry": "none"})).await?,
+        enqueue(json!({"url": url, "retry": {"policy": "fixed", "count": 0}})).await?,
         Some(JobRetry::NONE)
     );
     assert_eq!(
@@ -653,8 +642,8 @@ async fn enqueue_v1_stores_the_retry_policy(pool: PgPool) -> anyhow::Result<()> 
         )
         .await?,
         Some(JobRetry::Fixed {
-            retry_count: 9999,
-            retry_delay: 604_800
+            count: 9999,
+            delay: 604_800
         })
     );
 
@@ -663,17 +652,14 @@ async fn enqueue_v1_stores_the_retry_policy(pool: PgPool) -> anyhow::Result<()> 
             json!({"url": url, "retry": {"policy": "fixd", "count": 3}}),
             "retry.policy must be",
         ),
+        // the text of `_retry` is for the API, not for SQL
         (
-            json!({"url": url, "retry": "fixed"}),
-            "retry must be an object, or text",
+            json!({"url": url, "retry": "5|exponential|2"}),
+            "retry must be an object",
         ),
         (
-            json!({"url": url, "retry": "3|fibonacci"}),
-            "retry.delay must be",
-        ),
-        (
-            json!({"url": url, "retry": "3|fixed|1|2"}),
-            "retry.max_delay is for",
+            json!({"url": url, "callback": {"url": url, "retry": "none"}}),
+            "callback.retry must be an object",
         ),
         (
             json!({"url": url, "retry": {"policy": "fixed", "count": 10000}}),

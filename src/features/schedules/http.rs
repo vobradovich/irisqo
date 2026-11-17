@@ -3,7 +3,7 @@ use crate::handlers::{
     http::{create_job, job_headers, parse_body},
     job_request::JobRequest,
 };
-use crate::models::{Error, JobCreateRow, Problem};
+use crate::models::{Error, JobCreateRow, ParamError, Problem};
 use crate::{
     features::{Paging, PagingResult},
     models::AppState,
@@ -37,6 +37,7 @@ pub fn routes(state: Arc<AppState>) -> Router {
 /// Declares a schedule: created with its first run, or changed (it keeps its id, the waiting run
 /// is cancelled and replaced by one with the new job and rule; a paused schedule is resumed).
 /// `200` with the run that is next (`id`, `schedule_id`, `key`) and the same in the headers.
+/// The same as `POST /api/v1/jobs` with the id as `key` and `cron` or `interval`.
 #[utoipa::path(
     put,
     path = "/api/v1/schedules/{id}",
@@ -54,9 +55,25 @@ pub(crate) async fn upsert(
     Path(schedule_id): Path<String>,
     body: Bytes,
 ) -> Result<impl IntoResponse, Problem> {
-    let job = parse_body::<JobRequest>(&body, "schedule")?
-        .validate_schedule(&schedule_id, &state.worker_options, Utc::now())
-        .map_err(Error::InvalidParams)?;
+    let mut request = parse_body::<JobRequest>(&body, "schedule")?;
+    if request.cron.is_none() && request.interval.is_none() {
+        Err(Error::invalid("cron", "cron or interval is required"))?;
+    }
+    request.key = Some(schedule_id.clone());
+    // the key is the id of the path
+    let job = request
+        .validate(&state.worker_options, Utc::now())
+        .map_err(|errors| {
+            Error::InvalidParams(
+                errors
+                    .into_iter()
+                    .map(|e| match e.parameter.as_ref() {
+                        "key" => ParamError::new("id", e.detail),
+                        _ => e,
+                    })
+                    .collect(),
+            )
+        })?;
     let run = create_job(&state, job).await?;
     let mut headers = job_headers(&run);
     // the schedule is what was declared

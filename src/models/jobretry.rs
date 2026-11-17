@@ -12,49 +12,41 @@ pub enum JobRetry {
     /// The same delay before every retry; no delay retries at once.
     Fixed {
         /// The number of retries before fail job.
-        #[serde(rename = "count")]
-        retry_count: u16,
+        count: u16,
         /// The delay in seconds between retries.
-        #[serde(rename = "delay", default)]
-        retry_delay: u32,
+        #[serde(default)]
+        delay: u32,
     },
     /// `delay` × 1, 1, 2, 3, 5, 8, …
     Fibonacci {
         /// The number of retries before fail job.
-        #[serde(rename = "count")]
-        retry_count: u16,
+        count: u16,
         /// The base delay in seconds between retries.
-        #[serde(rename = "delay")]
-        retry_delay: u32,
+        delay: u32,
         /// The longest delay in seconds; 24 hours when absent.
-        #[serde(rename = "max_delay", skip_serializing_if = "Option::is_none", default)]
-        retry_max_delay: Option<u32>,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        max_delay: Option<u32>,
     },
     /// `delay` × 1, 2, 4, 8, 16, …
     Exponential {
         /// The number of retries before fail job.
-        #[serde(rename = "count")]
-        retry_count: u16,
+        count: u16,
         /// The base delay in seconds between retries.
-        #[serde(rename = "delay")]
-        retry_delay: u32,
+        delay: u32,
         /// The longest delay in seconds; 24 hours when absent.
-        #[serde(rename = "max_delay", skip_serializing_if = "Option::is_none", default)]
-        retry_max_delay: Option<u32>,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        max_delay: Option<u32>,
     },
 }
 
 /// Upper bound for a single retry delay in seconds (24 hours), unless the policy sets it:
-/// `retry_delay` of `Fixed`, `retry_max_delay` of a backoff.
+/// `delay` of `Fixed`, `max_delay` of a backoff.
 pub const MAX_RETRY_DELAY: u32 = 24 * 60 * 60;
 
 impl JobRetry {
     /// No retries, said out loud: where an absent policy means a default (a callback), `none` is
     /// this one.
-    pub const NONE: Self = Self::Fixed {
-        retry_count: 0,
-        retry_delay: 0,
-    };
+    pub const NONE: Self = Self::Fixed { count: 0, delay: 0 };
 
     /// The form of the `_retry` parameter.
     pub const RULE: &str =
@@ -74,23 +66,19 @@ impl JobRetry {
 
     /// `true` when the count is at most [`Self::MAX_COUNT`].
     fn count_fits(self) -> bool {
-        self.retry_count() <= Self::MAX_COUNT
+        self.count() <= Self::MAX_COUNT
     }
 
     /// `true` when the delays are at most [`Self::MAX_DELAY`].
     fn delays_fit(self) -> bool {
         match self {
-            JobRetry::Fixed { retry_delay, .. } => retry_delay <= Self::MAX_DELAY,
+            JobRetry::Fixed { delay, .. } => delay <= Self::MAX_DELAY,
             JobRetry::Fibonacci {
-                retry_delay,
-                retry_max_delay,
-                ..
+                delay, max_delay, ..
             }
             | JobRetry::Exponential {
-                retry_delay,
-                retry_max_delay,
-                ..
-            } => retry_delay.max(retry_max_delay.unwrap_or(0)) <= Self::MAX_DELAY,
+                delay, max_delay, ..
+            } => delay.max(max_delay.unwrap_or(0)) <= Self::MAX_DELAY,
         }
     }
 
@@ -138,25 +126,22 @@ impl JobRetry {
         deserializer.deserialize_option(Policy)
     }
 
-    pub const fn retry_count(self) -> u16 {
+    pub const fn count(self) -> u16 {
         match self {
-            JobRetry::Fixed { retry_count, .. }
-            | JobRetry::Fibonacci { retry_count, .. }
-            | JobRetry::Exponential { retry_count, .. } => retry_count,
+            JobRetry::Fixed { count, .. }
+            | JobRetry::Fibonacci { count, .. }
+            | JobRetry::Exponential { count, .. } => count,
         }
     }
 
-    /// The longest delay in seconds: `retry_max_delay` of a backoff, [`MAX_RETRY_DELAY`] when
+    /// The longest delay in seconds: `max_delay` of a backoff, [`MAX_RETRY_DELAY`] when
     /// it is not set and for `Fixed` (its own delay is not capped).
-    pub fn retry_max_delay(self) -> u32 {
+    pub fn max_delay(self) -> u32 {
         match self {
             JobRetry::Fixed { .. } => MAX_RETRY_DELAY,
-            JobRetry::Fibonacci {
-                retry_max_delay, ..
+            JobRetry::Fibonacci { max_delay, .. } | JobRetry::Exponential { max_delay, .. } => {
+                max_delay.unwrap_or(MAX_RETRY_DELAY)
             }
-            | JobRetry::Exponential {
-                retry_max_delay, ..
-            } => retry_max_delay.unwrap_or(MAX_RETRY_DELAY),
         }
     }
 
@@ -179,30 +164,26 @@ impl JobRetry {
     }
 
     /// Delay in seconds before the retry number `attempt` (0-based), a backoff capped by
-    /// [`Self::retry_max_delay`]; `None` when the retries are exhausted.
+    /// [`Self::max_delay`]; `None` when the retries are exhausted.
     pub fn delay(self, attempt: u16) -> Option<u32> {
-        (attempt < self.retry_count()).then(|| {
-            let (retry_delay, factor) = match self {
-                JobRetry::Fixed { retry_delay, .. } => return retry_delay,
-                JobRetry::Fibonacci { retry_delay, .. } => {
-                    (retry_delay, Self::fibonacci(usize::from(attempt)))
-                }
-                JobRetry::Exponential { retry_delay, .. } => {
-                    (retry_delay, 2u32.saturating_pow(u32::from(attempt)))
+        (attempt < self.count()).then(|| {
+            let (delay, factor) = match self {
+                JobRetry::Fixed { delay, .. } => return delay,
+                JobRetry::Fibonacci { delay, .. } => (delay, Self::fibonacci(usize::from(attempt))),
+                JobRetry::Exponential { delay, .. } => {
+                    (delay, 2u32.saturating_pow(u32::from(attempt)))
                 }
             };
-            retry_delay
-                .saturating_mul(factor)
-                .min(self.retry_max_delay())
+            delay.saturating_mul(factor).min(self.max_delay())
         })
     }
 
     /// [`Self::delay`] spread by ±20 %, so that jobs failed together do not retry
-    /// together; the spread up stops at [`Self::retry_max_delay`], or at the delay when that is
+    /// together; the spread up stops at [`Self::max_delay`], or at the delay when that is
     /// longer (an explicit `fixed` one).
     pub fn jittered_delay(self, attempt: u16) -> Option<u32> {
         let delay = self.delay(attempt)?;
-        Some(with_jitter(delay).min(self.retry_max_delay().max(delay)))
+        Some(with_jitter(delay).min(self.max_delay().max(delay)))
     }
 
     /// Parses `N` (retries at once), `N|fixed|S`, `N|fibonacci|S|M` or `N|exponential|S|M`
@@ -229,28 +210,26 @@ impl JobRetry {
             })
             .transpose()
         };
-        let retry_count: u16 = count
+        let count: u16 = count
             .parse()
             .ok()
             .filter(|&n| n <= Self::MAX_COUNT)
             .ok_or_else(invalid)?;
         match (kind, seconds(delay)?, seconds(max)?) {
-            ("fixed", retry_delay, None) => Ok(Some(JobRetry::Fixed {
-                retry_count,
-                retry_delay: retry_delay.unwrap_or(0),
+            ("fixed", delay, None) => Ok(Some(JobRetry::Fixed {
+                count,
+                delay: delay.unwrap_or(0),
             })),
-            ("fibonacci", Some(retry_delay), retry_max_delay) => Ok(Some(JobRetry::Fibonacci {
-                retry_count,
-                retry_delay,
-                retry_max_delay,
+            ("fibonacci", Some(delay), max_delay) => Ok(Some(JobRetry::Fibonacci {
+                count,
+                delay,
+                max_delay,
             })),
-            ("exponential", Some(retry_delay), retry_max_delay) => {
-                Ok(Some(JobRetry::Exponential {
-                    retry_count,
-                    retry_delay,
-                    retry_max_delay,
-                }))
-            }
+            ("exponential", Some(delay), max_delay) => Ok(Some(JobRetry::Exponential {
+                count,
+                delay,
+                max_delay,
+            })),
             // a typo must not silently become `fixed`
             _ => Err(invalid()),
         }
@@ -270,11 +249,8 @@ fn with_jitter(delay: u32) -> u32 {
 mod tests {
     use super::*;
 
-    const fn fixed(retry_count: u16, retry_delay: u32) -> JobRetry {
-        JobRetry::Fixed {
-            retry_count,
-            retry_delay,
-        }
+    const fn fixed(count: u16, delay: u32) -> JobRetry {
+        JobRetry::Fixed { count, delay }
     }
 
     #[test]
@@ -288,17 +264,17 @@ mod tests {
         assert_eq!(
             parse("3,fibonacci,15"),
             Ok(Some(JobRetry::Fibonacci {
-                retry_count: 3,
-                retry_delay: 15,
-                retry_max_delay: None
+                count: 3,
+                delay: 15,
+                max_delay: None
             }))
         );
         assert_eq!(
             parse("5|exponential|2|60"),
             Ok(Some(JobRetry::Exponential {
-                retry_count: 5,
-                retry_delay: 2,
-                retry_max_delay: Some(60)
+                count: 5,
+                delay: 2,
+                max_delay: Some(60)
             }))
         );
         for s in [
@@ -325,9 +301,9 @@ mod tests {
         assert_eq!(
             read(r#"{"policy":"exponential","count":3,"delay":1,"max_delay":9}"#),
             Some(JobRetry::Exponential {
-                retry_count: 3,
-                retry_delay: 1,
-                retry_max_delay: Some(9)
+                count: 3,
+                delay: 1,
+                max_delay: Some(9)
             })
         );
         // a backoff needs its delay, a policy its kind
@@ -345,9 +321,9 @@ mod tests {
         );
         assert_eq!(
             serde_json::to_string(&JobRetry::Fibonacci {
-                retry_count: 3,
-                retry_delay: 1,
-                retry_max_delay: None
+                count: 3,
+                delay: 1,
+                max_delay: None
             })
             .unwrap(),
             r#"{"policy":"fibonacci","count":3,"delay":1}"#
@@ -368,9 +344,9 @@ mod tests {
         assert_eq!(read(r#"{"retry":"none"}"#), Some(Some(JobRetry::NONE)));
         assert!(read(r#"{"retry":"9999|fixed|604800"}"#).is_some());
         let backoff = Some(Some(JobRetry::Exponential {
-            retry_count: 5,
-            retry_delay: 2,
-            retry_max_delay: None,
+            count: 5,
+            delay: 2,
+            max_delay: None,
         }));
         assert_eq!(read(r#"{"retry":"5|exponential|2"}"#), backoff);
         assert_eq!(
@@ -404,9 +380,9 @@ mod tests {
     #[test]
     fn fibonacci_until_exhausted() {
         let retry = JobRetry::Fibonacci {
-            retry_count: 4,
-            retry_delay: 2,
-            retry_max_delay: None,
+            count: 4,
+            delay: 2,
+            max_delay: None,
         };
         let delays: Vec<_> = (0..5).map(|i| retry.delay(i)).collect();
         assert_eq!(delays, [Some(2), Some(2), Some(4), Some(6), None]);
@@ -415,9 +391,9 @@ mod tests {
     #[test]
     fn exponential_until_exhausted() {
         let retry = JobRetry::Exponential {
-            retry_count: 5,
-            retry_delay: 3,
-            retry_max_delay: None,
+            count: 5,
+            delay: 3,
+            max_delay: None,
         };
         let delays: Vec<_> = (0..6).map(|i| retry.delay(i)).collect();
         assert_eq!(
@@ -430,14 +406,14 @@ mod tests {
     fn max_delay_caps_the_backoff() {
         for retry in [
             JobRetry::Fibonacci {
-                retry_count: 10,
-                retry_delay: 10,
-                retry_max_delay: Some(25),
+                count: 10,
+                delay: 10,
+                max_delay: Some(25),
             },
             JobRetry::Exponential {
-                retry_count: 10,
-                retry_delay: 10,
-                retry_max_delay: Some(25),
+                count: 10,
+                delay: 10,
+                max_delay: Some(25),
             },
         ] {
             assert_eq!(retry.delay(0), Some(10), "{retry:?}");
@@ -445,9 +421,9 @@ mod tests {
         }
         // an explicit max goes past the global cap
         let retry = JobRetry::Exponential {
-            retry_count: 100,
-            retry_delay: 10,
-            retry_max_delay: Some(2 * MAX_RETRY_DELAY),
+            count: 100,
+            delay: 10,
+            max_delay: Some(2 * MAX_RETRY_DELAY),
         };
         assert_eq!(retry.delay(9), Some(5_120));
         assert_eq!(retry.delay(99), Some(2 * MAX_RETRY_DELAY));
@@ -456,21 +432,21 @@ mod tests {
     #[test]
     fn a_backoff_without_a_max_is_capped() {
         let fib = JobRetry::Fibonacci {
-            retry_count: u16::MAX,
-            retry_delay: u32::MAX,
-            retry_max_delay: None,
+            count: u16::MAX,
+            delay: u32::MAX,
+            max_delay: None,
         };
         assert_eq!(fib.delay(40), Some(MAX_RETRY_DELAY));
         let fib = JobRetry::Fibonacci {
-            retry_count: 100,
-            retry_delay: 2_000,
-            retry_max_delay: None,
+            count: 100,
+            delay: 2_000,
+            max_delay: None,
         };
         assert_eq!(fib.delay(31), Some(MAX_RETRY_DELAY));
         let exp = JobRetry::Exponential {
-            retry_count: u16::MAX,
-            retry_delay: 1,
-            retry_max_delay: None,
+            count: u16::MAX,
+            delay: 1,
+            max_delay: None,
         };
         assert_eq!(exp.delay(u16::MAX - 1), Some(MAX_RETRY_DELAY));
         // the delay of `fixed` is explicit
@@ -480,9 +456,9 @@ mod tests {
     #[test]
     fn jitter_stays_within_the_policy() {
         let retry = JobRetry::Exponential {
-            retry_count: 10,
-            retry_delay: 100,
-            retry_max_delay: Some(150),
+            count: 10,
+            delay: 100,
+            max_delay: Some(150),
         };
         for _ in 0..1000 {
             let d = retry.jittered_delay(0).expect("retry");

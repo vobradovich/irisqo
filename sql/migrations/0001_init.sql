@@ -133,23 +133,11 @@ DECLARE
     c_cb_fields CONSTANT text[] := ARRAY['url', 'method', 'mode', 'types', 'headers', 'retry',
                            'timeout', 'flow_key', 'priority'];
     c_retry_fields CONSTANT text[] := ARRAY['policy', 'count', 'delay', 'max_delay'];
-    c_retry_text CONSTANT text := '^([0-9]+)(?:[|,]([a-z]+)(?:[|,]([0-9]+)(?:[|,]([0-9]+))?)?)?$';
     c_flow CONSTANT text := '^[a-z0-9][a-z0-9._:-]{0,127}$';
     c_url CONSTANT text := '^https?://([a-z0-9._~%!$&''()*+,;=:-]+@)?([a-z0-9._-]+|\[[0-9a-f:.]+\])(:[0-9]{1,5})?'
                            '([/?#][]a-z0-9._~%!$&''()*+,;=:@/?#[-]*)?$';
     v_sink     text := CASE WHEN job->>'url' ~* '^noop:' THEN 'noop' ELSE 'http' END;
-    v_retry    jsonb := CASE
-        WHEN jsonb_typeof(job->'retry') IS DISTINCT FROM 'string' THEN nullif(job->'retry', 'null'::jsonb)
-        WHEN job->>'retry' = '' THEN NULL
-        WHEN job->>'retry' = 'none' THEN '{"policy": "fixed", "count": 0}'::jsonb
-        WHEN job->>'retry' !~ c_retry_text THEN job->'retry'
-        ELSE (SELECT jsonb_strip_nulls(jsonb_build_object(
-                  'policy', coalesce(m[2], 'fixed'),
-                  'count', m[1]::numeric,
-                  'delay', m[3]::numeric,
-                  'max_delay', m[4]::numeric))
-              FROM (SELECT regexp_match(job->>'retry', c_retry_text) AS m) t)
-    END;
+    v_retry    jsonb := nullif(job->'retry', 'null'::jsonb);
     v_policy   text := v_retry->>'policy';
     v_flow     text := nullif(job->>'flow_key', '');
     v_key      text := nullif(job->>'key', '');
@@ -165,18 +153,7 @@ DECLARE
     v_cb_url   text := v_cb->>'url';
     v_cb_mode  text := coalesce(v_cb->>'mode', 'webhook');
     v_cb_method text := upper(v_cb->>'method');
-    v_cb_retry jsonb := CASE
-        WHEN jsonb_typeof(v_cb->'retry') IS DISTINCT FROM 'string' THEN nullif(v_cb->'retry', 'null'::jsonb)
-        WHEN v_cb->>'retry' = '' THEN NULL
-        WHEN v_cb->>'retry' = 'none' THEN '{"policy": "fixed", "count": 0}'::jsonb
-        WHEN v_cb->>'retry' !~ c_retry_text THEN v_cb->'retry'
-        ELSE (SELECT jsonb_strip_nulls(jsonb_build_object(
-                  'policy', coalesce(m[2], 'fixed'),
-                  'count', m[1]::numeric,
-                  'delay', m[3]::numeric,
-                  'max_delay', m[4]::numeric))
-              FROM (SELECT regexp_match(v_cb->>'retry', c_retry_text) AS m) t)
-    END;
+    v_cb_retry jsonb := nullif(v_cb->'retry', 'null'::jsonb);
     v_cb_policy text := v_cb_retry->>'policy';
     v_cb_flow  text := nullif(v_cb->>'flow_key', '');
     v_callback jsonb;
@@ -213,7 +190,7 @@ BEGIN
         WHEN job->>'timeout' !~ '^[1-9][0-9]{0,8}$'
             THEN 'timeout must be a positive number of milliseconds'
         WHEN jsonb_typeof(v_retry) <> 'object'
-            THEN 'retry must be an object, or text as none, N, N|fixed|S or N|kind|S|M'
+            THEN 'retry must be an object'
         WHEN v_retry IS NOT NULL AND coalesce(v_policy, '') NOT IN ('fixed', 'fibonacci', 'exponential')
             THEN 'retry.policy must be fixed, fibonacci or exponential'
         WHEN EXISTS (SELECT 1 FROM jsonb_object_keys(v_retry) k WHERE k <> ALL (c_retry_fields))
@@ -280,7 +257,7 @@ BEGIN
         WHEN v_cb->>'timeout' !~ '^[1-9][0-9]{0,8}$'
             THEN 'callback.timeout must be a positive number of milliseconds'
         WHEN jsonb_typeof(v_cb_retry) <> 'object'
-            THEN 'callback.retry must be an object, or text as none, N, N|fixed|S or N|kind|S|M'
+            THEN 'callback.retry must be an object'
         WHEN v_cb_retry IS NOT NULL AND coalesce(v_cb_policy, '') NOT IN ('fixed', 'fibonacci', 'exponential')
             THEN 'callback.retry.policy must be fixed, fibonacci or exponential'
         WHEN EXISTS (SELECT 1 FROM jsonb_object_keys(v_cb_retry) k WHERE k <> ALL (c_retry_fields))

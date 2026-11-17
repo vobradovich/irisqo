@@ -628,7 +628,7 @@ async fn retry_or_fail(
         .jittered_delay(attempt)
         .ok_or(Error::RetriesExceeded)?;
     // never sooner than the Retry-After of the response, up to the longest delay of the policy
-    let delay = delay.max(retry_after.unwrap_or(0).min(job_retry.retry_max_delay()));
+    let delay = delay.max(retry_after.unwrap_or(0).min(job_retry.max_delay()));
     let affected = if delay == 0 {
         debug!({ instance_id, job_id, attempt }, "==> unlock");
         db::jobqueue::unlock(&app_state.pool, entry, instance_id, message).await?

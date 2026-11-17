@@ -229,7 +229,7 @@ method (default POST), headers (object of strings), body (a string as it is, any
 at (RFC 3339 or unix seconds, 1970 to 9999) | delay (seconds), timeout (ms; none: --timeout when the job runs)
 retry (none: no retries) { policy fixed | fibonacci | exponential, count (up to 9999),
       delay (seconds; fixed without it retries at once), max_delay (seconds, backoffs) },
-      delays up to 604800; or the text of _retry: "5|exponential|2|60", "none"
+      delays up to 604800; an object only (the text of _retry is for the API)
 callback (object; see docs/callbacks.md) { url, method, mode, types, headers, retry (as above),
       timeout, flow_key, priority }
 flow_key, priority, key (a repeated key returns the existing job id)
@@ -244,11 +244,8 @@ Only the format is checked, not the target (no DNS, no private-address check). N
   that passes is one the server can read;
 - the fields that are not known are named in the error (`fields that are not known: a, b`), of
   the job and of its callback;
-- a retry policy is the object or its text as `_retry` (`N`, `N|fixed|S`, `N|fibonacci|S|M`,
-  `N|exponential|S|M`), which becomes that object; `none` is no retries said out loud
-  (`{"policy": "fixed", "count": 0}`), where an absent policy means a default (a callback);
-  null, an absent policy and an empty text are none; text that is not a policy stays as it is
-  and is refused by the checks;
+- a retry policy is an object; no retries said out loud is `{"policy": "fixed", "count": 0}`,
+  where an absent (or null) policy means a default (a callback);
 - the policy is stored as it is, so it has no other field and its numbers are JSON numbers; the
   nulls in it are stripped with the rest of the meta;
 - `at` is a usable time, as the API takes it: from 1970 up to 9999-12-31; an RFC 3339 time that

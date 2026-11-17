@@ -23,9 +23,9 @@ const RELAYED: [&str; 3] = ["content-type", "content-encoding", "content-languag
 /// The retry policy of a callback without `callback_retry`: retried hard and for long (about
 /// three days, with jitter), as Standard Webhooks asks. Not the job's.
 pub const DEFAULT_RETRY: JobRetry = JobRetry::Exponential {
-    retry_count: 10,
-    retry_delay: 300,
-    retry_max_delay: Some(86_400),
+    count: 10,
+    delay: 300,
+    max_delay: Some(86_400),
 };
 
 /// The timeout of a callback without `callback_timeout`, in milliseconds.

@@ -107,9 +107,10 @@ GET {{host}}/to/https://postman-echo.com/get?_retry=8|exponential|2|300
 
 In JSON (`POST /api/v1/jobs`, `PUT /api/v1/schedules/{id}`, `enqueue_v1`): `retry` is an object,
 `{"policy": "exponential", "count": 8, "delay": 2, "max_delay": 300}` (`policy`: `fixed`, `fibonacci`,
-`exponential`; `max_delay` for the last two; `count` up to 9999, delays up to 604800 seconds (7 days)),
-or the same text as `_retry`: `"8|exponential|2|300"`. `"none"` is no retries, said out loud: for a
-callback, whose absent policy is a default of its own.
+`exponential`; `max_delay` for the last two; `count` up to 9999, delays up to 604800 seconds (7 days)).
+The API also takes the same text as `_retry`: `"8|exponential|2|300"`, and `"none"`, no retries said
+out loud (`{"policy": "fixed", "count": 0}`): for a callback, whose absent policy is a default of
+its own.
 
 Retried: network errors, timeouts, `408`, `425`, `429` and `5xx`. Any other `4xx` fails the job at once.
 Delays get ±20 % jitter, never come sooner than the response `Retry-After` (seconds or HTTP-date),
