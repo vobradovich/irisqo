@@ -9,9 +9,10 @@ use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
 
 use axum::body::Bytes;
-use chrono::{DateTime, NaiveDateTime, SecondsFormat, TimeZone, Utc, offset::LocalResult};
-use chrono_tz::Tz;
+use chrono::{DateTime, SecondsFormat, Utc};
 use hyper::{Method, Uri};
+use jiff::civil;
+use jiff::tz::{AmbiguousOffset, TimeZone};
 use url::form_urlencoded;
 
 use crate::{
@@ -30,19 +31,23 @@ pub(super) const METHODS: [&str; 5] = ["GET", "POST", "PUT", "PATCH", "DELETE"];
 const DATETIME_FORMATS: [&str; 2] = ["%Y-%m-%dT%H:%M", "%Y-%m-%dT%H:%M:%S"];
 
 /// A time of the form: RFC 3339 as it is, a `datetime-local` value in the zone of the browser.
-fn local_time(zone: Tz, value: &str) -> Result<DateTime<Utc>, &'static str> {
+fn local_time(zone: &TimeZone, value: &str) -> Result<DateTime<Utc>, &'static str> {
     if let Some(at) = JobSchedule::parse_time(value) {
         return Ok(at);
     }
     let local = DATETIME_FORMATS
         .iter()
-        .find_map(|f| NaiveDateTime::parse_from_str(value, f).ok())
+        .find_map(|f| civil::DateTime::strptime(f, value).ok())
         .ok_or("must be a date and time")?;
-    match zone.from_local_datetime(&local) {
-        // a time that exists twice is the first one
-        LocalResult::Single(at) | LocalResult::Ambiguous(at, _) => Ok(at.with_timezone(&Utc)),
-        LocalResult::None => Err("does not exist in your time zone: clocks go forward"),
+    let at = zone.to_ambiguous_timestamp(local);
+    if let AmbiguousOffset::Gap { .. } = at.offset() {
+        return Err("does not exist in your time zone: clocks go forward");
     }
+    // a time that exists twice is the first one
+    at.earlier()
+        .ok()
+        .and_then(|at| DateTime::from_timestamp(at.as_second(), 0))
+        .ok_or("must be a date and time")
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -203,7 +208,7 @@ impl JobForm {
         let mut errors = BTreeMap::new();
         let zone = JobSchedule::zone(self.tz.trim());
         let mut time = |field: &'static str, value: &str| {
-            local_time(zone, value.trim())
+            local_time(&zone, value.trim())
                 .map(|at| at.to_rfc3339_opts(SecondsFormat::Secs, true))
                 .map_err(|detail| errors.insert(field, detail.into()))
                 .ok()
@@ -222,8 +227,8 @@ impl JobForm {
             "interval" => params.push(("_interval", self.interval.trim().to_owned())),
             "cron" => {
                 params.push(("_cron", self.cron.trim().to_owned()));
-                if zone != chrono_tz::Tz::UTC {
-                    params.push(("_tz", zone.name().to_owned()));
+                if zone != TimeZone::UTC {
+                    params.push(("_tz", JobSchedule::zone_name(&zone).to_owned()));
                 }
             }
             _ => {}

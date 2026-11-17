@@ -8,11 +8,11 @@ use crate::models::{
 use axum::body::Bytes;
 use base64::Engine as _;
 use chrono::{DateTime, Utc};
-use chrono_tz::Tz;
 use hyper::{
     Method, Uri,
     header::{HeaderName, HeaderValue},
 };
+use jiff::tz::TimeZone;
 use serde::{Deserialize, Deserializer, de};
 use serde_json::value::RawValue;
 use std::{collections::HashMap, num::NonZeroU32};
@@ -79,8 +79,9 @@ pub struct JobRequest {
     /// Repeats the job every so many seconds.
     pub(crate) interval: Option<u32>,
     /// The IANA zone of `cron` (`Europe/Berlin`), default UTC; only with `cron` or `interval`.
+    #[serde(default, deserialize_with = "zone")]
     #[schema(value_type = Option<String>)]
-    pub(crate) tz: Option<Tz>,
+    pub(crate) tz: Option<TimeZone>,
     /// When the schedule ends, as `at`: no run after it.
     #[serde(default, deserialize_with = "at")]
     #[schema(schema_with = at_schema)]
@@ -113,6 +114,14 @@ fn at_schema() -> utoipa::openapi::Schema {
         .format(Some(SchemaFormat::KnownFormat(KnownFormat::Int64)))
         .examples([1_893_456_000]);
     utoipa::openapi::Schema::OneOf(OneOfBuilder::new().item(time).item(seconds).build())
+}
+
+/// `tz`: an IANA zone name (`Europe/Berlin`). A fixed offset is not one: it does not follow
+/// the clock changes of a place.
+fn zone<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<TimeZone>, D::Error> {
+    Option::<String>::deserialize(deserializer)?
+        .map(|name| TimeZone::get(&name).map_err(|_| de::Error::custom(TZ_RULE)))
+        .transpose()
 }
 
 /// `at`: an RFC 3339 time (a string) or unix seconds (a number).
@@ -192,7 +201,7 @@ impl JobRequest {
                 .map(str::to_owned),
             cron: p.raw("cron").map(str::to_owned),
             interval: p.parse("interval", INTERVAL_RULE, |v| v.parse().ok()),
-            tz: p.parse("tz", TZ_RULE, |v| v.parse().ok()),
+            tz: p.parse("tz", TZ_RULE, |v| TimeZone::get(v).ok()),
             until: p.parse("until", TIME_RULE, JobSchedule::parse_time),
             ..self
         };
@@ -337,7 +346,7 @@ impl JobRequest {
         };
         Some(JobSchedule {
             rule: rule?,
-            tz: self.tz.unwrap_or_default(),
+            tz: self.tz.take().unwrap_or(TimeZone::UTC),
             until: self.until,
         })
     }
@@ -575,7 +584,10 @@ mod tests {
         )?)
         .expect("a schedule");
         assert_eq!(job.key.as_deref(), Some("nightly"));
-        assert_eq!(job.schedule.map(|s| s.tz), Some(chrono_tz::Europe::Berlin));
+        assert_eq!(
+            job.schedule.map(|s| s.tz),
+            Some(TimeZone::get("Europe/Berlin").unwrap())
+        );
         for (meta, parameter) in [
             (r#"{"url":"noop://x","interval":0}"#, "interval"),
             (
@@ -718,7 +730,7 @@ mod tests {
             job.schedule,
             Some(JobSchedule {
                 rule: ScheduleRule::Interval(300),
-                tz: Tz::UTC,
+                tz: TimeZone::UTC,
                 until: None
             })
         );
@@ -765,9 +777,12 @@ mod tests {
             r#"{{{META},"cron":"0 9 * * *","tz":"Europe/Berlin"}}"#
         ))
         .expect("valid schedule");
-        assert_eq!(job.schedule.map(|s| s.tz), Some(chrono_tz::Europe::Berlin));
+        assert_eq!(
+            job.schedule.map(|s| s.tz),
+            Some(TimeZone::get("Europe/Berlin").unwrap())
+        );
         let job = declare(&format!(r#"{{{META},"cron":"0 9 * * *"}}"#)).expect("valid schedule");
-        assert_eq!(job.schedule.map(|s| s.tz), Some(Tz::UTC));
+        assert_eq!(job.schedule.map(|s| s.tz), Some(TimeZone::UTC));
     }
 
     #[test]

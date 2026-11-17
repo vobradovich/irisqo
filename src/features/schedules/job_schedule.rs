@@ -1,9 +1,9 @@
 use std::{fmt::Display, str::FromStr};
 
 use crate::models::ParamError;
-use chrono::{DateTime, Datelike, DurationRound, TimeDelta, TimeZone, Utc};
-use chrono_tz::Tz;
-use cron::{Schedule, TimeUnitSpec};
+use chrono::{DateTime, Datelike, DurationRound, TimeDelta, Utc};
+use croner::Cron;
+use jiff::{Timestamp, tz::TimeZone};
 
 /// When a job repeats: the fields of the `schedules` table (`rule`, `tz`, `until`).
 #[derive(Debug, Clone, PartialEq)]
@@ -11,7 +11,7 @@ pub struct JobSchedule {
     pub rule: ScheduleRule,
     /// The zone of a cron rule: `0 9 * * *` is 9:00 there, whatever its offset is on that day.
     /// An interval ignores it.
-    pub tz: Tz,
+    pub tz: TimeZone,
     /// When the schedule ends: no run after it, the run at `until` is the last one.
     pub until: Option<DateTime<Utc>>,
 }
@@ -26,8 +26,14 @@ pub enum ScheduleRule {
 
 impl JobSchedule {
     /// The zone of a stored name; UTC for one that does not parse (it was written by hand).
-    pub fn zone(name: &str) -> Tz {
-        name.parse().unwrap_or_default()
+    pub fn zone(name: &str) -> TimeZone {
+        TimeZone::get(name).unwrap_or(TimeZone::UTC)
+    }
+
+    /// The name of a zone as it is stored: the zones of schedules come from [`Self::zone`] or
+    /// a request, by name, so they have one.
+    pub fn zone_name(tz: &TimeZone) -> &str {
+        tz.iana_name().unwrap_or("UTC")
     }
 
     /// A stored schedule: its `rule` text and its `tz` and `until` columns.
@@ -96,26 +102,20 @@ impl JobSchedule {
                     .ok()?
                     .checked_add_signed(interval)?
             }
+            // The clock of the zone, as cron follows it: a fixed time that exists twice runs
+            // at the first one, one that does not exist runs when the clock jumps over it;
+            // a frequent rule runs at the times the clock shows.
             ScheduleRule::Cron(cron) => {
-                let schedule = Schedule::from_str(cron).ok()?;
-                // A time of day (fixed hour and minute) that exists twice runs once, at its
-                // first offset. A frequent rule (any hour or any minute) runs at both,
-                // so the clock change does not leave a gap in real time.
-                let once = !schedule.hours().is_all() && !schedule.minutes().is_all();
-                schedule
-                    .after(&after.with_timezone(&self.tz))
-                    // the iterator yields both offsets, and the first may already be past
-                    .find(|at| {
-                        at.with_timezone(&Utc) > after
-                            && (!once
-                                || self
-                                    .tz
-                                    .from_local_datetime(&at.naive_local())
-                                    .earliest()
-                                    .as_ref()
-                                    == Some(at))
-                    })?
-                    .with_timezone(&Utc)
+                let after =
+                    Timestamp::new(after.timestamp(), after.timestamp_subsec_nanos() as i32)
+                        .ok()?
+                        .to_zoned(self.tz.clone());
+                let next = Cron::from_str(cron)
+                    .ok()?
+                    .find_next_occurrence(&after, false)
+                    .ok()?
+                    .timestamp();
+                DateTime::from_timestamp(next.as_second(), next.subsec_nanosecond() as u32)?
             }
         };
         (Self::in_range(next) && self.until.is_none_or(|u| next <= u)).then_some(next)
@@ -153,20 +153,20 @@ impl FromStr for ScheduleRule {
                 interval => Ok(ScheduleRule::Interval(interval)),
             };
         }
-        let mut parts: Vec<&str> = s.split(['|', ' ']).filter(|p| !p.is_empty()).collect();
-        match parts.len() {
-            5 => parts.insert(0, "0"),
-            6 | 7 => {}
-            n => {
-                return Err(ParamError::new(
-                    "cron",
-                    format!("needs 5 or 6 fields, got {n}: e.g. */15 * * * *"),
-                ));
-            }
+        let parts: Vec<&str> = s.split(['|', ' ']).filter(|p| !p.is_empty()).collect();
+        if !matches!(parts.len(), 5 | 6) {
+            return Err(ParamError::new(
+                "cron",
+                format!(
+                    "needs 5 or 6 fields, got {}: e.g. */15 * * * *",
+                    parts.len()
+                ),
+            ));
         }
-        let schedule = Schedule::from_str(&parts.join(" "))
+        let cron = parts.join(" ");
+        Cron::from_str(&cron)
             .map_err(|_| ParamError::new("cron", "is not a valid cron expression"))?;
-        Ok(ScheduleRule::Cron(schedule.to_string()))
+        Ok(ScheduleRule::Cron(cron))
     }
 }
 
@@ -182,6 +182,7 @@ impl Display for ScheduleRule {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone as _;
 
     fn at(secs: i64) -> DateTime<Utc> {
         DateTime::from_timestamp(secs, 0).expect("in range")
@@ -190,9 +191,26 @@ mod tests {
     fn utc(rule: ScheduleRule) -> JobSchedule {
         JobSchedule {
             rule,
-            tz: Tz::UTC,
+            tz: TimeZone::UTC,
             until: None,
         }
+    }
+
+    fn zone(name: &str) -> TimeZone {
+        TimeZone::get(name).expect("a known zone")
+    }
+
+    /// The first `n` runs after `from` of `rule` in `tz`.
+    fn runs(rule: &str, tz: &str, from: DateTime<Utc>, n: usize) -> Vec<DateTime<Utc>> {
+        let schedule = JobSchedule::from_row(rule, tz, None).expect("a rule");
+        std::iter::successors(Some(from), |t| schedule.next(*t))
+            .skip(1)
+            .take(n)
+            .collect()
+    }
+
+    fn utc_time(y: i32, m: u32, d: u32, h: u32, min: u32) -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(y, m, d, h, min, 0).unwrap()
     }
 
     #[test]
@@ -211,8 +229,23 @@ mod tests {
     #[test]
     fn a_rule_from_cron() {
         let rule: ScheduleRule = "*/5 * * * *".parse().unwrap();
-        assert_eq!(rule, ScheduleRule::Cron("0 */5 * * * *".into()));
-        assert_eq!(rule.to_string(), "0 */5 * * * *");
+        assert_eq!(rule, ScheduleRule::Cron("*/5 * * * *".into()));
+        assert_eq!(rule.to_string(), "*/5 * * * *");
+        // fields separated by `|` (a query string) are stored separated by spaces
+        assert_eq!(
+            "0|0|9|*|*|*".parse::<ScheduleRule>().unwrap().to_string(),
+            "0 0 9 * * *"
+        );
+    }
+
+    #[test]
+    fn a_cron_rule_has_5_or_6_fields() {
+        for rule in ["* * * *", "0 0 9 * * * 2030"] {
+            let err = rule.parse::<ScheduleRule>().expect_err(rule);
+            assert_eq!(err.parameter, "cron", "{rule}");
+            assert!(err.detail.starts_with("needs 5 or 6 fields"), "{rule}");
+        }
+        assert!("61 * * * *".parse::<ScheduleRule>().is_err());
     }
 
     #[test]
@@ -263,19 +296,19 @@ mod tests {
         let at = |y, m, d, h| Utc.with_ymd_and_hms(y, m, d, h, 0, 0).unwrap();
         let nine = |tz| JobSchedule {
             tz,
-            ..utc(ScheduleRule::Cron("0 0 9 * * *".into()))
+            ..utc(ScheduleRule::Cron("0 9 * * *".into()))
         };
         assert_eq!(
-            nine(Tz::UTC).next(at(2025, 1, 1, 0)),
+            nine(TimeZone::UTC).next(at(2025, 1, 1, 0)),
             Some(at(2025, 1, 1, 9))
         );
         // Moscow is UTC+3 all year
         assert_eq!(
-            nine(chrono_tz::Europe::Moscow).next(at(2025, 1, 1, 0)),
+            nine(zone("Europe/Moscow")).next(at(2025, 1, 1, 0)),
             Some(at(2025, 1, 1, 6))
         );
         // New York: 9:00 is 14:00 UTC in winter and 13:00 UTC in summer
-        let new_york = nine(chrono_tz::America::New_York);
+        let new_york = nine(zone("America/New_York"));
         assert_eq!(new_york.next(at(2025, 1, 1, 0)), Some(at(2025, 1, 1, 14)));
         assert_eq!(new_york.next(at(2025, 7, 1, 0)), Some(at(2025, 7, 1, 13)));
         // an interval ignores the zone
@@ -284,20 +317,35 @@ mod tests {
             ..utc(ScheduleRule::Interval(3600))
         };
         assert_eq!(
-            hourly(chrono_tz::America::New_York).next(at(2025, 1, 1, 0)),
-            hourly(Tz::UTC).next(at(2025, 1, 1, 0))
+            hourly(zone("America/New_York")).next(at(2025, 1, 1, 0)),
+            hourly(TimeZone::UTC).next(at(2025, 1, 1, 0))
         );
+    }
+
+    #[test]
+    fn days_of_the_week_are_0_to_7_from_sunday() {
+        // 2025-01-01 is a Wednesday
+        let from = utc_time(2025, 1, 1, 0, 0);
+        let sunday = Some(utc_time(2025, 1, 5, 9, 0));
+        let monday = Some(utc_time(2025, 1, 6, 9, 0));
+        let next = |dow: &str| utc(format!("0 9 * * {dow}").parse().unwrap()).next(from);
+        assert_eq!(next("0"), sunday);
+        assert_eq!(next("7"), sunday);
+        assert_eq!(next("SUN"), sunday);
+        assert_eq!(next("1"), monday);
+        assert_eq!(next("MON"), monday);
+        assert_eq!(next("1-5"), Some(utc_time(2025, 1, 1, 9, 0)));
     }
 
     #[test]
     fn a_stored_schedule_has_its_zone_and_its_end() {
         let end = Some(at(4_102_444_800));
-        let cron = JobSchedule::from_row("0 0 9 * * *", "Asia/Tokyo", end).expect("cron");
-        assert_eq!(cron.tz, chrono_tz::Asia::Tokyo);
+        let cron = JobSchedule::from_row("0 9 * * *", "Asia/Tokyo", end).expect("cron");
+        assert_eq!(cron.tz, zone("Asia/Tokyo"));
         assert_eq!(cron.until, end);
         assert_eq!(
             cron.rule.to_string(),
-            "0 0 9 * * *",
+            "0 9 * * *",
             "the zone and the end are not part of the text"
         );
         assert_eq!(
@@ -306,54 +354,81 @@ mod tests {
         );
         // a zone written by hand that does not exist: UTC
         assert_eq!(
-            JobSchedule::from_row("0 0 9 * * *", "Mars/Base", None)
+            JobSchedule::from_row("0 9 * * *", "Mars/Base", None)
                 .expect("cron")
                 .tz,
-            Tz::UTC
+            TimeZone::UTC
         );
     }
 
     #[test]
     fn cron_next_stays_in_the_future_when_clocks_go_back() {
         // 02:15 in Berlin's second occurrence of the repeated hour.
-        let after = Utc.with_ymd_and_hms(2025, 10, 26, 1, 15, 0).unwrap();
+        let after = utc_time(2025, 10, 26, 1, 15);
         for (rule, expected) in [
-            ("0 30 2 * * *", "2025-10-27T01:30:00Z"),
+            ("30 2 * * *", "2025-10-27T01:30:00Z"),
             // a frequent rule has no gap: it runs in the repeated hour again
-            ("0 * * * * *", "2025-10-26T01:16:00Z"),
-            ("0 0 * * * *", "2025-10-26T02:00:00Z"),
+            ("* * * * *", "2025-10-26T01:16:00Z"),
+            ("0 * * * *", "2025-10-26T02:00:00Z"),
         ] {
-            let schedule = JobSchedule::from_row(rule, "Europe/Berlin", None).unwrap();
             assert_eq!(
-                schedule.next(after),
-                JobSchedule::parse_time(expected),
+                runs(rule, "Europe/Berlin", after, 1),
+                [JobSchedule::parse_time(expected).unwrap()],
                 "{rule}"
             );
         }
     }
 
     #[test]
-    fn a_time_that_does_not_exist_is_skipped_and_one_that_exists_twice_runs_once() {
-        let utc_time = |y, m, d, h, min| Utc.with_ymd_and_hms(y, m, d, h, min, 0).unwrap();
-        let runs = |from: DateTime<Utc>, n: usize| {
-            let schedule = JobSchedule {
-                tz: chrono_tz::Europe::Berlin,
-                ..utc(ScheduleRule::Cron("0 30 2 * * *".into()))
-            };
-            std::iter::successors(Some(from), |t| schedule.next(*t))
-                .skip(1)
-                .take(n)
-                .collect::<Vec<_>>()
-        };
-        // 2025-03-30: 2:00 -> 3:00, there is no 2:30, the run of that day is skipped
+    fn a_fixed_time_runs_once_when_clocks_change() {
+        // 2025-03-30: 2:00 -> 3:00, there is no 2:30, the run of that day is at 3:00
         assert_eq!(
-            runs(utc_time(2025, 3, 29, 12, 0), 2),
-            [utc_time(2025, 3, 31, 0, 30), utc_time(2025, 4, 1, 0, 30)]
+            runs(
+                "30 2 * * *",
+                "Europe/Berlin",
+                utc_time(2025, 3, 29, 12, 0),
+                2
+            ),
+            [utc_time(2025, 3, 30, 1, 0), utc_time(2025, 3, 31, 0, 30)]
         );
         // 2025-10-26: 3:00 -> 2:00, 2:30 is there twice, the run is the first one
         assert_eq!(
-            runs(utc_time(2025, 10, 25, 12, 0), 2),
+            runs(
+                "30 2 * * *",
+                "Europe/Berlin",
+                utc_time(2025, 10, 25, 12, 0),
+                2
+            ),
             [utc_time(2025, 10, 26, 0, 30), utc_time(2025, 10, 27, 1, 30)]
+        );
+    }
+
+    #[test]
+    fn a_frequent_rule_follows_the_clock_when_it_changes() {
+        // 2025-03-30: the hour from 2:00 is not there, nor are its runs
+        assert_eq!(
+            runs(
+                "*/30 2 * * *",
+                "Europe/Berlin",
+                utc_time(2025, 3, 29, 12, 0),
+                2
+            ),
+            [utc_time(2025, 3, 31, 0, 0), utc_time(2025, 3, 31, 0, 30)]
+        );
+        // 2025-10-26: the hour from 2:00 is there twice, and so are its runs
+        assert_eq!(
+            runs(
+                "*/30 2 * * *",
+                "Europe/Berlin",
+                utc_time(2025, 10, 25, 12, 0),
+                4
+            ),
+            [
+                utc_time(2025, 10, 26, 0, 0),
+                utc_time(2025, 10, 26, 0, 30),
+                utc_time(2025, 10, 26, 1, 0),
+                utc_time(2025, 10, 26, 1, 30)
+            ]
         );
     }
 }

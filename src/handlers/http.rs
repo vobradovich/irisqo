@@ -379,9 +379,9 @@ mod tests {
         let zone = |query| prepare_query(query).expect("valid").schedule.map(|s| s.tz);
         assert_eq!(
             zone("_cron=0+9+*+*+*&_tz=Europe/Berlin"),
-            Some(chrono_tz::Europe::Berlin)
+            Some(jiff::tz::TimeZone::get("Europe/Berlin").unwrap())
         );
-        assert_eq!(zone("_cron=0+9+*+*+*"), Some(chrono_tz::Tz::UTC));
+        assert_eq!(zone("_cron=0+9+*+*+*"), Some(jiff::tz::TimeZone::UTC));
         let errors = prepare_query("_cron=0+9+*+*+*&_tz=Mars/Base").expect_err("no such zone");
         assert_eq!(errors.len(), 1);
         assert_eq!(errors[0].parameter, "tz");
