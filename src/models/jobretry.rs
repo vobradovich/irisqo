@@ -1,10 +1,13 @@
 use super::Error;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de};
+use std::fmt;
 
 /// The retry policy of a job; a job without one (`Option::None`) is not retried.
-/// In JSON an object: `{"policy": "exponential", "count": 5, "delay": 2, "max_delay": 300}`.
+/// In JSON an object, `{"policy": "exponential", "count": 5, "delay": 2, "max_delay": 300}`, or
+/// the text of `_retry` (see [`JobRetry::deserialize_optional`]). Fields that are not known are
+/// ignored: a stored policy stays readable by a version that does not know them.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
-#[serde(tag = "policy", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(tag = "policy", rename_all = "snake_case")]
 pub enum JobRetry {
     /// The same delay before every retry; no delay retries at once.
     Fixed {
@@ -55,7 +58,72 @@ impl JobRetry {
 
     /// The form of the `_retry` parameter.
     pub const RULE: &str =
-        "must be N, N|fixed|S, N|fibonacci|S|M or N|exponential|S|M (M optional)";
+        "must be none, N, N|fixed|S, N|fibonacci|S|M or N|exponential|S|M (M optional)";
+
+    /// The longest `delay` and `max_delay`, as `enqueue_v1` takes them: an `int` of Postgres.
+    pub const MAX_DELAY: u32 = i32::MAX as u32;
+
+    /// What is wrong with a delay above [`Self::MAX_DELAY`].
+    const DELAY_RULE: &str = "delay and max_delay must be at most 2147483647 seconds";
+
+    /// `true` when the delays are at most [`Self::MAX_DELAY`].
+    fn delays_fit(self) -> bool {
+        match self {
+            JobRetry::Fixed { retry_delay, .. } => retry_delay <= Self::MAX_DELAY,
+            JobRetry::Fibonacci {
+                retry_delay,
+                retry_max_delay,
+                ..
+            }
+            | JobRetry::Exponential {
+                retry_delay,
+                retry_max_delay,
+                ..
+            } => retry_delay.max(retry_max_delay.unwrap_or(0)) <= Self::MAX_DELAY,
+        }
+    }
+
+    /// For `deserialize_with`: a policy of a request, the object or the text of `_retry`
+    /// (`"5|exponential|2"`). Absent, `null` and `""` are no policy (the default of the place);
+    /// `"none"` is [`Self::NONE`]. Delays above [`Self::MAX_DELAY`] are refused.
+    pub fn deserialize_optional<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<Self>, D::Error> {
+        struct Policy;
+        impl<'de> de::Visitor<'de> for Policy {
+            type Value = Option<JobRetry>;
+
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                f.write_str("a retry policy: an object, or text as N|exponential|S|M")
+            }
+
+            fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
+                Ok(None)
+            }
+
+            fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+                Ok(None)
+            }
+
+            fn visit_some<D: Deserializer<'de>>(self, d: D) -> Result<Self::Value, D::Error> {
+                d.deserialize_any(self)
+            }
+
+            fn visit_str<E: de::Error>(self, text: &str) -> Result<Self::Value, E> {
+                JobRetry::parse(text).map_err(|_| E::custom(JobRetry::RULE))
+            }
+
+            fn visit_map<A: de::MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
+                let retry = JobRetry::deserialize(de::value::MapAccessDeserializer::new(map))?;
+                if retry.delays_fit() {
+                    Ok(Some(retry))
+                } else {
+                    Err(de::Error::custom(JobRetry::DELAY_RULE))
+                }
+            }
+        }
+        deserializer.deserialize_option(Policy)
+    }
 
     pub const fn retry_count(self) -> u16 {
         match self {
@@ -125,12 +193,14 @@ impl JobRetry {
     }
 
     /// Parses `N` (retries at once), `N|fixed|S`, `N|fibonacci|S|M` or `N|exponential|S|M`
-    /// (`M`, the longest delay, is optional); empty or `none` means no retries.
+    /// (`M`, the longest delay, is optional). Empty is no policy (the default of the place);
+    /// `none` is [`Self::NONE`]: no retries, said out loud.
     pub fn parse(s: &str) -> Result<Option<Self>, Error> {
         let invalid = || Error::invalid("retry", Self::RULE);
         let parts: Vec<&str> = s.split(['|', ',']).collect();
         let (count, kind, delay, max) = match parts.as_slice() {
-            [""] | ["none"] => return Ok(None),
+            [""] => return Ok(None),
+            ["none"] => return Ok(Some(Self::NONE)),
             [count] => (*count, "fixed", None, None),
             [count, kind] => (*count, *kind, None, None),
             [count, kind, delay] => (*count, *kind, Some(*delay), None),
@@ -138,8 +208,13 @@ impl JobRetry {
             _ => return Err(invalid()),
         };
         let seconds = |part: Option<&str>| {
-            part.map(|p| p.parse::<u32>().map_err(|_| invalid()))
-                .transpose()
+            part.map(|p| {
+                p.parse::<u32>()
+                    .ok()
+                    .filter(|&s| s <= Self::MAX_DELAY)
+                    .ok_or_else(invalid)
+            })
+            .transpose()
         };
         let retry_count: u16 = count.parse().map_err(|_| invalid())?;
         match (kind, seconds(delay)?, seconds(max)?) {
@@ -189,6 +264,7 @@ mod tests {
     fn parse() {
         let parse = |s| JobRetry::parse(s).map_err(|e| e.to_string());
         assert_eq!(parse(""), Ok(None));
+        assert_eq!(parse("none"), Ok(Some(JobRetry::NONE)));
         assert_eq!(parse("3"), Ok(Some(fixed(3, 0))));
         assert_eq!(parse("3|fixed"), Ok(Some(fixed(3, 0))));
         assert_eq!(parse("3|fixed|15"), Ok(Some(fixed(3, 15))));
@@ -217,6 +293,8 @@ mod tests {
             "3|exponential|x",
             "3|exponential|2|x",
             "3|exponential|2|60|1",
+            "3|fixed|2147483648",
+            "65536",
             "-1",
         ] {
             assert!(parse(s).is_err(), "{s}");
@@ -235,15 +313,19 @@ mod tests {
                 retry_max_delay: Some(9)
             })
         );
-        // a backoff needs its delay, a policy its kind, `fixed` has no max
+        // a backoff needs its delay, a policy its kind
         for s in [
             r#"{"policy":"fibonacci","count":3}"#,
             r#"{"count":3}"#,
             r#"{"policy":"fixd","count":3}"#,
-            r#"{"policy":"fixed","count":3,"max_delay":9}"#,
         ] {
             assert_eq!(read(s), None, "{s}");
         }
+        // a field it does not know (a newer version wrote it) is ignored
+        assert_eq!(
+            read(r#"{"policy":"fixed","count":3,"jitter":true}"#),
+            Some(fixed(3, 0))
+        );
         assert_eq!(
             serde_json::to_string(&JobRetry::Fibonacci {
                 retry_count: 3,
@@ -253,6 +335,38 @@ mod tests {
             .unwrap(),
             r#"{"policy":"fibonacci","count":3,"delay":1}"#
         );
+    }
+
+    #[test]
+    fn a_request_has_the_object_or_the_text() {
+        #[derive(Deserialize)]
+        struct Request {
+            #[serde(default, deserialize_with = "JobRetry::deserialize_optional")]
+            retry: Option<JobRetry>,
+        }
+        let read = |s: &str| serde_json::from_str::<Request>(s).map(|r| r.retry).ok();
+        for s in [r#"{}"#, r#"{"retry":null}"#, r#"{"retry":""}"#] {
+            assert_eq!(read(s), Some(None), "{s}");
+        }
+        assert_eq!(read(r#"{"retry":"none"}"#), Some(Some(JobRetry::NONE)));
+        let backoff = Some(Some(JobRetry::Exponential {
+            retry_count: 5,
+            retry_delay: 2,
+            retry_max_delay: None,
+        }));
+        assert_eq!(read(r#"{"retry":"5|exponential|2"}"#), backoff);
+        assert_eq!(
+            read(r#"{"retry":{"policy":"exponential","count":5,"delay":2}}"#),
+            backoff
+        );
+        for s in [
+            r#"{"retry":"5|exponential"}"#,
+            r#"{"retry":5}"#,
+            r#"{"retry":{"policy":"fixed","count":1,"delay":2147483648}}"#,
+            r#"{"retry":{"policy":"fixed","count":65536}}"#,
+        ] {
+            assert_eq!(read(s), None, "{s}");
+        }
     }
 
     #[test]

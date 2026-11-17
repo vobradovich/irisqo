@@ -374,16 +374,13 @@ const FIELDS: [&str; 11] = [
     "priority",
 ];
 
-/// The form field of a `/to/` parameter: its name without the `_`, but for the ones that the
-/// form splits or moves; `url` for one that the form has no place for (`method`, `body`).
-fn field_of(param: &str) -> &'static str {
-    match param {
-        "_retry" => "retry_count",
-        "_tz" => "cron",
-        param => {
-            let field = param.strip_prefix('_').unwrap_or(param);
-            FIELDS.into_iter().find(|f| *f == field).unwrap_or("url")
-        }
+/// The form field of a job field: the field itself, but for the ones that the form splits or
+/// moves; `url` for one that the form has no place for (`method`, `body`).
+fn field_of(field: &str) -> &'static str {
+    match field {
+        "retry" => "retry_count",
+        "tz" => "cron",
+        field => FIELDS.into_iter().find(|f| *f == field).unwrap_or("url"),
     }
 }
 

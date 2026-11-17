@@ -2,7 +2,7 @@ pub use apitokens::ApiTokens;
 pub use environment::Environment;
 pub use error::{Error, INVALID_PARAMS_TYPE, MILLISECONDS_RULE, PRIORITY_RULE, ParamError, Params};
 
-pub use callback::{CallbackMode, CallbackType, JobCallback, deserialize_method, parse_method};
+pub use callback::{CallbackMode, CallbackType, JobCallback};
 pub use job::FlowKey;
 pub use job::HttpMeta;
 pub use job::JobCreate;
@@ -12,6 +12,7 @@ pub use job::JobMeta;
 pub use job::JobRow;
 pub use job::JobSink;
 pub use job::JobWithAttempt;
+pub use job::parse_method;
 pub use jobretry::JobRetry;
 pub use problem::Problem;
 pub use signing::SigningKeys;

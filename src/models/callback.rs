@@ -3,7 +3,9 @@ use std::{collections::HashMap, num::NonZeroU32};
 use hyper::{Method, Uri};
 use serde::{Deserialize, Serialize};
 
-use super::{FlowKey, JobRetry, MILLISECONDS_RULE, PRIORITY_RULE, ParamError, Params};
+use super::{
+    FlowKey, JobRetry, MILLISECONDS_RULE, PRIORITY_RULE, ParamError, Params, job::parse_method,
+};
 
 /// The format of a callback: what it sends and how.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, utoipa::ToSchema)]
@@ -88,8 +90,12 @@ pub struct JobCallback {
     /// Kept as the headers of a job: the API shows the values of the open ones only.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub headers: Option<HashMap<String, String>>,
-    /// The default of a callback when absent (see `features::callbacks`).
-    #[serde(skip_serializing_if = "Option::is_none", default)]
+    /// The default of a callback when absent (see `features::callbacks`); `"none"` is no retries.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        default,
+        deserialize_with = "JobRetry::deserialize_optional"
+    )]
     pub retry: Option<JobRetry>,
     /// Milliseconds; the default of a callback when absent.
     #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -106,18 +112,15 @@ pub struct JobCallback {
     pub priority: Option<i32>,
 }
 
-/// An HTTP method in upper case: `post` is `POST`, not a method of its own.
-pub fn parse_method(method: &str) -> Option<Method> {
-    Method::from_bytes(method.to_ascii_uppercase().as_bytes()).ok()
-}
-
-/// An optional HTTP method in upper case, as [`parse_method`].
-pub fn deserialize_method<'de, D: serde::Deserializer<'de>>(
+/// The method of a callback in upper case, as [`parse_method`]; the error names the field.
+fn deserialize_method<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Option<Method>, D::Error> {
     Option::<String>::deserialize(deserializer)?
         .map(|method| {
-            parse_method(&method).ok_or_else(|| serde::de::Error::custom("invalid HTTP method"))
+            parse_method(&method).ok_or_else(|| {
+                serde::de::Error::custom("callback.method: is not a valid HTTP method")
+            })
         })
         .transpose()
 }
@@ -166,9 +169,9 @@ impl JobCallback {
                 .collect()
         });
         // `none` is a policy of its own: no retries, not the default of a callback
-        let retry = p.parse("retry", JobRetry::RULE, |v| {
-            JobRetry::parse(v).ok().map(|r| r.unwrap_or(JobRetry::NONE))
-        });
+        let retry = p
+            .parse("retry", JobRetry::RULE, |v| JobRetry::parse(v).ok())
+            .flatten();
         let timeout = p.parse("timeout", MILLISECONDS_RULE, |v| v.parse().ok());
         let flow_key = p
             .parse("flow_key", FlowKey::RULE, |v| {

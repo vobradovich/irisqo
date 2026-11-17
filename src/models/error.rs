@@ -1,4 +1,7 @@
-use std::{borrow::Cow, collections::HashMap};
+use std::{
+    borrow::Cow,
+    collections::{HashMap, HashSet},
+};
 
 use axum::http::StatusCode;
 use tokio::time::error::Elapsed;
@@ -14,7 +17,7 @@ pub const INVALID_PARAMS_TYPE: &str =
 /// at once (RFC 9457 `errors` extension), the UI form shows each one next to its field.
 #[derive(Debug, serde::Serialize, utoipa::ToSchema)]
 pub struct ParamError {
-    /// The query parameter (`_delay`) or `url`.
+    /// The field, as JSON names it (`delay`, `callback.url`), however the job came.
     #[schema(value_type = String)]
     pub parameter: Cow<'static, str>,
     /// What is wrong, for a human: "must be a number of seconds".
@@ -37,10 +40,13 @@ pub const MILLISECONDS_RULE: &str = "must be a positive number of milliseconds";
 pub const PRIORITY_RULE: &str = "must be an integer from -2147483648 to 2147483647";
 
 /// Parameters as text by name (`/to/` without the `_` of its parameters): each one is parsed
-/// on its own, and each one that does not parse is an error, named `prefix` and its name.
+/// on its own, and each one that does not parse is an error, named `prefix` and its name. One
+/// that is never read is an error too: the list of the names that go to a parser and the
+/// parser itself cannot differ without a test noticing it.
 pub struct Params<'a> {
     values: &'a HashMap<String, String>,
     prefix: &'static str,
+    read: HashSet<&'static str>,
     errors: Vec<ParamError>,
 }
 
@@ -49,12 +55,14 @@ impl<'a> Params<'a> {
         Self {
             values,
             prefix,
+            read: HashSet::new(),
             errors: Vec::new(),
         }
     }
 
     /// The parameter `name` as it is.
-    pub fn raw(&self, name: &str) -> Option<&'a str> {
+    pub fn raw(&mut self, name: &'static str) -> Option<&'a str> {
+        self.read.insert(name);
         self.values.get(name).map(String::as_str)
     }
 
@@ -73,16 +81,24 @@ impl<'a> Params<'a> {
         parsed
     }
 
-    pub fn error(&mut self, name: &'static str, detail: impl Into<String>) {
+    pub fn error(&mut self, name: &str, detail: impl Into<String>) {
         let parameter = match self.prefix {
-            "" => Cow::Borrowed(name),
+            "" => Cow::Owned(name.to_owned()),
             prefix => Cow::Owned(format!("{prefix}{name}")),
         };
         self.errors.push(ParamError::new(parameter, detail));
     }
 
-    /// The errors of the parameters that did not parse.
-    pub fn into_errors(self) -> Vec<ParamError> {
+    /// The errors of the parameters that did not parse, and of the ones that were not read.
+    pub fn into_errors(mut self) -> Vec<ParamError> {
+        let mut unread: Vec<&str> = (self.values.keys())
+            .map(String::as_str)
+            .filter(|name| !self.read.contains(name))
+            .collect();
+        unread.sort_unstable();
+        for name in unread {
+            self.error(name, "is not a parameter");
+        }
         self.errors
     }
 }
