@@ -28,8 +28,11 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .with_state(state)
 }
 
-/// Creates a job from JSON: `200` with the job (`id`, `key`) and the same in the headers
-/// (`Location`, `Irisqo-*`). A repeated `key` returns the existing job.
+/// Creates a job from JSON, or declares a schedule with `cron` or `interval`.
+/// A new job or schedule returns `201`. A repeated job `key` returns the existing job with
+/// `200`. A repeated schedule `key` updates the schedule and returns its new next run with
+/// `200`; even with the same body, the waiting run is cancelled and replaced by a new job with a
+/// new id. Job identifiers are returned in the body and in the headers.
 #[utoipa::path(
     post,
     path = "/api/v1/jobs",
@@ -37,7 +40,8 @@ pub fn routes(state: Arc<AppState>) -> Router {
     tag = "jobs",
     request_body = JobRequest,
     responses(
-        (status = 200, description = "The job, new or the existing one with the same key", body = JobCreateRow),
+        (status = 201, description = "The new job or the first run of a new schedule", body = JobCreateRow),
+        (status = 200, description = "The existing job or the next run of an updated schedule", body = JobCreateRow),
         (status = 400, description = "Invalid fields (RFC 9457 problem with `errors`)", body = Problem, content_type = "application/problem+json"),
     )
 )]
@@ -48,8 +52,8 @@ pub(crate) async fn create(
     let job = parse_body::<JobRequest>(&body, "job")?
         .validate(&state.worker_options, Utc::now())
         .map_err(Error::InvalidParams)?;
-    let job = create_job(&state, job).await?;
-    Ok((job_headers(&job), Json(job)))
+    let (job, status) = create_job(&state, job).await?;
+    Ok((status, job_headers(&job), Json(job)))
 }
 
 #[derive(serde::Deserialize, utoipa::IntoParams)]

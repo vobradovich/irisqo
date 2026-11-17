@@ -127,7 +127,7 @@ GET {{host}}/to/https://postman-echo.com/get?_delay=5
 
 ### Jobs and schedules
 ```
-POST   {{host}}/api/v1/jobs                       a job as JSON: url (http, https; noop://… is the noop sink), method (POST), retry, timeout, delay | at, flow_key, priority, headers, body | body_base64, key, callback; cron | interval, tz, until (200, the job's id)
+POST   {{host}}/api/v1/jobs                       a job as JSON: url (http, https; noop://… is the noop sink), method (POST), retry, timeout, delay | at, flow_key, priority, headers, body | body_base64, key, callback; cron | interval, tz, until
 GET    {{host}}/api/v1/jobs/{id}                  the job
 GET    {{host}}/api/v1/jobs/{id}/result           its result
 GET    {{host}}/api/v1/jobs/{id}/history          its history
@@ -139,6 +139,11 @@ POST   {{host}}/api/v1/schedules/{id}/resume      the next run is scheduled
 PUT    {{host}}/api/v1/schedules/{id}             declare a schedule (a new one, or replace its rule and job): the fields of a job and cron | interval, tz, until
 DELETE {{host}}/api/v1/schedules/{id}
 ```
+Creating a job or schedule returns `201 Created`. Repeating a job key returns the existing job
+with `200 OK`. Declaring an existing schedule through either endpoint updates it and returns its
+new next run with `200 OK`. That is not a no-op even with the same body: the waiting run is
+cancelled and replaced by a new job with a new id.
+
 All endpoints, with their fields and responses, are in the OpenAPI description: `GET {{host}}/api/v1/openapi.json`.
 
 ### Errors

@@ -8,11 +8,12 @@ use crate::models::{JobCreate, JobRow};
 use chrono::{DateTime, Utc};
 use sqlx::{FromRow, Pool, Postgres, Row, types::Json};
 
+/// Creates a job or declares a schedule, returning the row and whether the resource is new.
 pub async fn create(
     pool: &Pool<Postgres>,
     mut job: JobCreate,
     instance_id: &str,
-) -> Result<JobCreateRow, Error> {
+) -> Result<(JobCreateRow, bool), Error> {
     if job.schedule.is_some() {
         // the same declaration as `PUT /schedules/{id}`: the key is the id of the schedule,
         // a new unique one when there is none
@@ -31,9 +32,9 @@ pub async fn create(
         && let Some(key) = key
         && let Some(job) = get_id_by_key(pool, &key).await?
     {
-        return Ok(job);
+        return Ok((job, false));
     }
-    res
+    res.map(|job| (job, true))
 }
 
 async fn create_enqueue(

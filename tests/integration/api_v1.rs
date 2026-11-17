@@ -70,7 +70,7 @@ async fn flow_and_priority_reach_the_tables(pool: PgPool) -> anyhow::Result<()> 
 
     // enqueued now, from JSON and from `/to/`
     let r = post_job(&state, addr, &job(r#""priority":5,"#)).await;
-    assert_eq!(r.status(), StatusCode::OK);
+    assert_eq!(r.status(), StatusCode::CREATED);
     assert_eq!(stored().await?, [(None, 5)]);
     clear().await?;
     let uri = format!("http://{addr}/to/http://{addr}/echo?_flow_key=order-42");
@@ -94,7 +94,7 @@ async fn flow_and_priority_reach_the_tables(pool: PgPool) -> anyhow::Result<()> 
     let json = r#"{"url":"noop://x","interval":3600,"priority":3}"#;
     assert_eq!(
         put_schedule(&state, addr, "s", json).await.status(),
-        StatusCode::OK
+        StatusCode::CREATED
     );
     assert_eq!(stored().await?, [(None, 3)]);
     let (id,): (i64,) = sqlx::query_as("SELECT next_id FROM schedules")
@@ -118,7 +118,7 @@ async fn json_job_is_queued_and_delivered(pool: PgPool) -> anyhow::Result<()> {
             "headers":{{"x-a":"b"}},"body":{{"n":1}},"key":"v1-job"}}"#
     );
     let response = post_job(&state, addr, &json).await;
-    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.status(), StatusCode::CREATED);
     let job_id: i64 = common::header(&response, "irisqo-job-id")
         .and_then(|v| v.parse().ok())
         .expect("job id");
@@ -129,6 +129,7 @@ async fn json_job_is_queued_and_delivered(pool: PgPool) -> anyhow::Result<()> {
 
     // a repeated key returns the same job
     let again = post_job(&state, addr, &json).await;
+    assert_eq!(again.status(), StatusCode::OK);
     assert_eq!(
         common::header(&again, "irisqo-job-id"),
         Some(job_id.to_string())
@@ -153,7 +154,7 @@ async fn json_job_with_delay_is_scheduled(pool: PgPool) -> anyhow::Result<()> {
 
     let json = format!(r#"{{"method":"POST","url":"http://{addr}/echo","delay":3600}}"#);
     let response = post_job(&state, addr, &json).await;
-    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.status(), StatusCode::CREATED);
     assert_eq!(
         common::count(&pool, "SELECT count(*) FROM scheduled").await,
         1
@@ -193,7 +194,7 @@ async fn a_schedule_is_declared_with_put(pool: PgPool) -> anyhow::Result<()> {
 
     // created with its first run
     let response = put_schedule(&state, addr, "nightly", &job(3600, "echo")).await;
-    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.status(), StatusCode::CREATED);
     assert_eq!(
         common::header(&response, "location").as_deref(),
         Some("/api/v1/schedules/nightly")
@@ -215,6 +216,7 @@ async fn a_schedule_is_declared_with_put(pool: PgPool) -> anyhow::Result<()> {
     // a declaration replaces the waiting run (cancelled, as by a pause) with a new job: the new
     // job and rule, one run waiting
     let changed = put_schedule(&state, addr, "nightly", &job(7200, "error")).await;
+    assert_eq!(changed.status(), StatusCode::OK);
     let second = common::header(&changed, "irisqo-job-id").expect("job id");
     assert_ne!(second, first);
     assert_eq!(
@@ -276,6 +278,22 @@ async fn a_schedule_is_declared_with_put(pool: PgPool) -> anyhow::Result<()> {
 }
 
 #[sqlx::test(migrations = "./sql/migrations")]
+async fn concurrent_post_declarations_create_one_schedule(pool: PgPool) -> anyhow::Result<()> {
+    let state = common::state(pool.clone());
+    let addr = common::spawn_app(&state).await;
+    let json = r#"{"url":"noop://x","interval":3600,"key":"nightly"}"#;
+    let (first, second) = tokio::join!(post_job(&state, addr, json), post_job(&state, addr, json));
+    let mut statuses = [first.status().as_u16(), second.status().as_u16()];
+    statuses.sort_unstable();
+    assert_eq!(statuses, [200, 201]);
+    assert_eq!(
+        common::count(&pool, "SELECT count(*) FROM schedules").await,
+        1
+    );
+    Ok(())
+}
+
+#[sqlx::test(migrations = "./sql/migrations")]
 async fn a_cron_schedule_runs_in_its_time_zone(pool: PgPool) -> anyhow::Result<()> {
     let state = common::state(pool.clone());
     let addr = common::spawn_app(&state).await;
@@ -299,7 +317,7 @@ async fn a_cron_schedule_runs_in_its_time_zone(pool: PgPool) -> anyhow::Result<(
     };
 
     // 9:00 in Tokyo is 0:00 UTC
-    assert_eq!(declare("Asia/Tokyo").await.status(), StatusCode::OK);
+    assert_eq!(declare("Asia/Tokyo").await.status(), StatusCode::CREATED);
     assert_eq!(next().await?, ("Asia/Tokyo".to_owned(), 0));
 
     // another zone is another declaration: the waiting run is replaced
@@ -327,6 +345,7 @@ async fn a_schedule_through_to_is_declared_the_same_way(pool: PgPool) -> anyhow:
 
     // the same key with another rule changes the schedule: one schedule, one waiting run
     let second = common::create(&state, addr, &target(7200)).await;
+    assert_eq!(second.status(), StatusCode::OK);
     assert_ne!(
         common::header(&second, "irisqo-job-id"),
         common::header(&first, "irisqo-job-id")

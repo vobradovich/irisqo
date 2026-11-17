@@ -57,8 +57,8 @@ async fn job_create(
         Utc::now(),
     )
     .map_err(Error::InvalidParams)?;
-    let job = create_job(&state, job).await?;
-    Ok((StatusCode::CREATED, job_headers(&job)))
+    let (job, status) = create_job(&state, job).await?;
+    Ok((status, job_headers(&job)))
 }
 
 /// The `Location` and `Irisqo-*` headers of a created job.
@@ -131,8 +131,12 @@ pub fn prepare_job<'a>(
     job.filter(|_| errors.is_empty()).ok_or(errors)
 }
 
-/// Stores a prepared job (or returns the existing one with the same key).
-pub async fn create_job(state: &AppState, job: JobCreate) -> Result<JobCreateRow, Error> {
+/// Stores a prepared job (or returns the existing one with the same key): `201` for a new job or
+/// schedule, `200` for the existing job or an updated schedule.
+pub async fn create_job(
+    state: &AppState,
+    job: JobCreate,
+) -> Result<(JobCreateRow, StatusCode), Error> {
     debug!(sink = ?job.meta.sink, "create job");
     let job_type = if job.schedule.is_some() {
         "scheduled"
@@ -147,6 +151,14 @@ pub async fn create_job(state: &AppState, job: JobCreate) -> Result<JobCreateRow
             metrics()
                 .jobs_created
                 .add(1, &[KeyValue::new("job.type", job_type)]);
+        })
+        .map(|(row, created)| {
+            let status = if created {
+                StatusCode::CREATED
+            } else {
+                StatusCode::OK
+            };
+            (row, status)
         })
 }
 
