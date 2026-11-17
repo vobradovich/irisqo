@@ -75,10 +75,9 @@ pub async fn upsert(
             "the schedule has no run before it ends",
         ));
     };
-    let (schedule_id, rule, tz, until) = (
+    let (schedule_id, rule, until) = (
         schedule_id.to_owned(),
         schedule.rule.to_string(),
-        schedule.tz,
         schedule.until,
     );
 
@@ -86,7 +85,7 @@ pub async fn upsert(
     let (next_id, created) = sqlx::query_as::<_, (Option<i64>, bool)>(SQL_SCHEDULE)
         .bind(&schedule_id)
         .bind(&rule)
-        .bind(tz.name())
+        .bind(JobSchedule::zone_name(&schedule.tz))
         .bind(until)
         .fetch_one(&mut *tx)
         .await?;

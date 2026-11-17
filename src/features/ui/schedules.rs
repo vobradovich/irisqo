@@ -48,7 +48,7 @@ fn rule_hint(rule: &str, tz: &str, until: Option<DateTime<Utc>>) -> String {
             i if i % 60 == 0 => format!("every {} min", i / 60),
             i => format!("every {i} s"),
         },
-        Ok(JobSchedule { tz, .. }) => format!("cron, {}", tz.name()),
+        Ok(JobSchedule { tz, .. }) => format!("cron, {}", JobSchedule::zone_name(&tz)),
         Err(_) => "invalid".into(),
     };
     match until {

@@ -144,6 +144,12 @@ with `200 OK`. Declaring an existing schedule through either endpoint updates it
 new next run with `200 OK`. That is not a no-op even with the same body: the waiting run is
 cancelled and replaced by a new job with a new id.
 
+`cron` has 5 fields (`minute hour day month weekday`) or 6 with seconds first; weekdays are
+`0`–`7` from Sunday (`0` and `7`) or names (`MON`). It runs by the clock of `tz` (an IANA name,
+default UTC), as cron does when the clock changes: a fixed time that is there twice runs once, at
+the first; one that is not there runs when the clock jumps over it; a frequent rule (`*/15 * * * *`,
+`0 * * * *`) runs at the times the clock shows.
+
 All endpoints, with their fields and responses, are in the OpenAPI description: `GET {{host}}/api/v1/openapi.json`.
 
 ### Errors
