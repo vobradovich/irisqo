@@ -238,6 +238,21 @@ traceparent, tracestate
 
 Only the format is checked, not the target (no DNS, no private-address check). Notes on the function body:
 
+- the sink comes from `url`: `noop://…` is the `noop` sink, any other URL an `http` one;
+- `c_url`, an http(s) URL of the characters of RFC 3986 only
+  (`[user@]host[:port][path][?query][#fragment]`), is narrower than what the server reads: a URL
+  that passes is one the server can read;
+- the fields that are not known are named in the error (`fields that are not known: a, b`), of
+  the job and of its callback;
+- a retry policy is the object or its text as `_retry` (`N`, `N|fixed|S`, `N|fibonacci|S|M`,
+  `N|exponential|S|M`), which becomes that object; `none` is no retries said out loud
+  (`{"policy": "fixed", "count": 0}`), where an absent policy means a default (a callback);
+  null, an absent policy and an empty text are none; text that is not a policy stays as it is
+  and is refused by the checks;
+- the policy is stored as it is, so it has no other field and its numbers are JSON numbers; the
+  nulls in it are stripped with the rest of the meta;
+- `at` is a usable time, as the API takes it: from 1970 up to 9999-12-31; an RFC 3339 time that
+  is not a date (`02-30`) fails the cast and is refused as one out of range;
 - a time in the past runs the job now; `delay` is NULL when there is no delay;
 - the job meta has the same shape as the one written by the service;
 - when the key already exists the call is an idempotent repeat and returns the existing job id.

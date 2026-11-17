@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     FlowKey, JobRetry, MILLISECONDS_RULE, PRIORITY_RULE, ParamError, Params,
-    job::{deserialize_method_of, parse_method},
+    job::{deserialize_method_of, deserialize_uri_of, parse_method},
 };
 
 /// The format of a callback: what it sends and how.
@@ -70,7 +70,10 @@ impl CallbackType {
 /// The request that irisqo makes when the job reaches its outcome: `meta.callback` of the job.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct JobCallback {
-    #[serde(with = "http_serde::uri")]
+    #[serde(
+        serialize_with = "http_serde::uri::serialize",
+        deserialize_with = "deserialize_url"
+    )]
     #[schema(value_type = String)]
     pub url: Uri,
     /// `POST` when absent; only `POST` and `PUT` pass the check of the input.
@@ -111,6 +114,10 @@ pub struct JobCallback {
     pub flow_key: Option<FlowKey>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub priority: Option<i32>,
+}
+
+fn deserialize_url<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Uri, D::Error> {
+    deserialize_uri_of("callback.url", deserializer)
 }
 
 fn deserialize_method<'de, D: serde::Deserializer<'de>>(
