@@ -11,7 +11,8 @@ status `400`.
 The request parameters are invalid: all of them are reported at once, in the `errors` extension.
 Each error has:
 
-- `parameter`: the query parameter (`_delay`, `_cron`...) or `url`;
+- `parameter`: the field, as JSON names it (`delay`, `cron`, `callback.url`), however the job
+  came: a `/to/` parameter `_delay` is the field `delay`, `_callback_url` is `callback.url`;
 - `detail`: what is wrong, for a human.
 
 ```http
@@ -24,8 +25,8 @@ Content-Type: application/problem+json
   "status": 400,
   "detail": "2 parameters are invalid.",
   "errors": [
-    { "parameter": "_delay", "detail": "must be a number of seconds" },
-    { "parameter": "_cron", "detail": "needs 5 or 6 fields, got 4: e.g. */15 * * * *" }
+    { "parameter": "delay", "detail": "must be a number of seconds" },
+    { "parameter": "cron", "detail": "needs 5 or 6 fields, got 4: e.g. */15 * * * *" }
   ],
   "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736"
 }

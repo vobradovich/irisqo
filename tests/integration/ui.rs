@@ -290,8 +290,9 @@ async fn api_reports_every_invalid_parameter(pool: PgPool) -> anyhow::Result<()>
         .iter()
         .filter_map(|e| e["parameter"].as_str())
         .collect();
-    // in the order of the query: `_key` is the one that `validate` finds
-    assert_eq!(params, ["_delay", "_timeout", "_interval", "_key"]);
+    // named as the fields of JSON, in the order of the query: `key` is the one that `validate`
+    // finds
+    assert_eq!(params, ["delay", "timeout", "interval", "key"]);
     assert_eq!(errors[0]["detail"], "must be a number of seconds");
 
     // a schedule that would never run
@@ -300,7 +301,7 @@ async fn api_reports_every_invalid_parameter(pool: PgPool) -> anyhow::Result<()>
         "http://{addr}/echo?_cron=0+0+0+1+1+*&_until={until}"
     ))
     .await;
-    assert_eq!(body["errors"][0]["parameter"], "_until");
+    assert_eq!(body["errors"][0]["parameter"], "until");
     let body = problem("not a url".replace(' ', "%20")).await;
     assert_eq!(body["errors"][0]["parameter"], "url");
     assert_eq!(common::count(&pool, "SELECT count(*) FROM jobs").await, 0);

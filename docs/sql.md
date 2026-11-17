@@ -219,15 +219,17 @@ CREATE TABLE stats (
 ### enqueue_v1
 
 `enqueue_v1(job jsonb) RETURNS bigint`: enqueues inside the caller's transaction (embedded mode) and returns the
-job id. `job` is a JSON object, the same fields as `POST /api/v1/jobs` but the schedule (`cron`, `interval`, `tz`, `until`);
-`sink` is required (`http` also needs `url`):
+job id. `job` is a JSON object, the same fields as `POST /api/v1/jobs` but the schedule (`cron`, `interval`, `tz`, `until`).
+A field that is not known is refused, of the job, its callback or a retry policy: a typo is an error,
+not a default.
 
 ```text
-sink http | noop
-url, method (default POST; sink http), headers (object of strings), body (a string as it is, any other JSON as JSON text with content-type application/json) | body_base64
-at (unix time) and/or delay (seconds; at wins), timeout (ms; none: --timeout when the job runs)
-retry (object; none: no retries) { policy fixed | fibonacci | exponential, count,
-      delay (seconds; fixed without it retries at once), max_delay (seconds, backoffs) }
+url (http, https; noop://… is the noop sink), sink http | noop (default: from url; noop needs no url)
+method (default POST; sink http), headers (object of strings), body (a string as it is, any other JSON as JSON text with content-type application/json) | body_base64
+at (RFC 3339 or unix seconds, 1970 to 9999) | delay (seconds), timeout (ms; none: --timeout when the job runs)
+retry (none: no retries) { policy fixed | fibonacci | exponential, count (up to 65535),
+      delay (seconds; fixed without it retries at once), max_delay (seconds, backoffs) },
+      delays up to 2147483647; or the text of _retry: "5|exponential|2|60", "none"
 callback (object; see docs/callbacks.md) { url, method, mode, types, headers, retry (as above),
       timeout, flow_key, priority }
 flow_key, priority, key (a repeated key returns the existing job id)

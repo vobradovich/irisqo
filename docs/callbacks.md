@@ -49,8 +49,9 @@ The callback is an object, `callback`, of the job. In `/to/` its fields are quer
 - `callback` needs its `url`; without it the callback is refused.
 - `retry` is an object like the `retry` of a job: `policy` is `fixed`, `fibonacci` or
   `exponential`, with `count`, `delay` and `max_delay`; a policy without its `policy` is
-  refused. **`{"policy": "fixed", "count": 0}` means no retries** (`_callback_retry=none` in
-  `/to/`); it is not the same as leaving the policy out, which takes the default of a callback.
+  refused. It can be the text of `_retry` too (`"10|fixed|30"`). **`"none"` means no retries**
+  (`_callback_retry=none` in `/to/`, the same as `{"policy": "fixed", "count": 0}`); it is not
+  the same as leaving the policy out (or `null`), which takes the default of a callback.
 - `flow_key` lets a receiver be protected like any target: a concurrency or rate
   limit on `https://ship.example` is a flow. It is not inherited: the job's flow limits the
   job's target, the callback goes elsewhere.

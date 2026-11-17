@@ -3,7 +3,7 @@ use crate::features::schedules::{JobSchedule, ScheduleRule};
 use crate::models::headers::{is_reserved_callback_header, is_reserved_header};
 use crate::models::{
     FlowKey, HttpMeta, JobCallback, JobCreate, JobMeta, JobRetry, JobSink, MILLISECONDS_RULE,
-    PRIORITY_RULE, ParamError, Params, WorkerOptions, deserialize_method,
+    PRIORITY_RULE, ParamError, Params, WorkerOptions, parse_method,
 };
 use axum::body::Bytes;
 use base64::Engine as _;
@@ -36,24 +36,27 @@ pub enum SinkKind {
 /// description of a job that every way to create one fills (JSON by serde, `/to/` and the form
 /// by [`JobRequest::with_params`]) and [`JobRequest::validate`] checks.
 ///
-/// `sink` (`http` with `method`, `url`; `noop`), `retry` (an object: `policy` of `fixed`,
-/// `fibonacci`, `exponential` with `count`, `delay`, which `fixed` may leave out to retry at
-/// once, and `max_delay` of the last two), `callback` (an object, see [`JobCallback`]),
-/// `delay` (seconds), `timeout` (milliseconds), `flow_key`, `priority`, `headers`, `body` or
-/// `body_base64`, `key`, `at`; `cron` or `interval` with `tz` and `until` repeat the job.
+/// `url` (an `http` job, or `noop://…`: the `noop` sink) with `method` (`POST`), `retry` (an
+/// object, `policy` of `fixed`, `fibonacci`, `exponential` with `count`, `delay`, which `fixed`
+/// may leave out to retry at once, and `max_delay` of the last two; or its text,
+/// `5|exponential|2`), `callback` (an object, see [`JobCallback`]), `delay` (seconds) or `at`,
+/// `timeout` (milliseconds), `flow_key`, `priority`, `headers`, `body` or `body_base64`, `key`;
+/// `cron` or `interval` with `tz` (of `cron`) and `until` repeat the job.
 /// The retry policy defaults to none, the timeout to `--timeout` when the job runs. Fields that
 /// are not known are ignored.
 #[derive(Debug, Default, Deserialize, ToSchema)]
 pub struct JobRequest {
-    /// Required.
+    /// `http` when `url` is an `http` or `https` URL, `noop` when it is `noop://…`; `noop`
+    /// without a `url`.
     pub(crate) sink: Option<SinkKind>,
-    /// An HTTP method, for the `http` sink, in any case (`post` is `POST`, as in `enqueue_v1`).
-    #[serde(default, deserialize_with = "deserialize_method")]
+    /// An HTTP method, for the `http` sink, in any case (`post` is `POST`, as in `enqueue_v1`);
+    /// `POST` when absent.
     #[schema(schema_with = method_schema)]
-    pub(crate) method: Option<Method>,
-    /// An `http` or `https` URL, for the `http` sink.
+    pub(crate) method: Option<String>,
+    /// An `http` or `https` URL; `noop://…` is the `noop` sink. Required but for `sink: noop`.
     pub(crate) url: Option<String>,
-    /// The retry policy; no retries when absent.
+    /// The retry policy, the object or its text (`5|exponential|2`); no retries when absent.
+    #[serde(default, deserialize_with = "JobRetry::deserialize_optional")]
     pub(crate) retry: Option<JobRetry>,
     /// Milliseconds; `--timeout` when absent.
     #[schema(value_type = Option<u32>, minimum = 1)]
@@ -71,11 +74,12 @@ pub struct JobRequest {
     pub(crate) body: Option<Box<RawValue>>,
     /// Base64 of a binary body, not together with `body`.
     pub(crate) body_base64: Option<String>,
-    /// When the job runs: an RFC 3339 time (a string) or unix seconds (a number). Wins over `delay`.
+    /// When the job runs: an RFC 3339 time (a string) or unix seconds (a number); not together
+    /// with `delay`.
     #[serde(default, deserialize_with = "at")]
     #[schema(schema_with = at_schema)]
     pub(crate) at: Option<DateTime<Utc>>,
-    /// Seconds from now, when `at` is not set.
+    /// Seconds from now; not together with `at`.
     pub(crate) delay: Option<u32>,
     /// A repeated key returns the existing job. With `cron` or `interval` it is the id of the
     /// schedule (a new one when absent), and a repeated key changes the schedule.
@@ -85,7 +89,7 @@ pub struct JobRequest {
     pub(crate) cron: Option<String>,
     /// Repeats the job every so many seconds.
     pub(crate) interval: Option<u32>,
-    /// The IANA zone of `cron` (`Europe/Berlin`), default UTC.
+    /// The IANA zone of `cron` (`Europe/Berlin`), default UTC; only with `cron` or `interval`.
     #[schema(value_type = Option<String>)]
     pub(crate) tz: Option<Tz>,
     /// When the schedule ends, as `at`: no run after it.
@@ -150,7 +154,7 @@ impl JobRequest {
     ) -> Self {
         Self {
             sink: Some(SinkKind::Http),
-            method: Some(method.clone()),
+            method: Some(method.to_string()),
             url: Some(url.to_owned()),
             headers: Some(headers),
             body_raw: Some(body),
@@ -205,11 +209,26 @@ impl JobRequest {
     ) -> Result<JobCreate, Vec<ParamError>> {
         let mut errors = Errors::default();
 
-        let sink = match errors.required("sink", self.sink) {
-            None => None,
-            Some(SinkKind::Noop) => Some(JobSink::Noop),
-            Some(SinkKind::Http) => {
-                let method = errors.required("method", self.method.take());
+        // `noop://…` is the `noop` sink, any other URL an `http` one
+        let noop_url = self.url.as_deref().is_some_and(|url| {
+            url.split_once(':')
+                .is_some_and(|(scheme, _)| scheme.eq_ignore_ascii_case("noop"))
+        });
+        let kind = if noop_url {
+            SinkKind::Noop
+        } else {
+            self.sink.unwrap_or(SinkKind::Http)
+        };
+        let sink = match kind {
+            SinkKind::Noop => Some(JobSink::Noop),
+            SinkKind::Http => {
+                let method = match self.method.as_deref() {
+                    None => Some(Method::POST),
+                    Some(method) => errors.check(
+                        "method",
+                        parse_method(method).ok_or("is not a valid HTTP method"),
+                    ),
+                };
                 let url = errors
                     .required("url", self.url.as_deref())
                     .and_then(|url| errors.check("url", parse_url(url)));
@@ -263,7 +282,9 @@ impl JobRequest {
             .callback
             .take()
             .map(|callback| check_callback(callback, options, &mut errors));
-        // `at` wins over `delay`
+        if self.at.is_some() && self.delay.is_some() {
+            errors.add("delay", "cannot be set together with at");
+        }
         let at = self.at.or_else(|| {
             self.delay
                 .map(|secs| now + chrono::Duration::seconds(i64::from(secs)))
@@ -337,7 +358,10 @@ impl JobRequest {
     fn schedule(&mut self, errors: &mut Errors) -> Option<JobSchedule> {
         let rule = match (self.cron.take(), self.interval) {
             (None, None) => {
-                // `tz` without a cron is the zone of nothing, `until` ends nothing
+                // `tz` is the zone of nothing, `until` ends nothing
+                if self.tz.is_some() {
+                    errors.add("tz", "applies to cron and interval only");
+                }
                 if self.until.is_some() {
                     errors.add("until", "applies to cron and interval only");
                 }
@@ -518,8 +542,9 @@ mod tests {
             r#"{"sink":"noop","callback":{"timeout":5}}"#,
             r#"{"sink":"noop","callback":{"url":"https://example.com","retry":{"count":0}}}"#,
             r#"{"sink":"noop","callback":{"url":"https://example.com","timeout":0}}"#,
-            // a method, a flow key, a time
-            r#"{"sink":"http","url":"https://example.com","method":"BAD METHOD"}"#,
+            // a policy as text is the one of `_retry`
+            r#"{"sink":"noop","retry":"5|exponential"}"#,
+            // a flow key, a time
             r#"{"sink":"noop","flow_key":"Bad Name"}"#,
             r#"{"sink":"noop","at":"tomorrow"}"#,
             r#"{"sink":"noop","at":true}"#,
@@ -565,11 +590,28 @@ mod tests {
             assert_eq!(errors[0].parameter, parameter, "{meta}");
         }
 
-        // no retry, or null: no retries
+        // no retry, or null: no retries; the text of `_retry` is a policy too
         for meta in [r#"{"sink":"noop"}"#, r#"{"sink":"noop","retry":null}"#] {
             let spec = serde_json::from_str(meta)?;
             assert_eq!(prepare(spec).expect(meta).meta.retry, None, "{meta}");
         }
+        let job = prepare(serde_json::from_str(
+            r#"{"sink":"noop","retry":"5|exponential|2",
+                "callback":{"url":"https://example.com/cb","retry":"none"}}"#,
+        )?)
+        .expect("valid job");
+        assert_eq!(
+            job.meta.retry,
+            Some(JobRetry::Exponential {
+                retry_count: 5,
+                retry_delay: 2,
+                retry_max_delay: None
+            })
+        );
+        assert_eq!(
+            job.meta.callback.and_then(|c| c.retry),
+            Some(JobRetry::NONE)
+        );
 
         // a method in any case, an empty flow key of the callback, unix 0 (now): as in enqueue_v1
         let job = prepare(serde_json::from_str(
@@ -595,17 +637,35 @@ mod tests {
                 "cron",
             ),
             (r#"{"sink":"noop","until":"2100-01-01T00:00:00Z"}"#, "until"),
+            (r#"{"sink":"noop","tz":"Europe/Berlin"}"#, "tz"),
+            (r#"{"sink":"noop","at":2000000000,"delay":5}"#, "delay"),
         ] {
             let errors = prepare(serde_json::from_str(meta)?).expect_err(meta);
             assert_eq!(errors[0].parameter, parameter, "{meta}");
         }
 
-        // the structure: no sink, no url, no method
+        // the sink comes from the url, the method is POST
+        let sink = |meta: &str| -> anyhow::Result<JobSink> {
+            Ok(prepare(serde_json::from_str(meta)?).expect(meta).meta.sink)
+        };
+        assert!(matches!(
+            sink(r#"{"url":"https://example.com"}"#)?,
+            JobSink::Http(http) if http.method == Method::POST
+        ));
+        assert_eq!(sink(r#"{"url":"noop://bench"}"#)?, JobSink::Noop);
+        assert_eq!(
+            sink(r#"{"sink":"http","url":"NOOP://bench"}"#)?,
+            JobSink::Noop
+        );
+        assert_eq!(sink(r#"{"sink":"noop"}"#)?, JobSink::Noop);
+        // the structure: no url, a method that is not one
         for (meta, parameter) in [
-            (r#"{"url":"https://example.com"}"#, "sink"),
-            (r#"{"sink":"http"}"#, "method"),
-            (r#"{"sink":"http","url":"https://example.com"}"#, "method"),
+            (r#"{}"#, "url"),
             (r#"{"sink":"http","method":"GET"}"#, "url"),
+            (
+                r#"{"url":"https://example.com","method":"BAD METHOD"}"#,
+                "method",
+            ),
         ] {
             let spec = serde_json::from_str(meta)?;
             let errors = prepare(spec).expect_err(meta);

@@ -107,7 +107,9 @@ GET {{host}}/to/https://postman-echo.com/get?_retry=8|exponential|2|300
 
 In JSON (`POST /api/v1/jobs`, `PUT /api/v1/schedules/{id}`, `enqueue_v1`): `retry` is an object,
 `{"policy": "exponential", "count": 8, "delay": 2, "max_delay": 300}` (`policy`: `fixed`, `fibonacci`,
-`exponential`; `max_delay` for the last two).
+`exponential`; `max_delay` for the last two; `count` up to 65535, delays up to 2147483647 seconds),
+or the same text as `_retry`: `"8|exponential|2|300"`. `"none"` is no retries, said out loud: for a
+callback, whose absent policy is a default of its own.
 
 Retried: network errors, timeouts, `408`, `425`, `429` and `5xx`. Any other `4xx` fails the job at once.
 Delays get ±20 % jitter, never come sooner than the response `Retry-After` (seconds or HTTP-date),
@@ -124,7 +126,7 @@ GET {{host}}/to/https://postman-echo.com/get?_delay=5
 
 ### Jobs and schedules
 ```
-POST   {{host}}/api/v1/jobs                       a job as JSON: sink, method, url, retry*, timeout, delay | at, flow_key, priority, headers, body | body_base64, key (200, the job's id)
+POST   {{host}}/api/v1/jobs                       a job as JSON: url (http, https; noop://… is the noop sink), method (POST), retry, timeout, delay | at, flow_key, priority, headers, body | body_base64, key, callback; cron | interval, tz, until (200, the job's id)
 GET    {{host}}/api/v1/jobs/{id}                  the job
 GET    {{host}}/api/v1/jobs/{id}/result           its result
 GET    {{host}}/api/v1/jobs/{id}/history          its history
@@ -148,8 +150,8 @@ Invalid job parameters are rejected with `400` and every problem at once:
   "status": 400,
   "detail": "2 parameters are invalid.",
   "errors": [
-    { "parameter": "_delay", "detail": "must be a number of seconds" },
-    { "parameter": "_cron", "detail": "needs 5 or 6 fields, got 4: e.g. */15 * * * *" }
+    { "parameter": "delay", "detail": "must be a number of seconds" },
+    { "parameter": "cron", "detail": "needs 5 or 6 fields, got 4: e.g. */15 * * * *" }
   ],
   "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736"
 }

@@ -1,7 +1,7 @@
 use crate::models::Problem;
 use crate::{
     db,
-    handlers::job_request::{JobRequest, SinkKind},
+    handlers::job_request::JobRequest,
     models::{
         AppState, Error, JobCallback, JobCreate, JobCreateRow, ParamError, WorkerOptions,
         headers::{callback_headers, forwarded_headers},
@@ -80,9 +80,10 @@ pub fn job_headers(job: &JobCreateRow) -> HeaderMap {
 
 /// Validates a job requested through `/to/{url}?{query}` (`input` is [`JobRequest::http`], the UI
 /// form builds the same; `params` are the pairs of the query) and builds the job: every invalid
-/// parameter is reported, not only the first one. The `_*` parameters of the job and of its
-/// callback are theirs, the others stay on the URL. `callback_headers` are the
-/// `Irisqo-Callback-*` headers, which go to the callback.
+/// parameter is reported, not only the first one, named as the field of JSON (`delay`,
+/// `callback.url`). The `_*` parameters of the job and of its callback are theirs, the others
+/// stay on the URL. `callback_headers` are the `Irisqo-Callback-*` headers, which go to the
+/// callback.
 pub fn prepare_job<'a>(
     options: &WorkerOptions,
     input: JobRequest,
@@ -119,38 +120,13 @@ pub fn prepare_job<'a>(
             errors.extend(found);
             None
         });
-    // `noop://…` is the `noop` sink: nothing is called
-    if url.as_ref().is_some_and(|url| url.scheme() == "noop") {
-        input.sink = Some(SinkKind::Noop);
-    }
     // a URL that does not parse stays empty: `validate` says it is not a valid one
     input.url = Some(url.map(String::from).unwrap_or_default());
     let job = input
         .validate(options, now)
         .map_err(|found| errors.extend(found))
         .ok();
-    if errors.is_empty() {
-        job.ok_or(errors)
-    } else {
-        Err(errors
-            .into_iter()
-            .map(|err| ParamError::new(query_parameter(err.parameter), err.detail))
-            .collect())
-    }
-}
-
-/// The `/to/` parameter of a field: `_` and its name (`_delay`, `_callback_url`), the field
-/// itself when it is not one (`url`, `headers`).
-fn query_parameter(field: Cow<'static, str>) -> Cow<'static, str> {
-    let param = match field.strip_prefix("callback.") {
-        Some(name) => JobCallback::PARAMS.contains(&name),
-        None => JobRequest::PARAMS.contains(&&*field),
-    };
-    if param {
-        Cow::Owned(format!("_{}", field.replace('.', "_")))
-    } else {
-        field
-    }
+    job.filter(|_| errors.is_empty()).ok_or(errors)
 }
 
 /// Stores a prepared job (or returns the existing one with the same key).
@@ -227,7 +203,7 @@ mod tests {
         // an end without a schedule is not a job that ends
         let errors = prepare_query("_until=2100-01-01T00:00:00Z").expect_err("no schedule");
         assert_eq!(errors.len(), 1);
-        assert_eq!(errors[0].parameter, "_until");
+        assert_eq!(errors[0].parameter, "until");
     }
 
     #[test]
@@ -242,8 +218,8 @@ mod tests {
         assert_eq!((m.flow_key, m.priority), (None, Some(5)));
         assert_eq!(meta("_flow_key=").flow_key, None);
         for (query, parameter) in [
-            ("_flow_key=Bad+Name", "_flow_key"),
-            ("_priority=high", "_priority"),
+            ("_flow_key=Bad+Name", "flow_key"),
+            ("_priority=high", "priority"),
         ] {
             let errors = prepare_query(query).expect_err(query);
             assert_eq!(errors.len(), 1, "{query}");
@@ -295,34 +271,50 @@ mod tests {
         );
         assert_eq!(
             prepare("").expect_err("no url")[0].parameter,
-            "_callback_url"
+            "callback.url"
         );
         let url = "_callback_url=https%3A%2F%2Fme.example";
         for (query, parameter) in [
-            ("_callback_mode=relay".to_owned(), "_callback_url"),
-            (format!("{url}&_callback_mode=final"), "_callback_mode"),
-            (format!("{url}&_callback_method=GET"), "_callback_method"),
-            (
-                format!("{url}&_callback_types=completed"),
-                "_callback_types",
-            ),
+            ("_callback_mode=relay".to_owned(), "callback.url"),
+            (format!("{url}&_callback_mode=final"), "callback.mode"),
+            (format!("{url}&_callback_method=GET"), "callback.method"),
+            (format!("{url}&_callback_types=completed"), "callback.types"),
             (
                 format!("{url}&_callback_retry=3|fibonacci"),
-                "_callback_retry",
+                "callback.retry",
             ),
-            (format!("{url}&_callback_timeout=0"), "_callback_timeout"),
-            (
-                format!("{url}&_callback_flow_key=Bad"),
-                "_callback_flow_key",
-            ),
+            (format!("{url}&_callback_timeout=0"), "callback.timeout"),
+            (format!("{url}&_callback_flow_key=Bad"), "callback.flow_key"),
             (
                 "_callback_url=ftp%3A%2F%2Fme.example".to_owned(),
-                "_callback_url",
+                "callback.url",
             ),
         ] {
             let errors = prepare_query(&query).expect_err(&query);
             assert_eq!(errors[0].parameter, parameter, "{query}");
         }
+    }
+
+    #[test]
+    fn every_listed_parameter_is_parsed() {
+        // a name routed to a parser that does not read it would be an error of its own
+        let all = |names: &[&str], prefix: &str| {
+            names
+                .iter()
+                .map(|name| format!("_{prefix}{name}=x"))
+                .collect::<Vec<_>>()
+                .join("&")
+        };
+        let query = format!(
+            "{}&{}",
+            all(&JobRequest::PARAMS, ""),
+            all(&JobCallback::PARAMS, "callback_")
+        );
+        let errors = prepare_query(&query).expect_err("values that do not parse");
+        assert!(
+            errors.iter().all(|e| e.detail != "is not a parameter"),
+            "{errors:?}"
+        );
     }
 
     #[test]
@@ -367,6 +359,6 @@ mod tests {
         assert_eq!(zone("_cron=0+9+*+*+*"), Some(chrono_tz::Tz::UTC));
         let errors = prepare_query("_cron=0+9+*+*+*&_tz=Mars/Base").expect_err("no such zone");
         assert_eq!(errors.len(), 1);
-        assert_eq!(errors[0].parameter, "_tz");
+        assert_eq!(errors[0].parameter, "tz");
     }
 }

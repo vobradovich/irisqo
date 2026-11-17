@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use http_body_util::Full;
-use hyper::HeaderMap;
+use hyper::{HeaderMap, Method};
 
 use serde::{Deserialize, Serialize};
 
@@ -142,6 +142,11 @@ fn serialize_meta_shown<S: serde::Serializer>(
         });
     }
     shown.serialize(serializer)
+}
+
+/// An HTTP method in upper case: `post` is `POST`, not a method of its own (as in `enqueue_v1`).
+pub fn parse_method(method: &str) -> Option<Method> {
+    Method::from_bytes(method.to_ascii_uppercase().as_bytes()).ok()
 }
 
 /// The key of a flow, as `enqueue_v1` checks it: 1 to 128 characters of `a-z 0-9 . _ : -`, the

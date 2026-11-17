@@ -637,6 +637,30 @@ async fn enqueue_v1_stores_the_retry_policy(pool: PgPool) -> anyhow::Result<()> 
         })
     );
     assert_eq!(enqueue(json!({"sink": "http", "url": url })).await?, None);
+    // the text of `_retry`; `none` is no retries, said out loud
+    assert_eq!(
+        enqueue(json!({"url": url, "retry": "5|exponential|2|60"})).await?,
+        Some(JobRetry::Exponential {
+            retry_count: 5,
+            retry_delay: 2,
+            retry_max_delay: Some(60)
+        })
+    );
+    assert_eq!(
+        enqueue(json!({"url": url, "retry": "none"})).await?,
+        Some(JobRetry::NONE)
+    );
+    assert_eq!(
+        enqueue(
+            json!({"url": url, "retry": {"policy": "fixed", "count": 65535,
+            "delay": 2_147_483_647_i64}})
+        )
+        .await?,
+        Some(JobRetry::Fixed {
+            retry_count: 65535,
+            retry_delay: 2_147_483_647
+        })
+    );
 
     for (job, error) in [
         (
@@ -645,7 +669,24 @@ async fn enqueue_v1_stores_the_retry_policy(pool: PgPool) -> anyhow::Result<()> 
         ),
         (
             json!({"sink": "http", "url": url, "retry": "fixed"}),
-            "retry must be an object",
+            "retry must be an object, or text",
+        ),
+        (
+            json!({"url": url, "retry": "3|fibonacci"}),
+            "retry.delay must be",
+        ),
+        (
+            json!({"url": url, "retry": "3|fixed|1|2"}),
+            "retry.max_delay is for",
+        ),
+        (
+            json!({"url": url, "retry": {"policy": "fixed", "count": 65536}}),
+            "retry.count must be",
+        ),
+        (
+            json!({"url": url, "retry": {"policy": "fixed", "count": 1,
+                "delay": 2_147_483_648_i64}}),
+            "retry.delay must be",
         ),
         (
             json!({"sink": "http", "url": url, "retry": {"policy": "exponential", "count": 3}}),
@@ -979,19 +1020,73 @@ async fn a_rate_is_a_bucket_of_one_period_that_refills_one_start_at_a_time(
 }
 
 #[sqlx::test(migrations = "./sql/migrations")]
-async fn enqueue_v1_needs_a_sink_and_at_excludes_delay(pool: PgPool) -> anyhow::Result<()> {
+async fn enqueue_v1_sink_comes_from_the_url_and_at_excludes_delay(
+    pool: PgPool,
+) -> anyhow::Result<()> {
     let enqueue = |job: serde_json::Value| {
         sqlx::query_scalar::<_, i64>("SELECT enqueue_v1($1::jsonb)")
             .bind(job.to_string())
             .fetch_one(&pool)
     };
-    for job in [
-        serde_json::json!({"url": "http://localhost/x"}),
-        serde_json::json!({"sink": "smtp"}),
-        serde_json::json!({"sink": "http"}),
+    let meta = |id: i64| {
+        sqlx::query_scalar::<_, serde_json::Value>("SELECT meta FROM jobs WHERE id = $1")
+            .bind(id)
+            .fetch_one(&pool)
+    };
+    for (job, error) in [
+        (serde_json::json!({}), "url must be"),
+        (serde_json::json!({"sink": "smtp"}), "sink must be"),
+        (serde_json::json!({"sink": "http"}), "url must be"),
+        // a field that is not known, of the job or of its callback
+        (
+            serde_json::json!({"sink": "noop", "callback_url": "http://localhost/cb"}),
+            "fields that are not known: callback_url",
+        ),
+        (
+            serde_json::json!({"sink": "noop", "callback": {"url": "http://localhost/cb",
+                "retries": 3}}),
+            "callback fields that are not known: retries",
+        ),
+        // a body is a body or base64, whatever its JSON
+        (
+            serde_json::json!({"sink": "noop", "body": {"a": 1}, "body_base64": "YQ=="}),
+            "body and body_base64 are exclusive",
+        ),
+        // a time that is one
+        (
+            serde_json::json!({"sink": "noop", "at": "2030-02-30T00:00:00Z"}),
+            "at must be",
+        ),
+        (
+            serde_json::json!({"sink": "noop", "at": "1969-12-31T00:00:00Z"}),
+            "at must be",
+        ),
+        (
+            serde_json::json!({"sink": "noop", "at": "tomorrow"}),
+            "at must be",
+        ),
     ] {
-        assert!(enqueue(job).await.is_err());
+        let err = enqueue(job).await.expect_err(error);
+        assert!(err.to_string().contains(error), "{err}");
     }
+    // the sink comes from the url, the method is POST
+    let id = enqueue(serde_json::json!({"url": "http://localhost/x"})).await?;
+    let m = meta(id).await?;
+    assert_eq!(
+        (m["sink"].as_str(), m["method"].as_str()),
+        (Some("http"), Some("POST"))
+    );
+    let id = enqueue(serde_json::json!({"sink": "http", "url": "noop://bench"})).await?;
+    assert_eq!(meta(id).await?["sink"], "noop");
+    // RFC 3339 as the API takes it; unix 0 is now
+    let id = enqueue(serde_json::json!({"sink": "noop", "at": "2100-01-01T00:00:00Z"})).await?;
+    let at: i64 =
+        sqlx::query_scalar("SELECT extract(epoch FROM at)::bigint FROM scheduled WHERE id = $1")
+            .bind(id)
+            .fetch_one(&pool)
+            .await?;
+    assert_eq!(at, 4_102_444_800);
+    enqueue(serde_json::json!({"sink": "noop", "at": 0})).await?;
     // noop needs no url; no timeout is stored
     let id = enqueue(serde_json::json!({"sink": "noop"})).await?;
     let meta: serde_json::Value = sqlx::query_scalar("SELECT meta FROM jobs WHERE id = $1")
