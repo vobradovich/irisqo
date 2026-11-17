@@ -17,7 +17,7 @@ use axum::{
     routing::get,
 };
 use chrono::{DateTime, Utc};
-use hyper::Method;
+use hyper::{Method, Uri};
 use opentelemetry::KeyValue;
 
 use std::{borrow::Cow, collections::HashMap, sync::Arc};
@@ -47,7 +47,8 @@ async fn job_create(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<impl IntoResponse, Problem> {
-    let request = JobRequest::http(&method, &url, forwarded_headers(&headers), body);
+    let url = Uri::try_from(url).map_err(|_| Error::invalid("url", "is not a valid URL"))?;
+    let request = JobRequest::http(&method, url, forwarded_headers(&headers), body);
     let job = prepare_job(
         &state.worker_options,
         request,
@@ -91,7 +92,7 @@ pub fn prepare_job<'a>(
     callback_headers: HashMap<String, String>,
     now: DateTime<Utc>,
 ) -> Result<JobCreate, Vec<ParamError>> {
-    let mut url = input.url.as_deref().and_then(|url| Url::parse(url).ok());
+    let mut url = Url::parse(&input.url.to_string()).ok();
     let (mut job, mut callback) = (HashMap::new(), HashMap::new());
     for (name, value) in params {
         let field =
@@ -120,8 +121,9 @@ pub fn prepare_job<'a>(
             errors.extend(found);
             None
         });
-    // a URL that does not parse stays empty: `validate` says it is not a valid one
-    input.url = Some(url.map(String::from).unwrap_or_default());
+    if let Some(url) = url.and_then(|url| Uri::try_from(url.as_str()).ok()) {
+        input.url = url;
+    }
     let job = input
         .validate(options, now)
         .map_err(|found| errors.extend(found))
@@ -182,7 +184,7 @@ mod tests {
             &WorkerOptions::for_tests(),
             JobRequest::http(
                 &Method::GET,
-                "https://example.com",
+                "https://example.com".parse().unwrap(),
                 HashMap::new(),
                 Bytes::new(),
             ),
@@ -251,7 +253,7 @@ mod tests {
         let prepare = |query: &str| {
             let request = JobRequest::http(
                 &Method::GET,
-                "https://example.com",
+                "https://example.com".parse().unwrap(),
                 HashMap::new(),
                 Bytes::new(),
             );
@@ -320,8 +322,13 @@ mod tests {
     #[test]
     fn noop_is_a_target_scheme() {
         let options = WorkerOptions::for_tests();
-        let prepare = |url| {
-            let request = JobRequest::http(&Method::POST, url, HashMap::new(), Bytes::new());
+        let prepare = |url: &str| {
+            let request = JobRequest::http(
+                &Method::POST,
+                url.parse().unwrap(),
+                HashMap::new(),
+                Bytes::new(),
+            );
             prepare_job(&options, request, [], HashMap::new(), Utc::now())
         };
         let job = prepare("noop://bench").expect("valid");
@@ -332,17 +339,23 @@ mod tests {
     #[test]
     fn a_target_is_an_http_url() {
         let options = WorkerOptions::for_tests();
-        let prepare = |url| {
+        let prepare = |url: &str| {
             prepare_job(
                 &options,
-                JobRequest::http(&Method::GET, url, HashMap::new(), Bytes::new()),
+                JobRequest::http(
+                    &Method::GET,
+                    url.parse().unwrap(),
+                    HashMap::new(),
+                    Bytes::new(),
+                ),
                 [],
                 HashMap::new(),
                 Utc::now(),
             )
         };
         assert!(prepare("https://example.com/hook").is_ok());
-        for url in ["ftp://example.com", "mailto:a@example.com", "not a url"] {
+        assert!(Uri::try_from("not a url").is_err());
+        for url in ["ftp://example.com", "mailto:a@example.com"] {
             let errors = prepare(url).expect_err(url);
             assert_eq!(errors.len(), 1, "{url}");
             assert_eq!(errors[0].parameter, "url", "{url}");

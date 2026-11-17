@@ -149,6 +149,20 @@ pub fn parse_method(method: &str) -> Option<Method> {
     Method::from_bytes(method.to_ascii_uppercase().as_bytes()).ok()
 }
 
+/// An optional HTTP method as [`parse_method`], for `deserialize_with`; the error names `field`.
+pub fn deserialize_method_of<'de, D: serde::Deserializer<'de>>(
+    field: &str,
+    deserializer: D,
+) -> Result<Option<Method>, D::Error> {
+    Option::<String>::deserialize(deserializer)?
+        .map(|method| {
+            parse_method(&method).ok_or_else(|| {
+                serde::de::Error::custom(format!("{field}: is not a valid HTTP method"))
+            })
+        })
+        .transpose()
+}
+
 /// The key of a flow, as `enqueue_v1` checks it: 1 to 128 characters of `a-z 0-9 . _ : -`, the
 /// first a letter or a digit. Only [`FlowKey::try_from`] (and the deserialization, which uses it)
 /// makes one, so a `FlowKey` is always valid. It has no `sqlx::Type` on purpose: the derive would

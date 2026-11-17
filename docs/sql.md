@@ -224,12 +224,12 @@ A field that is not known is refused, of the job, its callback or a retry policy
 not a default.
 
 ```text
-url (http, https; noop://… is the noop sink), sink http | noop (default: from url; noop needs no url)
-method (default POST; sink http), headers (object of strings), body (a string as it is, any other JSON as JSON text with content-type application/json) | body_base64
+url (http, https; noop://… is the noop sink)
+method (default POST), headers (object of strings), body (a string as it is, any other JSON as JSON text with content-type application/json) | body_base64
 at (RFC 3339 or unix seconds, 1970 to 9999) | delay (seconds), timeout (ms; none: --timeout when the job runs)
-retry (none: no retries) { policy fixed | fibonacci | exponential, count (up to 65535),
+retry (none: no retries) { policy fixed | fibonacci | exponential, count (up to 9999),
       delay (seconds; fixed without it retries at once), max_delay (seconds, backoffs) },
-      delays up to 2147483647; or the text of _retry: "5|exponential|2|60", "none"
+      delays up to 604800; or the text of _retry: "5|exponential|2|60", "none"
 callback (object; see docs/callbacks.md) { url, method, mode, types, headers, retry (as above),
       timeout, flow_key, priority }
 flow_key, priority, key (a repeated key returns the existing job id)

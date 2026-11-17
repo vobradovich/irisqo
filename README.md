@@ -107,7 +107,7 @@ GET {{host}}/to/https://postman-echo.com/get?_retry=8|exponential|2|300
 
 In JSON (`POST /api/v1/jobs`, `PUT /api/v1/schedules/{id}`, `enqueue_v1`): `retry` is an object,
 `{"policy": "exponential", "count": 8, "delay": 2, "max_delay": 300}` (`policy`: `fixed`, `fibonacci`,
-`exponential`; `max_delay` for the last two; `count` up to 65535, delays up to 2147483647 seconds),
+`exponential`; `max_delay` for the last two; `count` up to 9999, delays up to 604800 seconds (7 days)),
 or the same text as `_retry`: `"8|exponential|2|300"`. `"none"` is no retries, said out loud: for a
 callback, whose absent policy is a default of its own.
 

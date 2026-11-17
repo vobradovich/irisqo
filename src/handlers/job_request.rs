@@ -3,7 +3,7 @@ use crate::features::schedules::{JobSchedule, ScheduleRule};
 use crate::models::headers::{is_reserved_callback_header, is_reserved_header};
 use crate::models::{
     FlowKey, HttpMeta, JobCallback, JobCreate, JobMeta, JobRetry, JobSink, MILLISECONDS_RULE,
-    PRIORITY_RULE, ParamError, Params, WorkerOptions, parse_method,
+    PRIORITY_RULE, ParamError, Params, WorkerOptions, deserialize_method_of,
 };
 use axum::body::Bytes;
 use base64::Engine as _;
@@ -21,17 +21,6 @@ use utoipa::{
     openapi::schema::{KnownFormat, ObjectBuilder, OneOfBuilder, SchemaFormat, Type},
 };
 
-/// Where a job goes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, ToSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum SinkKind {
-    /// An HTTP request: `method` and `url`.
-    Http,
-    /// Completes at once and does nothing: for dry runs and load tests.
-    #[serde(alias = "none")]
-    Noop,
-}
-
 /// JSON job format v1, as `enqueue_v1` takes it, the `/to/` query and the "New job" form: the one
 /// description of a job that every way to create one fills (JSON by serde, `/to/` and the form
 /// by [`JobRequest::with_params`]) and [`JobRequest::validate`] checks.
@@ -44,17 +33,17 @@ pub enum SinkKind {
 /// `cron` or `interval` with `tz` (of `cron`) and `until` repeat the job.
 /// The retry policy defaults to none, the timeout to `--timeout` when the job runs. Fields that
 /// are not known are ignored.
-#[derive(Debug, Default, Deserialize, ToSchema)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct JobRequest {
-    /// `http` when `url` is an `http` or `https` URL, `noop` when it is `noop://…`; `noop`
-    /// without a `url`.
-    pub(crate) sink: Option<SinkKind>,
-    /// An HTTP method, for the `http` sink, in any case (`post` is `POST`, as in `enqueue_v1`);
+    /// An HTTP method, for an `http` url, in any case (`post` is `POST`, as in `enqueue_v1`);
     /// `POST` when absent.
-    #[schema(schema_with = method_schema)]
-    pub(crate) method: Option<String>,
-    /// An `http` or `https` URL; `noop://…` is the `noop` sink. Required but for `sink: noop`.
-    pub(crate) url: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_method")]
+    #[schema(value_type = Option<String>)]
+    pub(crate) method: Option<Method>,
+    /// An `http` or `https` URL; `noop://…` is the `noop` sink. Required.
+    #[serde(with = "http_serde::uri")]
+    #[schema(value_type = String)]
+    pub(crate) url: Uri,
     /// The retry policy, the object or its text (`5|exponential|2`); no retries when absent.
     #[serde(default, deserialize_with = "JobRetry::deserialize_optional")]
     pub(crate) retry: Option<JobRetry>,
@@ -103,16 +92,10 @@ pub struct JobRequest {
     pub(crate) body_raw: Option<Bytes>,
 }
 
-/// A string of one of `values`, for the API description.
-fn one_of(values: &[&str]) -> utoipa::openapi::Object {
-    ObjectBuilder::new()
-        .schema_type(Type::String)
-        .enum_values(Some(values.iter().copied()))
-        .build()
-}
-
-fn method_schema() -> utoipa::openapi::Object {
-    one_of(&["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"])
+fn deserialize_method<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Method>, D::Error> {
+    deserialize_method_of("method", deserializer)
 }
 
 /// An RFC 3339 time or unix seconds.
@@ -148,17 +131,29 @@ impl JobRequest {
     /// An `http` job for `/to/` and the form: the target, the headers to send, the body as it is.
     pub(crate) fn http(
         method: &Method,
-        url: &str,
+        url: Uri,
         headers: HashMap<String, String>,
         body: Bytes,
     ) -> Self {
         Self {
-            sink: Some(SinkKind::Http),
-            method: Some(method.to_string()),
-            url: Some(url.to_owned()),
+            method: Some(method.clone()),
+            url,
+            retry: None,
+            timeout: None,
+            flow_key: None,
+            priority: None,
             headers: Some(headers),
+            body: None,
+            body_base64: None,
+            at: None,
+            delay: None,
+            key: None,
+            cron: None,
+            interval: None,
+            tz: None,
+            until: None,
+            callback: None,
             body_raw: Some(body),
-            ..Self::default()
         }
     }
 
@@ -210,32 +205,17 @@ impl JobRequest {
         let mut errors = Errors::default();
 
         // `noop://…` is the `noop` sink, any other URL an `http` one
-        let noop_url = self.url.as_deref().is_some_and(|url| {
-            url.split_once(':')
-                .is_some_and(|(scheme, _)| scheme.eq_ignore_ascii_case("noop"))
-        });
-        let kind = if noop_url {
-            SinkKind::Noop
+        let noop_url = self
+            .url
+            .scheme_str()
+            .is_some_and(|scheme| scheme.eq_ignore_ascii_case("noop"));
+        let sink = if noop_url {
+            Some(JobSink::Noop)
         } else {
-            self.sink.unwrap_or(SinkKind::Http)
-        };
-        let sink = match kind {
-            SinkKind::Noop => Some(JobSink::Noop),
-            SinkKind::Http => {
-                let method = match self.method.as_deref() {
-                    None => Some(Method::POST),
-                    Some(method) => errors.check(
-                        "method",
-                        parse_method(method).ok_or("is not a valid HTTP method"),
-                    ),
-                };
-                let url = errors
-                    .required("url", self.url.as_deref())
-                    .and_then(|url| errors.check("url", parse_url(url)));
-                method
-                    .zip(url)
-                    .map(|(method, url)| JobSink::Http(HttpMeta { method, url }))
-            }
+            Some(JobSink::Http(HttpMeta {
+                method: self.method.take().unwrap_or(Method::POST),
+                url: self.url.clone(),
+            }))
         };
         if let Some(sink) = &sink {
             errors.check("url", sink.check(options));
@@ -429,10 +409,6 @@ fn check_callback(
     callback
 }
 
-fn parse_url(url: &str) -> Result<Uri, &'static str> {
-    Uri::try_from(url).map_err(|_| "is not a valid URL")
-}
-
 /// The errors of a request: every invalid field is reported, not only the first.
 #[derive(Default)]
 struct Errors(Vec<ParamError>);
@@ -449,14 +425,6 @@ impl Errors {
         result: Result<T, impl Into<String>>,
     ) -> Option<T> {
         result.map_err(|detail| self.add(parameter, detail)).ok()
-    }
-
-    /// `value`; `None` with an error of `parameter` when it is absent.
-    fn required<T>(&mut self, parameter: &'static str, value: Option<T>) -> Option<T> {
-        if value.is_none() {
-            self.add(parameter, "is required");
-        }
-        value
     }
 }
 
@@ -490,7 +458,7 @@ mod tests {
         let prepare = |spec| JobRequest::validate(spec, &options, now);
 
         let spec = serde_json::from_str(
-            r#"{"sink":"http","method":"POST","url":"https://example.com","delay":2,
+            r#"{"method":"POST","url":"https://example.com","delay":2,
                 "headers":{"X-Test":"hello"},"body":{"n":18446744073709551617}}"#,
         )?;
         let job = prepare(spec).expect("valid job");
@@ -512,7 +480,7 @@ mod tests {
 
         // every invalid field is reported
         let spec = serde_json::from_str(
-            r#"{"sink":"http","method":"POST","url":"ftp://example.com",
+            r#"{"method":"POST","url":"ftp://example.com",
                 "headers":{"Authorization":"a","authorization":"b"},"key":""}"#,
         )?;
         let errors = prepare(spec).expect_err("invalid job");
@@ -530,31 +498,31 @@ mod tests {
         );
         // typed fields are refused by the JSON itself
         for meta in [
-            r#"{"sink":"noop","timeout":0}"#,
-            r#"{"sink":"noop","callback":{"url":"https://example.com","types":["completed"]}}"#,
+            r#"{"url":"noop://x","timeout":0}"#,
+            r#"{"url":"noop://x","callback":{"url":"https://example.com","types":["completed"]}}"#,
             // a policy has its kind, a backoff its delay, and a retry is an object
-            r#"{"sink":"noop","retry":{"count":3}}"#,
-            r#"{"sink":"noop","retry":{"policy":"fixd","count":3}}"#,
-            r#"{"sink":"noop","retry":{"policy":"fibonacci","count":3}}"#,
-            r#"{"sink":"noop","retry":"fixed","retry_count":3}"#,
+            r#"{"url":"noop://x","retry":{"count":3}}"#,
+            r#"{"url":"noop://x","retry":{"policy":"fixd","count":3}}"#,
+            r#"{"url":"noop://x","retry":{"policy":"fibonacci","count":3}}"#,
+            r#"{"url":"noop://x","retry":"fixed","retry_count":3}"#,
             // a callback has its url
-            r#"{"sink":"noop","callback":{}}"#,
-            r#"{"sink":"noop","callback":{"timeout":5}}"#,
-            r#"{"sink":"noop","callback":{"url":"https://example.com","retry":{"count":0}}}"#,
-            r#"{"sink":"noop","callback":{"url":"https://example.com","timeout":0}}"#,
+            r#"{"url":"noop://x","callback":{}}"#,
+            r#"{"url":"noop://x","callback":{"timeout":5}}"#,
+            r#"{"url":"noop://x","callback":{"url":"https://example.com","retry":{"count":0}}}"#,
+            r#"{"url":"noop://x","callback":{"url":"https://example.com","timeout":0}}"#,
             // a policy as text is the one of `_retry`
-            r#"{"sink":"noop","retry":"5|exponential"}"#,
+            r#"{"url":"noop://x","retry":"5|exponential"}"#,
             // a flow key, a time
-            r#"{"sink":"noop","flow_key":"Bad Name"}"#,
-            r#"{"sink":"noop","at":"tomorrow"}"#,
-            r#"{"sink":"noop","at":true}"#,
+            r#"{"url":"noop://x","flow_key":"Bad Name"}"#,
+            r#"{"url":"noop://x","at":"tomorrow"}"#,
+            r#"{"url":"noop://x","at":true}"#,
         ] {
             assert!(serde_json::from_str::<JobRequest>(meta).is_err(), "{meta}");
         }
 
         // callbacks: the retry fields, the method in any case, an empty list of types
         let spec = serde_json::from_str(
-            r#"{"sink":"noop","callback":{"url":"https://example.com/cb","method":"put",
+            r#"{"url":"noop://x","callback":{"url":"https://example.com/cb","method":"put",
                 "retry":{"policy":"fixed","count":10,"delay":30},
                 "types":["irisqo.job.failed"]}}"#,
         )?;
@@ -574,15 +542,15 @@ mod tests {
         assert_eq!(callback.types, Some(vec![CallbackType::Failed]));
         for (meta, parameter) in [
             (
-                r#"{"sink":"noop","callback":{"url":"https://example.com","method":"GET"}}"#,
+                r#"{"url":"noop://x","callback":{"url":"https://example.com","method":"GET"}}"#,
                 "callback.method",
             ),
             (
-                r#"{"sink":"noop","callback":{"url":"https://example.com","types":[]}}"#,
+                r#"{"url":"noop://x","callback":{"url":"https://example.com","types":[]}}"#,
                 "callback.types",
             ),
             (
-                r#"{"sink":"noop","callback":{"url":"https://example.com","headers":{"Host":"x"}}}"#,
+                r#"{"url":"noop://x","callback":{"url":"https://example.com","headers":{"Host":"x"}}}"#,
                 "callback.headers",
             ),
         ] {
@@ -591,12 +559,15 @@ mod tests {
         }
 
         // no retry, or null: no retries; the text of `_retry` is a policy too
-        for meta in [r#"{"sink":"noop"}"#, r#"{"sink":"noop","retry":null}"#] {
+        for meta in [
+            r#"{"url":"noop://x"}"#,
+            r#"{"url":"noop://x","retry":null}"#,
+        ] {
             let spec = serde_json::from_str(meta)?;
             assert_eq!(prepare(spec).expect(meta).meta.retry, None, "{meta}");
         }
         let job = prepare(serde_json::from_str(
-            r#"{"sink":"noop","retry":"5|exponential|2",
+            r#"{"url":"noop://x","retry":"5|exponential|2",
                 "callback":{"url":"https://example.com/cb","retry":"none"}}"#,
         )?)
         .expect("valid job");
@@ -615,7 +586,7 @@ mod tests {
 
         // a method in any case, an empty flow key of the callback, unix 0 (now): as in enqueue_v1
         let job = prepare(serde_json::from_str(
-            r#"{"sink":"http","method":"post","url":"https://example.com","at":0,
+            r#"{"method":"post","url":"https://example.com","at":0,
                 "callback":{"url":"https://example.com/cb","flow_key":""}}"#,
         )?)
         .expect("valid job");
@@ -625,20 +596,23 @@ mod tests {
 
         // a job repeats: the key is the id of the schedule
         let job = prepare(serde_json::from_str(
-            r#"{"sink":"noop","key":"nightly","cron":"0 9 * * *","tz":"Europe/Berlin"}"#,
+            r#"{"url":"noop://x","key":"nightly","cron":"0 9 * * *","tz":"Europe/Berlin"}"#,
         )?)
         .expect("a schedule");
         assert_eq!(job.key.as_deref(), Some("nightly"));
         assert_eq!(job.schedule.map(|s| s.tz), Some(chrono_tz::Europe::Berlin));
         for (meta, parameter) in [
-            (r#"{"sink":"noop","interval":0}"#, "interval"),
+            (r#"{"url":"noop://x","interval":0}"#, "interval"),
             (
-                r#"{"sink":"noop","cron":"* * * * *","interval":60}"#,
+                r#"{"url":"noop://x","cron":"* * * * *","interval":60}"#,
                 "cron",
             ),
-            (r#"{"sink":"noop","until":"2100-01-01T00:00:00Z"}"#, "until"),
-            (r#"{"sink":"noop","tz":"Europe/Berlin"}"#, "tz"),
-            (r#"{"sink":"noop","at":2000000000,"delay":5}"#, "delay"),
+            (
+                r#"{"url":"noop://x","until":"2100-01-01T00:00:00Z"}"#,
+                "until",
+            ),
+            (r#"{"url":"noop://x","tz":"Europe/Berlin"}"#, "tz"),
+            (r#"{"url":"noop://x","at":2000000000,"delay":5}"#, "delay"),
         ] {
             let errors = prepare(serde_json::from_str(meta)?).expect_err(meta);
             assert_eq!(errors[0].parameter, parameter, "{meta}");
@@ -653,23 +627,20 @@ mod tests {
             JobSink::Http(http) if http.method == Method::POST
         ));
         assert_eq!(sink(r#"{"url":"noop://bench"}"#)?, JobSink::Noop);
-        assert_eq!(
-            sink(r#"{"sink":"http","url":"NOOP://bench"}"#)?,
-            JobSink::Noop
-        );
-        assert_eq!(sink(r#"{"sink":"noop"}"#)?, JobSink::Noop);
-        // the structure: no url, a method that is not one
-        for (meta, parameter) in [
-            (r#"{}"#, "url"),
-            (r#"{"sink":"http","method":"GET"}"#, "url"),
+        assert_eq!(sink(r#"{"url":"NOOP://bench"}"#)?, JobSink::Noop);
+        assert_eq!(sink(r#"{"url":"noop://x"}"#)?, JobSink::Noop);
+        // the structure: no url, a url or a method that is not one
+        for (meta, error) in [
+            (r#"{}"#, "missing field `url`"),
+            (r#"{"method":"GET"}"#, "missing field `url`"),
+            (r#"{"url":"not a url"}"#, "expected uri"),
             (
                 r#"{"url":"https://example.com","method":"BAD METHOD"}"#,
-                "method",
+                "method: is not a valid HTTP method",
             ),
         ] {
-            let spec = serde_json::from_str(meta)?;
-            let errors = prepare(spec).expect_err(meta);
-            assert_eq!(errors[0].parameter, parameter, "{meta}");
+            let err = serde_json::from_str::<JobRequest>(meta).expect_err(meta);
+            assert!(err.to_string().contains(error), "{meta}: {err}");
         }
         Ok(())
     }
@@ -682,7 +653,13 @@ mod tests {
                 .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
                 .collect::<HashMap<_, _>>()
         };
-        let (input, errors) = JobRequest::default().with_params(&params(&[
+        let (input, errors) = JobRequest::http(
+            &Method::GET,
+            "https://example.com".parse().unwrap(),
+            HashMap::new(),
+            Bytes::new(),
+        )
+        .with_params(&params(&[
             ("delay", "5"),
             ("retry", "3|fibonacci|2|60"),
             ("key", ""),
@@ -698,7 +675,13 @@ mod tests {
             })
         );
         // every one that does not parse, named by its field
-        let (input, errors) = JobRequest::default().with_params(&params(&[
+        let (input, errors) = JobRequest::http(
+            &Method::GET,
+            "https://example.com".parse().unwrap(),
+            HashMap::new(),
+            Bytes::new(),
+        )
+        .with_params(&params(&[
             ("delay", "soon"),
             ("timeout", "0"),
             ("priority", "high"),
@@ -728,7 +711,7 @@ mod tests {
             .collect()
     }
 
-    const META: &str = r#""sink":"http","method":"POST","url":"https://example.com""#;
+    const META: &str = r#""method":"POST","url":"https://example.com""#;
 
     #[test]
     fn a_schedule_comes_with_the_job_of_its_runs() {
@@ -773,7 +756,7 @@ mod tests {
     #[test]
     fn every_invalid_field_is_reported() {
         let errors = declare(
-            r#"{"sink":"http","method":"POST","url":"ftp://example.com",
+            r#"{"method":"POST","url":"ftp://example.com",
                 "cron":"* * * * *","interval":60}"#,
         )
         .expect_err("invalid schedule");

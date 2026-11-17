@@ -60,11 +60,22 @@ impl JobRetry {
     pub const RULE: &str =
         "must be none, N, N|fixed|S, N|fibonacci|S|M or N|exponential|S|M (M optional)";
 
-    /// The longest `delay` and `max_delay`, as `enqueue_v1` takes them: an `int` of Postgres.
-    pub const MAX_DELAY: u32 = i32::MAX as u32;
+    /// The most retries, as `enqueue_v1` takes them.
+    pub const MAX_COUNT: u16 = 9999;
+
+    /// The longest `delay` and `max_delay` in seconds (7 days), as `enqueue_v1` takes them.
+    pub const MAX_DELAY: u32 = 604_800;
+
+    /// What is wrong with a count above [`Self::MAX_COUNT`].
+    const COUNT_RULE: &str = "count must be at most 9999";
 
     /// What is wrong with a delay above [`Self::MAX_DELAY`].
-    const DELAY_RULE: &str = "delay and max_delay must be at most 2147483647 seconds";
+    const DELAY_RULE: &str = "delay and max_delay must be at most 604800 seconds";
+
+    /// `true` when the count is at most [`Self::MAX_COUNT`].
+    fn count_fits(self) -> bool {
+        self.retry_count() <= Self::MAX_COUNT
+    }
 
     /// `true` when the delays are at most [`Self::MAX_DELAY`].
     fn delays_fit(self) -> bool {
@@ -85,7 +96,7 @@ impl JobRetry {
 
     /// For `deserialize_with`: a policy of a request, the object or the text of `_retry`
     /// (`"5|exponential|2"`). Absent, `null` and `""` are no policy (the default of the place);
-    /// `"none"` is [`Self::NONE`]. Delays above [`Self::MAX_DELAY`] are refused.
+    /// `"none"` is [`Self::NONE`]. A count above [`Self::MAX_COUNT`] and delays above [`Self::MAX_DELAY`] are refused.
     pub fn deserialize_optional<'de, D: Deserializer<'de>>(
         deserializer: D,
     ) -> Result<Option<Self>, D::Error> {
@@ -115,10 +126,12 @@ impl JobRetry {
 
             fn visit_map<A: de::MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
                 let retry = JobRetry::deserialize(de::value::MapAccessDeserializer::new(map))?;
-                if retry.delays_fit() {
-                    Ok(Some(retry))
-                } else {
+                if !retry.count_fits() {
+                    Err(de::Error::custom(JobRetry::COUNT_RULE))
+                } else if !retry.delays_fit() {
                     Err(de::Error::custom(JobRetry::DELAY_RULE))
+                } else {
+                    Ok(Some(retry))
                 }
             }
         }
@@ -216,7 +229,11 @@ impl JobRetry {
             })
             .transpose()
         };
-        let retry_count: u16 = count.parse().map_err(|_| invalid())?;
+        let retry_count: u16 = count
+            .parse()
+            .ok()
+            .filter(|&n| n <= Self::MAX_COUNT)
+            .ok_or_else(invalid)?;
         match (kind, seconds(delay)?, seconds(max)?) {
             ("fixed", retry_delay, None) => Ok(Some(JobRetry::Fixed {
                 retry_count,
@@ -349,6 +366,7 @@ mod tests {
             assert_eq!(read(s), Some(None), "{s}");
         }
         assert_eq!(read(r#"{"retry":"none"}"#), Some(Some(JobRetry::NONE)));
+        assert!(read(r#"{"retry":"9999|fixed|604800"}"#).is_some());
         let backoff = Some(Some(JobRetry::Exponential {
             retry_count: 5,
             retry_delay: 2,
@@ -362,8 +380,10 @@ mod tests {
         for s in [
             r#"{"retry":"5|exponential"}"#,
             r#"{"retry":5}"#,
-            r#"{"retry":{"policy":"fixed","count":1,"delay":2147483648}}"#,
-            r#"{"retry":{"policy":"fixed","count":65536}}"#,
+            r#"{"retry":{"policy":"fixed","count":1,"delay":604801}}"#,
+            r#"{"retry":{"policy":"fixed","count":10000}}"#,
+            r#"{"retry":"10000"}"#,
+            r#"{"retry":"1|fixed|604801"}"#,
         ] {
             assert_eq!(read(s), None, "{s}");
         }

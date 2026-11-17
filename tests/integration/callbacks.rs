@@ -357,7 +357,7 @@ async fn cancel_conflict_uses_one_connection(pool: PgPool) -> anyhow::Result<()>
     use irisqo::db::jobqueue::{ActionOutcome, cancel_job};
     use std::time::Duration;
 
-    let id = sqlx::query_scalar::<_, i64>("SELECT enqueue_v1('{\"sink\":\"noop\"}')")
+    let id = sqlx::query_scalar::<_, i64>("SELECT enqueue_v1('{\"url\":\"noop://x\"}')")
         .fetch_one(&pool)
         .await?;
     let single = sqlx::postgres::PgPoolOptions::new()
@@ -458,22 +458,22 @@ async fn callback_fields_are_checked(pool: PgPool) -> anyhow::Result<()> {
 
     // the same checks in `enqueue_v1`
     for job in [
-        r#"{"sink":"noop","callback":{"mode":"relay"}}"#,
-        r#"{"sink":"noop","callback":"http://x.example"}"#,
-        r#"{"sink":"noop","callback":{"url":"ftp://x.example"}}"#,
-        r#"{"sink":"noop","callback":{"url":"http://x.example","mode":"final"}}"#,
-        r#"{"sink":"noop","callback":{"url":"http://x.example","method":"GET"}}"#,
-        r#"{"sink":"noop","callback":{"url":"http://x.example","types":["completed"]}}"#,
-        r#"{"sink":"noop","callback":{"url":"http://x.example","types":[]}}"#,
-        r#"{"sink":"noop","callback":{"types":["irisqo.job.failed"]}}"#,
+        r#"{"url":"noop://x","callback":{"mode":"relay"}}"#,
+        r#"{"url":"noop://x","callback":"http://x.example"}"#,
+        r#"{"url":"noop://x","callback":{"url":"ftp://x.example"}}"#,
+        r#"{"url":"noop://x","callback":{"url":"http://x.example","mode":"final"}}"#,
+        r#"{"url":"noop://x","callback":{"url":"http://x.example","method":"GET"}}"#,
+        r#"{"url":"noop://x","callback":{"url":"http://x.example","types":["completed"]}}"#,
+        r#"{"url":"noop://x","callback":{"url":"http://x.example","types":[]}}"#,
+        r#"{"url":"noop://x","callback":{"types":["irisqo.job.failed"]}}"#,
         // a policy has its kind, a backoff its delay
-        r#"{"sink":"noop","callback":{"url":"http://x.example","retry":{"count":3}}}"#,
-        r#"{"sink":"noop","callback":{"url":"http://x.example","retry":{"policy":"fibonacci","count":3}}}"#,
+        r#"{"url":"noop://x","callback":{"url":"http://x.example","retry":{"count":3}}}"#,
+        r#"{"url":"noop://x","callback":{"url":"http://x.example","retry":{"policy":"fibonacci","count":3}}}"#,
         // a URL the server cannot read would make the whole job unreadable
-        r#"{"sink":"noop","callback":{"url":"http://x.example/<a>"}}"#,
-        r#"{"sink":"noop","callback":{"url":"http://[x.example"}}"#,
-        r#"{"sink":"noop","callback":{"url":"http://a@b@x.example"}}"#,
-        r#"{"sink":"http","url":"http://x.example/<a>"}"#,
+        r#"{"url":"noop://x","callback":{"url":"http://x.example/<a>"}}"#,
+        r#"{"url":"noop://x","callback":{"url":"http://[x.example"}}"#,
+        r#"{"url":"noop://x","callback":{"url":"http://a@b@x.example"}}"#,
+        r#"{"url":"http://x.example/<a>"}"#,
     ] {
         let res = sqlx::query_scalar::<_, i64>("SELECT enqueue_v1($1::jsonb)")
             .bind(job)
@@ -482,7 +482,7 @@ async fn callback_fields_are_checked(pool: PgPool) -> anyhow::Result<()> {
         assert!(res.is_err(), "{job}");
     }
     let id: i64 = sqlx::query_scalar(
-        r#"SELECT enqueue_v1('{"sink":"noop","callback":{"url":"http://x.example","method":"put","types":["irisqo.job.failed"],"retry":{"policy":"fixed","count":3}}}'::jsonb)"#,
+        r#"SELECT enqueue_v1('{"url":"noop://x","callback":{"url":"http://x.example","method":"put","types":["irisqo.job.failed"],"retry":{"policy":"fixed","count":3}}}'::jsonb)"#,
     )
     .fetch_one(&pool)
     .await?;
@@ -528,7 +528,7 @@ async fn callback_retry_none_is_not_the_default(pool: PgPool) -> anyhow::Result<
     };
     let response =
         send_json(
-            r#"{"sink":"noop","callback":{"url":"http://x.example","retry":{"policy":"fixed","count":0}}}"#,
+            r#"{"url":"noop://x","callback":{"url":"http://x.example","retry":{"policy":"fixed","count":0}}}"#,
         )
         .await;
     assert!(response.status().is_success());
@@ -538,7 +538,7 @@ async fn callback_retry_none_is_not_the_default(pool: PgPool) -> anyhow::Result<
     assert!(no_retries(&callback_meta(&pool, id).await));
     // a policy that is not valid is refused, not replaced by the default
     let response = send_json(
-        r#"{"sink":"noop","callback":{"url":"http://x.example","retry":{"policy":"fixed"}}}"#,
+        r#"{"url":"noop://x","callback":{"url":"http://x.example","retry":{"policy":"fixed"}}}"#,
     )
     .await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
@@ -558,13 +558,13 @@ async fn callback_retry_none_is_not_the_default(pool: PgPool) -> anyhow::Result<
 
     // `enqueue_v1`, and the default when the policy is not given
     let none: i64 = sqlx::query_scalar(
-        r#"SELECT enqueue_v1('{"sink":"noop","callback":{"url":"http://x.example","retry":{"policy":"fixed","count":0}}}'::jsonb)"#,
+        r#"SELECT enqueue_v1('{"url":"noop://x","callback":{"url":"http://x.example","retry":{"policy":"fixed","count":0}}}'::jsonb)"#,
     )
     .fetch_one(&pool)
     .await?;
     assert!(no_retries(&callback_meta(&pool, none).await));
     let absent: i64 = sqlx::query_scalar(
-        r#"SELECT enqueue_v1('{"sink":"noop","callback":{"url":"http://x.example"}}'::jsonb)"#,
+        r#"SELECT enqueue_v1('{"url":"noop://x","callback":{"url":"http://x.example"}}'::jsonb)"#,
     )
     .fetch_one(&pool)
     .await?;
@@ -589,7 +589,7 @@ async fn a_callback_with_a_forged_header_is_not_made(pool: PgPool) -> anyhow::Re
         ("x-own", "bad\u{1}value"),
     ] {
         let job = serde_json::json!({
-            "sink": "noop",
+            "url":"noop://x",
             "callback": {"url": "http://x.example", "mode": "relay",
                 "headers": headers(name, value)},
         });
@@ -601,7 +601,7 @@ async fn a_callback_with_a_forged_header_is_not_made(pool: PgPool) -> anyhow::Re
         );
     }
     let job = serde_json::json!({
-        "sink": "noop",
+        "url":"noop://x",
         "callback": {"url": "http://x.example", "mode": "relay",
             "headers": headers("x-own", "kept")},
     });
@@ -629,7 +629,7 @@ async fn a_callback_may_carry_the_forward_headers_of_a_chain(pool: PgPool) -> an
     let state = common::state(pool.clone());
     let addr = common::spawn_app(&state).await;
     let json = format!(
-        r#"{{"sink":"noop","callback":{{"url":"http://{addr}/to/http://{addr}/echo","mode":"relay",
+        r#"{{"url":"noop://x","callback":{{"url":"http://{addr}/to/http://{addr}/echo","mode":"relay",
             "headers":{{"Authorization":"Bearer irisqo","Irisqo-Forward-Authorization":"Bearer for-next"}}}}}}"#
     );
     let response = common::send(

@@ -124,46 +124,32 @@ CREATE TABLE stats (
     at    timestamptz NOT NULL
 ) WITH (fillfactor = 50);
 
--- The fields of `obj` that are not in `known`, by name ("a, b"); NULL when there is none or
--- `obj` is not an object.
-CREATE FUNCTION unknown_fields_v1(obj jsonb, known text[]) RETURNS text
-LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
-    SELECT string_agg(k, ', ' ORDER BY k)
-    FROM jsonb_object_keys(CASE WHEN jsonb_typeof(obj) = 'object' THEN obj ELSE '{}' END) k
-    WHERE k <> ALL (known)
-$$;
-
--- A retry policy as enqueue_v1 takes it: the object, or its text as `_retry` (N, N|fixed|S,
--- N|fibonacci|S|M, N|exponential|S|M; `none` is no retries, said out loud) as that object.
--- NULL for null, an absent one and an empty text; text that is not a policy stays as it is,
--- for the checks of enqueue_v1 to refuse.
-CREATE FUNCTION retry_v1(policy jsonb) RETURNS jsonb
-LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
-    SELECT CASE
-        WHEN jsonb_typeof(policy) IS DISTINCT FROM 'string' THEN nullif(policy, 'null'::jsonb)
-        WHEN policy #>> '{}' = '' THEN NULL
-        WHEN policy #>> '{}' = 'none' THEN '{"policy": "fixed", "count": 0}'::jsonb
-        WHEN m IS NULL THEN policy
-        ELSE jsonb_strip_nulls(jsonb_build_object(
-            'policy', coalesce(m[2], 'fixed'),
-            'count', m[1]::numeric,
-            'delay', m[3]::numeric,
-            'max_delay', m[4]::numeric))
-    END
-    FROM (SELECT regexp_match(policy #>> '{}',
-                 '^([0-9]+)(?:[|,]([a-z]+)(?:[|,]([0-9]+)(?:[|,]([0-9]+))?)?)?$') AS m) t
-$$;
-
 CREATE FUNCTION enqueue_v1(job jsonb) RETURNS bigint
 LANGUAGE plpgsql SET search_path FROM CURRENT AS $$
 DECLARE
-    -- `noop://…` is the `noop` sink, any other URL an `http` one
-    v_sink     text := CASE WHEN job->>'url' ~* '^noop:' THEN 'noop'
-                            ELSE coalesce(job->>'sink', 'http') END;
-    v_unknown  text := unknown_fields_v1(job, ARRAY['sink', 'method', 'url', 'retry', 'timeout',
-                           'flow_key', 'priority', 'headers', 'body', 'body_base64', 'at', 'delay',
-                           'key', 'callback', 'traceparent', 'tracestate']);
-    v_retry    jsonb := retry_v1(job->'retry');
+    c_job_fields CONSTANT text[] := ARRAY['method', 'url', 'retry', 'timeout', 'flow_key',
+                           'priority', 'headers', 'body', 'body_base64', 'at', 'delay', 'key',
+                           'callback', 'traceparent', 'tracestate'];
+    c_cb_fields CONSTANT text[] := ARRAY['url', 'method', 'mode', 'types', 'headers', 'retry',
+                           'timeout', 'flow_key', 'priority'];
+    c_retry_fields CONSTANT text[] := ARRAY['policy', 'count', 'delay', 'max_delay'];
+    c_retry_text CONSTANT text := '^([0-9]+)(?:[|,]([a-z]+)(?:[|,]([0-9]+)(?:[|,]([0-9]+))?)?)?$';
+    c_flow CONSTANT text := '^[a-z0-9][a-z0-9._:-]{0,127}$';
+    c_url CONSTANT text := '^https?://([a-z0-9._~%!$&''()*+,;=:-]+@)?([a-z0-9._-]+|\[[0-9a-f:.]+\])(:[0-9]{1,5})?'
+                           '([/?#][]a-z0-9._~%!$&''()*+,;=:@/?#[-]*)?$';
+    v_sink     text := CASE WHEN job->>'url' ~* '^noop:' THEN 'noop' ELSE 'http' END;
+    v_retry    jsonb := CASE
+        WHEN jsonb_typeof(job->'retry') IS DISTINCT FROM 'string' THEN nullif(job->'retry', 'null'::jsonb)
+        WHEN job->>'retry' = '' THEN NULL
+        WHEN job->>'retry' = 'none' THEN '{"policy": "fixed", "count": 0}'::jsonb
+        WHEN job->>'retry' !~ c_retry_text THEN job->'retry'
+        ELSE (SELECT jsonb_strip_nulls(jsonb_build_object(
+                  'policy', coalesce(m[2], 'fixed'),
+                  'count', m[1]::numeric,
+                  'delay', m[3]::numeric,
+                  'max_delay', m[4]::numeric))
+              FROM (SELECT regexp_match(job->>'retry', c_retry_text) AS m) t)
+    END;
     v_policy   text := v_retry->>'policy';
     v_flow     text := nullif(job->>'flow_key', '');
     v_key      text := nullif(job->>'key', '');
@@ -179,24 +165,29 @@ DECLARE
     v_cb_url   text := v_cb->>'url';
     v_cb_mode  text := coalesce(v_cb->>'mode', 'webhook');
     v_cb_method text := upper(v_cb->>'method');
-    v_cb_unknown text := unknown_fields_v1(v_cb, ARRAY['url', 'method', 'mode', 'types',
-                             'headers', 'retry', 'timeout', 'flow_key', 'priority']);
-    v_cb_retry jsonb := retry_v1(v_cb->'retry');
+    v_cb_retry jsonb := CASE
+        WHEN jsonb_typeof(v_cb->'retry') IS DISTINCT FROM 'string' THEN nullif(v_cb->'retry', 'null'::jsonb)
+        WHEN v_cb->>'retry' = '' THEN NULL
+        WHEN v_cb->>'retry' = 'none' THEN '{"policy": "fixed", "count": 0}'::jsonb
+        WHEN v_cb->>'retry' !~ c_retry_text THEN v_cb->'retry'
+        ELSE (SELECT jsonb_strip_nulls(jsonb_build_object(
+                  'policy', coalesce(m[2], 'fixed'),
+                  'count', m[1]::numeric,
+                  'delay', m[3]::numeric,
+                  'max_delay', m[4]::numeric))
+              FROM (SELECT regexp_match(v_cb->>'retry', c_retry_text) AS m) t)
+    END;
     v_cb_policy text := v_cb_retry->>'policy';
     v_cb_flow  text := nullif(v_cb->>'flow_key', '');
     v_callback jsonb;
-    -- An http(s) URL of the characters of RFC 3986 only: [user@]host[:port][path][?query][#fragment].
-    -- It is narrower than what the server reads, so a URL that passes is one the server can read.
-    c_url CONSTANT text := '^https?://([a-z0-9._~%!$&''()*+,;=:-]+@)?([a-z0-9._-]+|\[[0-9a-f:.]+\])(:[0-9]{1,5})?'
-                           '([/?#][]a-z0-9._~%!$&''()*+,;=:@/?#[-]*)?$';
 BEGIN
     v_error := CASE
         WHEN jsonb_typeof(job) IS DISTINCT FROM 'object'
             THEN 'must be a JSON object'
-        WHEN v_unknown IS NOT NULL
-            THEN 'fields that are not known: ' || v_unknown
-        WHEN coalesce(v_sink, '') NOT IN ('http', 'noop')
-            THEN 'sink must be http or noop'
+        WHEN EXISTS (SELECT 1 FROM jsonb_object_keys(job) k WHERE k <> ALL (c_job_fields))
+            THEN 'fields that are not known: '
+                 || (SELECT string_agg(k, ', ' ORDER BY k)
+                     FROM jsonb_object_keys(job) k WHERE k <> ALL (c_job_fields))
         WHEN v_sink = 'http' AND coalesce(job->>'url', '') !~* c_url
             THEN 'url must be an http or https URL of URL characters only (percent-encode the others)'
         WHEN v_sink = 'http' AND coalesce(job->>'method', 'POST') !~* '^[a-z]{1,16}$'
@@ -213,7 +204,7 @@ BEGIN
             THEN 'body_base64 must be a string'
         WHEN v_key !~ '^[^[:cntrl:]]{1,255}$'
             THEN 'key must be 1 to 255 characters without control characters'
-        WHEN v_flow !~ '^[a-z0-9][a-z0-9._:-]{0,127}$'
+        WHEN v_flow !~ c_flow
             THEN 'flow_key must be 1 to 128 characters of a-z, 0-9, . _ : - and start with a letter or a digit'
         WHEN job->>'priority' !~ '^-?[0-9]{1,10}$'
             THEN 'priority must be an integer'
@@ -225,27 +216,26 @@ BEGIN
             THEN 'retry must be an object, or text as none, N, N|fixed|S or N|kind|S|M'
         WHEN v_retry IS NOT NULL AND coalesce(v_policy, '') NOT IN ('fixed', 'fibonacci', 'exponential')
             THEN 'retry.policy must be fixed, fibonacci or exponential'
-        -- the policy is stored as it is: no other field, and numbers as JSON numbers
-        WHEN unknown_fields_v1(v_retry, ARRAY['policy', 'count', 'delay', 'max_delay']) IS NOT NULL
+        WHEN EXISTS (SELECT 1 FROM jsonb_object_keys(v_retry) k WHERE k <> ALL (c_retry_fields))
             THEN 'retry may have policy, count, delay and max_delay only'
         WHEN v_retry IS NOT NULL AND CASE
-                WHEN jsonb_typeof(v_retry->'count') = 'number' AND v_retry->>'count' ~ '^[0-9]{1,5}$'
-                    THEN (v_retry->>'count')::int > 65535
+                WHEN jsonb_typeof(v_retry->'count') = 'number' AND v_retry->>'count' ~ '^[0-9]{1,4}$'
+                    THEN (v_retry->>'count')::int > 9999
                 ELSE true END
-            THEN 'retry.count must be a number up to 65535'
+            THEN 'retry.count must be a number up to 9999'
         WHEN CASE
                 WHEN coalesce(jsonb_typeof(v_retry->'delay'), 'null') = 'null'
                     THEN v_policy IN ('fibonacci', 'exponential')
-                WHEN jsonb_typeof(v_retry->'delay') = 'number' AND v_retry->>'delay' ~ '^[0-9]{1,10}$'
-                    THEN (v_retry->>'delay')::bigint > 2147483647
+                WHEN jsonb_typeof(v_retry->'delay') = 'number' AND v_retry->>'delay' ~ '^[0-9]{1,7}$'
+                    THEN (v_retry->>'delay')::bigint > 604800
                 ELSE true END
-            THEN 'retry.delay must be a number of seconds up to 2147483647'
+            THEN 'retry.delay must be a number of seconds up to 604800'
         WHEN CASE
                 WHEN coalesce(jsonb_typeof(v_retry->'max_delay'), 'null') = 'null' THEN false
-                WHEN jsonb_typeof(v_retry->'max_delay') = 'number' AND v_retry->>'max_delay' ~ '^[0-9]{1,10}$'
-                    THEN (v_retry->>'max_delay')::bigint > 2147483647
+                WHEN jsonb_typeof(v_retry->'max_delay') = 'number' AND v_retry->>'max_delay' ~ '^[0-9]{1,7}$'
+                    THEN (v_retry->>'max_delay')::bigint > 604800
                 ELSE true END
-            THEN 'retry.max_delay must be a number of seconds up to 2147483647'
+            THEN 'retry.max_delay must be a number of seconds up to 604800'
         WHEN v_policy = 'fixed' AND v_retry->'max_delay' IS NOT NULL
             THEN 'retry.max_delay is for fibonacci and exponential'
         WHEN job->>'at' IS NOT NULL AND job->>'delay' IS NOT NULL
@@ -256,8 +246,10 @@ BEGIN
             THEN 'delay must be a number of seconds'
         WHEN jsonb_typeof(job->'callback') NOT IN ('object', 'null')
             THEN 'callback must be an object'
-        WHEN v_cb_unknown IS NOT NULL
-            THEN 'callback fields that are not known: ' || v_cb_unknown
+        WHEN EXISTS (SELECT 1 FROM jsonb_object_keys(v_cb) k WHERE k <> ALL (c_cb_fields))
+            THEN 'callback fields that are not known: '
+                 || (SELECT string_agg(k, ', ' ORDER BY k)
+                     FROM jsonb_object_keys(v_cb) k WHERE k <> ALL (c_cb_fields))
         WHEN v_cb IS NOT NULL AND coalesce(v_cb_url, '') !~* c_url
             THEN 'callback.url must be an http or https URL of URL characters only (percent-encode the others)'
         WHEN v_cb_mode NOT IN ('webhook', 'relay')
@@ -279,7 +271,7 @@ BEGIN
                      FROM jsonb_each(coalesce(nullif(v_cb->'headers', 'null'::jsonb), '{}')) h
                      WHERE jsonb_typeof(h.value) <> 'string')
             THEN 'callback.headers values must be strings'
-        WHEN v_cb_flow !~ '^[a-z0-9][a-z0-9._:-]{0,127}$'
+        WHEN v_cb_flow !~ c_flow
             THEN 'callback.flow_key must be 1 to 128 characters of a-z, 0-9, . _ : - and start with a letter or a digit'
         WHEN v_cb->>'priority' !~ '^-?[0-9]{1,10}$'
             THEN 'callback.priority must be an integer'
@@ -291,34 +283,32 @@ BEGIN
             THEN 'callback.retry must be an object, or text as none, N, N|fixed|S or N|kind|S|M'
         WHEN v_cb_retry IS NOT NULL AND coalesce(v_cb_policy, '') NOT IN ('fixed', 'fibonacci', 'exponential')
             THEN 'callback.retry.policy must be fixed, fibonacci or exponential'
-        -- the policy is stored as it is: no other field, and numbers as JSON numbers
-        WHEN unknown_fields_v1(v_cb_retry, ARRAY['policy', 'count', 'delay', 'max_delay']) IS NOT NULL
+        WHEN EXISTS (SELECT 1 FROM jsonb_object_keys(v_cb_retry) k WHERE k <> ALL (c_retry_fields))
             THEN 'callback.retry may have policy, count, delay and max_delay only'
         WHEN v_cb_retry IS NOT NULL AND CASE
-                WHEN jsonb_typeof(v_cb_retry->'count') = 'number' AND v_cb_retry->>'count' ~ '^[0-9]{1,5}$'
-                    THEN (v_cb_retry->>'count')::int > 65535
+                WHEN jsonb_typeof(v_cb_retry->'count') = 'number' AND v_cb_retry->>'count' ~ '^[0-9]{1,4}$'
+                    THEN (v_cb_retry->>'count')::int > 9999
                 ELSE true END
-            THEN 'callback.retry.count must be a number up to 65535'
+            THEN 'callback.retry.count must be a number up to 9999'
         WHEN CASE
                 WHEN coalesce(jsonb_typeof(v_cb_retry->'delay'), 'null') = 'null'
                     THEN v_cb_policy IN ('fibonacci', 'exponential')
-                WHEN jsonb_typeof(v_cb_retry->'delay') = 'number' AND v_cb_retry->>'delay' ~ '^[0-9]{1,10}$'
-                    THEN (v_cb_retry->>'delay')::bigint > 2147483647
+                WHEN jsonb_typeof(v_cb_retry->'delay') = 'number' AND v_cb_retry->>'delay' ~ '^[0-9]{1,7}$'
+                    THEN (v_cb_retry->>'delay')::bigint > 604800
                 ELSE true END
-            THEN 'callback.retry.delay must be a number of seconds up to 2147483647'
+            THEN 'callback.retry.delay must be a number of seconds up to 604800'
         WHEN CASE
                 WHEN coalesce(jsonb_typeof(v_cb_retry->'max_delay'), 'null') = 'null' THEN false
-                WHEN jsonb_typeof(v_cb_retry->'max_delay') = 'number' AND v_cb_retry->>'max_delay' ~ '^[0-9]{1,10}$'
-                    THEN (v_cb_retry->>'max_delay')::bigint > 2147483647
+                WHEN jsonb_typeof(v_cb_retry->'max_delay') = 'number' AND v_cb_retry->>'max_delay' ~ '^[0-9]{1,7}$'
+                    THEN (v_cb_retry->>'max_delay')::bigint > 604800
                 ELSE true END
-            THEN 'callback.retry.max_delay must be a number of seconds up to 2147483647'
+            THEN 'callback.retry.max_delay must be a number of seconds up to 604800'
         WHEN v_cb_policy = 'fixed' AND v_cb_retry->'max_delay' IS NOT NULL
             THEN 'callback.retry.max_delay is for fibonacci and exponential'
     END;
     IF v_error IS NOT NULL THEN
         RAISE EXCEPTION 'invalid job: %', v_error USING ERRCODE = 'invalid_parameter_value';
     END IF;
-
     v_priority := coalesce((job->>'priority')::int, 0);
     v_timeout  := (job->>'timeout')::int;
     v_body     := nullif(CASE
@@ -333,9 +323,8 @@ BEGIN
                     WHEN job->>'delay' IS NOT NULL THEN clock_timestamp() + make_interval(secs => (job->>'delay')::int)
                 END;
     EXCEPTION WHEN datetime_field_overflow OR invalid_datetime_format THEN
-        v_at := '-infinity';  -- an RFC 3339 time that is not a date (02-30): refused below
+        v_at := '-infinity';
     END;
-    -- a usable time, as the API takes it: from 1970 up to 9999-12-31
     IF v_at < 'epoch'::timestamptz OR v_at >= '10000-01-01T00:00:00Z'::timestamptz THEN
         RAISE EXCEPTION 'invalid job: at must be an RFC 3339 time or unix seconds from 1970 to 9999'
             USING ERRCODE = 'invalid_parameter_value';
@@ -343,7 +332,6 @@ BEGIN
     IF v_at <= clock_timestamp() THEN
         v_at := NULL;
     END IF;
-
     IF v_cb IS NOT NULL THEN
         v_callback := jsonb_strip_nulls(jsonb_build_object(
             'url', v_cb_url,
@@ -351,30 +339,27 @@ BEGIN
             'mode', v_cb_mode,
             'types', nullif(v_cb->'types', 'null'::jsonb),
             'headers', nullif(v_cb->'headers', 'null'::jsonb),
-            'retry', v_cb_retry,  -- checked above; nulls are stripped
+            'retry', v_cb_retry,
             'timeout', (v_cb->>'timeout')::int,
             'flow_key', v_cb_flow,
             'priority', nullif(coalesce((v_cb->>'priority')::int, 0), 0)));
     END IF;
-
     v_meta := jsonb_strip_nulls(jsonb_build_object(
         'sink', v_sink,
         'method', CASE WHEN v_sink = 'http' THEN upper(coalesce(job->>'method', 'POST')) END,
         'url', CASE WHEN v_sink = 'http' THEN job->>'url' END,
-        'retry', v_retry,  -- checked above; nulls are stripped
+        'retry', v_retry,
         'timeout', v_timeout,
         'flow_key', v_flow,
         'priority', nullif(v_priority, 0),
         'traceparent', job->>'traceparent',
         'tracestate', job->>'tracestate',
         'callback', v_callback));
-
     IF jsonb_typeof(job->'body') NOT IN ('string', 'null')
        AND NOT EXISTS (SELECT 1 FROM jsonb_object_keys(coalesce(v_headers, '{}')) k
                        WHERE lower(k) = 'content-type') THEN
         v_headers := coalesce(v_headers, '{}') || '{"content-type": "application/json"}';
     END IF;
-
     INSERT INTO jobs (meta, headers, body, key)
     VALUES (v_meta, v_headers, v_body, v_key)
     ON CONFLICT (key) WHERE key IS NOT NULL DO NOTHING
@@ -382,7 +367,6 @@ BEGIN
     IF new_id IS NULL THEN
         RETURN (SELECT j.id FROM jobs j WHERE j.key = v_key);
     END IF;
-
     IF v_at IS NULL THEN
         INSERT INTO enqueued (id, flow_key, priority) VALUES (new_id, v_flow, v_priority);
         INSERT INTO history (id, attempt, kind) VALUES (new_id, 0, 'enqueued');

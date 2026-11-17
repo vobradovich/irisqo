@@ -428,7 +428,7 @@ async fn running_job_of_deleted_schedule_is_not_cloned(pool: PgPool) -> anyhow::
 
 async fn enqueue_in_flow(pool: &PgPool, flow_key: &str) -> i64 {
     sqlx::query_scalar(
-        "SELECT enqueue_v1(jsonb_build_object('sink', 'http', 'url', 'http://localhost/x', 'flow_key', $1::text))",
+        "SELECT enqueue_v1(jsonb_build_object('url', 'http://localhost/x', 'flow_key', $1::text))",
     )
     .bind(flow_key)
     .fetch_one(pool)
@@ -440,11 +440,9 @@ async fn enqueue_in_flow(pool: &PgPool, flow_key: &str) -> i64 {
 async fn an_unreadable_job_fails_alone(pool: PgPool) -> anyhow::Result<()> {
     let state = common::state(pool.clone());
     let good = enqueue_in_flow(&pool, "other").await;
-    let bad: i64 = sqlx::query_scalar(
-        "SELECT enqueue_v1('{\"sink\": \"http\", \"url\": \"http://localhost/x\"}')",
-    )
-    .fetch_one(&pool)
-    .await?;
+    let bad: i64 = sqlx::query_scalar("SELECT enqueue_v1('{\"url\": \"http://localhost/x\"}')")
+        .fetch_one(&pool)
+        .await?;
     // a URL the worker cannot read
     sqlx::query(
         "UPDATE jobs SET meta = jsonb_set(meta, '{url}', '\"http://localhost/a b\"') WHERE id = $1",
@@ -548,7 +546,7 @@ async fn a_flow_gives_the_highest_priority_first_then_new_before_retried(
 #[sqlx::test(migrations = "./sql/migrations")]
 async fn enqueue_v1_priority_is_an_int_and_goes_with_a_flow(pool: PgPool) -> anyhow::Result<()> {
     for (extra, message) in [(r#""priority": 3000000000"#, "priority must be from")] {
-        let job = format!(r#"{{"sink": "noop", {extra}}}"#);
+        let job = format!(r#"{{"url":"noop://x", {extra}}}"#);
         let err = sqlx::query_scalar::<_, i64>("SELECT enqueue_v1($1::jsonb)")
             .bind(job)
             .fetch_one(&pool)
@@ -558,7 +556,7 @@ async fn enqueue_v1_priority_is_an_int_and_goes_with_a_flow(pool: PgPool) -> any
     }
     // a flow keeps the priority of its job
     sqlx::query_scalar::<_, i64>(
-        r#"SELECT enqueue_v1('{"sink": "noop", "flow_key": "q", "priority": 7}')"#,
+        r#"SELECT enqueue_v1('{"url":"noop://x", "flow_key": "q", "priority": 7}')"#,
     )
     .fetch_one(&pool)
     .await?;
@@ -576,8 +574,7 @@ async fn enqueue_v1_priority_is_an_int_and_goes_with_a_flow(pool: PgPool) -> any
 #[sqlx::test(migrations = "./sql/migrations")]
 async fn enqueue_v1_checks_the_form_of_key_and_flow(pool: PgPool) -> anyhow::Result<()> {
     for (field, bad) in [("key", "two\nlines"), ("flow_key", "no spaces")] {
-        let job = serde_json::json!({ "sink": "http", "url": "http://localhost/x", field: bad })
-            .to_string();
+        let job = serde_json::json!({ "url": "http://localhost/x", field: bad }).to_string();
         let err = sqlx::query_scalar::<_, i64>("SELECT enqueue_v1($1::jsonb)")
             .bind(job)
             .fetch_one(&pool)
@@ -589,7 +586,7 @@ async fn enqueue_v1_checks_the_form_of_key_and_flow(pool: PgPool) -> anyhow::Res
         );
     }
     sqlx::query_scalar::<_, i64>(
-        "SELECT enqueue_v1('{\"sink\": \"http\", \"url\": \"http://localhost/x\", \"key\": \"Order 1/abc=\", \"flow_key\": \"q:1\"}')",
+        "SELECT enqueue_v1('{\"url\": \"http://localhost/x\", \"key\": \"Order 1/abc=\", \"flow_key\": \"q:1\"}')",
     )
     .fetch_one(&pool)
     .await?;
@@ -617,8 +614,7 @@ async fn enqueue_v1_stores_the_retry_policy(pool: PgPool) -> anyhow::Result<()> 
     let url = "http://localhost/x";
 
     assert_eq!(
-        enqueue(json!({"sink": "http", "url": url, "retry": {"policy": "fixed", "count": 3}}))
-            .await?,
+        enqueue(json!({"url": url, "retry": {"policy": "fixed", "count": 3}})).await?,
         Some(JobRetry::Fixed {
             retry_count: 3,
             retry_delay: 0
@@ -626,7 +622,7 @@ async fn enqueue_v1_stores_the_retry_policy(pool: PgPool) -> anyhow::Result<()> 
     );
     assert_eq!(
         enqueue(
-            json!({"sink": "http", "url": url, "retry": {"policy": "exponential", "count": 5,
+            json!({"url": url, "retry": {"policy": "exponential", "count": 5,
             "delay": 2, "max_delay": 60}})
         )
         .await?,
@@ -636,7 +632,7 @@ async fn enqueue_v1_stores_the_retry_policy(pool: PgPool) -> anyhow::Result<()> 
             retry_max_delay: Some(60)
         })
     );
-    assert_eq!(enqueue(json!({"sink": "http", "url": url })).await?, None);
+    assert_eq!(enqueue(json!({"url": url })).await?, None);
     // the text of `_retry`; `none` is no retries, said out loud
     assert_eq!(
         enqueue(json!({"url": url, "retry": "5|exponential|2|60"})).await?,
@@ -652,23 +648,23 @@ async fn enqueue_v1_stores_the_retry_policy(pool: PgPool) -> anyhow::Result<()> 
     );
     assert_eq!(
         enqueue(
-            json!({"url": url, "retry": {"policy": "fixed", "count": 65535,
-            "delay": 2_147_483_647_i64}})
+            json!({"url": url, "retry": {"policy": "fixed", "count": 9999,
+            "delay": 604_800}})
         )
         .await?,
         Some(JobRetry::Fixed {
-            retry_count: 65535,
-            retry_delay: 2_147_483_647
+            retry_count: 9999,
+            retry_delay: 604_800
         })
     );
 
     for (job, error) in [
         (
-            json!({"sink": "http", "url": url, "retry": {"policy": "fixd", "count": 3}}),
+            json!({"url": url, "retry": {"policy": "fixd", "count": 3}}),
             "retry.policy must be",
         ),
         (
-            json!({"sink": "http", "url": url, "retry": "fixed"}),
+            json!({"url": url, "retry": "fixed"}),
             "retry must be an object, or text",
         ),
         (
@@ -680,49 +676,49 @@ async fn enqueue_v1_stores_the_retry_policy(pool: PgPool) -> anyhow::Result<()> 
             "retry.max_delay is for",
         ),
         (
-            json!({"url": url, "retry": {"policy": "fixed", "count": 65536}}),
+            json!({"url": url, "retry": {"policy": "fixed", "count": 10000}}),
             "retry.count must be",
         ),
         (
             json!({"url": url, "retry": {"policy": "fixed", "count": 1,
-                "delay": 2_147_483_648_i64}}),
+                "delay": 604_801}}),
             "retry.delay must be",
         ),
         (
-            json!({"sink": "http", "url": url, "retry": {"policy": "exponential", "count": 3}}),
+            json!({"url": url, "retry": {"policy": "exponential", "count": 3}}),
             "retry.delay must be",
         ),
         (
-            json!({"sink": "http", "url": url, "retry": {"policy": "fibonacci", "count": 3,
+            json!({"url": url, "retry": {"policy": "fibonacci", "count": 3,
                 "delay": 1, "max_delay": "x"}}),
             "retry.max_delay must be",
         ),
         (
-            json!({"sink": "http", "url": url, "retry": {"policy": "fixed", "count": 3,
+            json!({"url": url, "retry": {"policy": "fixed", "count": 3,
                 "max_delay": 9}}),
             "retry.max_delay is for",
         ),
         (
-            json!({"sink": "http", "url": url, "retry": {"policy": "fixed", "count": 3,
+            json!({"url": url, "retry": {"policy": "fixed", "count": 3,
                 "backoff": 2}}),
             "retry may have policy, count, delay and max_delay only",
         ),
         (
-            json!({"sink": "http", "url": url, "retry": {"policy": "fixed", "count": "3"}}),
+            json!({"url": url, "retry": {"policy": "fixed", "count": "3"}}),
             "retry.count must be",
         ),
         (
-            json!({"sink": "http", "url": url, "retry": {"policy": "exponential", "count": 3,
+            json!({"url": url, "retry": {"policy": "exponential", "count": 3,
                 "delay": "2"}}),
             "retry.delay must be",
         ),
         (
-            json!({"sink": "http", "url": url, "callback": {"url": url,
+            json!({"url": url, "callback": {"url": url,
                 "retry": {"policy": "fixed", "count": 3, "backoff": 2}}}),
             "callback.retry may have policy, count, delay and max_delay only",
         ),
         (
-            json!({"sink": "http", "url": url, "callback": {"url": url,
+            json!({"url": url, "callback": {"url": url,
                 "retry": {"policy": "fixed", "count": "3"}}}),
             "callback.retry.count must be",
         ),
@@ -740,7 +736,7 @@ async fn a_released_or_requeued_job_keeps_its_priority_and_flow(
     let state = common::state(pool.clone());
     let id = &state.instance_id;
     let urgent: i64 = sqlx::query_scalar(
-        "SELECT enqueue_v1('{\"sink\": \"http\", \"url\": \"http://localhost/x\", \"priority\": 5}')",
+        "SELECT enqueue_v1('{\"url\": \"http://localhost/x\", \"priority\": 5}')",
     )
     .fetch_one(&pool)
     .await?;
@@ -834,11 +830,9 @@ async fn the_app_creates_and_uses_its_own_schema(pool: PgPool) -> anyhow::Result
     assert_eq!(outside, 0, "nothing in public");
 
     // the functions find the tables of their schema
-    let id: i64 = sqlx::query_scalar(
-        "SELECT enqueue_v1('{\"sink\": \"http\", \"url\": \"http://localhost/x\"}')",
-    )
-    .fetch_one(&state.pool)
-    .await?;
+    let id: i64 = sqlx::query_scalar("SELECT enqueue_v1('{\"url\": \"http://localhost/x\"}')")
+        .fetch_one(&state.pool)
+        .await?;
     let jobs = common::fetch(&state, 10).await;
     assert_eq!(jobs.iter().map(|j| j.job.id).collect::<Vec<_>>(), [id]);
     Ok(())
@@ -857,7 +851,7 @@ async fn a_job_enqueued_during_a_claim_is_not_lost(pool: PgPool) -> anyhow::Resu
             let (pool, stop) = (pool.clone(), Arc::clone(&stop));
             tokio::spawn(async move {
                 while !stop.load(Ordering::Relaxed) {
-                    sqlx::query("SELECT enqueue_v1('{\"sink\": \"http\", \"url\": \"http://localhost/x\"}')")
+                    sqlx::query("SELECT enqueue_v1('{\"url\": \"http://localhost/x\"}')")
                         .execute(&pool)
                         .await
                         .expect("enqueue_v1");
@@ -894,7 +888,7 @@ async fn jobs_without_a_flow_come_first_and_the_queues_get_the_rest(
     let queued = enqueue_in_flow(&pool, "q").await;
     let plain = common::insert_enqueued(&pool, 2).await;
     let urgent: i64 = sqlx::query_scalar(
-        "SELECT enqueue_v1('{\"sink\": \"http\", \"url\": \"http://localhost/x\", \"priority\": 5}')",
+        "SELECT enqueue_v1('{\"url\": \"http://localhost/x\", \"priority\": 5}')",
     )
     .fetch_one(&pool)
     .await?;
@@ -1035,34 +1029,36 @@ async fn enqueue_v1_sink_comes_from_the_url_and_at_excludes_delay(
     };
     for (job, error) in [
         (serde_json::json!({}), "url must be"),
-        (serde_json::json!({"sink": "smtp"}), "sink must be"),
-        (serde_json::json!({"sink": "http"}), "url must be"),
+        (
+            serde_json::json!({"sink": "noop", "url": "noop://x"}),
+            "fields that are not known: sink",
+        ),
         // a field that is not known, of the job or of its callback
         (
-            serde_json::json!({"sink": "noop", "callback_url": "http://localhost/cb"}),
+            serde_json::json!({"url":"noop://x", "callback_url": "http://localhost/cb"}),
             "fields that are not known: callback_url",
         ),
         (
-            serde_json::json!({"sink": "noop", "callback": {"url": "http://localhost/cb",
+            serde_json::json!({"url":"noop://x", "callback": {"url": "http://localhost/cb",
                 "retries": 3}}),
             "callback fields that are not known: retries",
         ),
         // a body is a body or base64, whatever its JSON
         (
-            serde_json::json!({"sink": "noop", "body": {"a": 1}, "body_base64": "YQ=="}),
+            serde_json::json!({"url":"noop://x", "body": {"a": 1}, "body_base64": "YQ=="}),
             "body and body_base64 are exclusive",
         ),
         // a time that is one
         (
-            serde_json::json!({"sink": "noop", "at": "2030-02-30T00:00:00Z"}),
+            serde_json::json!({"url":"noop://x", "at": "2030-02-30T00:00:00Z"}),
             "at must be",
         ),
         (
-            serde_json::json!({"sink": "noop", "at": "1969-12-31T00:00:00Z"}),
+            serde_json::json!({"url":"noop://x", "at": "1969-12-31T00:00:00Z"}),
             "at must be",
         ),
         (
-            serde_json::json!({"sink": "noop", "at": "tomorrow"}),
+            serde_json::json!({"url":"noop://x", "at": "tomorrow"}),
             "at must be",
         ),
     ] {
@@ -1076,19 +1072,19 @@ async fn enqueue_v1_sink_comes_from_the_url_and_at_excludes_delay(
         (m["sink"].as_str(), m["method"].as_str()),
         (Some("http"), Some("POST"))
     );
-    let id = enqueue(serde_json::json!({"sink": "http", "url": "noop://bench"})).await?;
+    let id = enqueue(serde_json::json!({"url": "noop://bench"})).await?;
     assert_eq!(meta(id).await?["sink"], "noop");
     // RFC 3339 as the API takes it; unix 0 is now
-    let id = enqueue(serde_json::json!({"sink": "noop", "at": "2100-01-01T00:00:00Z"})).await?;
+    let id = enqueue(serde_json::json!({"url":"noop://x", "at": "2100-01-01T00:00:00Z"})).await?;
     let at: i64 =
         sqlx::query_scalar("SELECT extract(epoch FROM at)::bigint FROM scheduled WHERE id = $1")
             .bind(id)
             .fetch_one(&pool)
             .await?;
     assert_eq!(at, 4_102_444_800);
-    enqueue(serde_json::json!({"sink": "noop", "at": 0})).await?;
-    // noop needs no url; no timeout is stored
-    let id = enqueue(serde_json::json!({"sink": "noop"})).await?;
+    enqueue(serde_json::json!({"url":"noop://x", "at": 0})).await?;
+    // no timeout is stored
+    let id = enqueue(serde_json::json!({"url":"noop://x"})).await?;
     let meta: serde_json::Value = sqlx::query_scalar("SELECT meta FROM jobs WHERE id = $1")
         .bind(id)
         .fetch_one(&pool)
@@ -1097,12 +1093,12 @@ async fn enqueue_v1_sink_comes_from_the_url_and_at_excludes_delay(
     assert!(meta.get("timeout").is_none(), "{meta}");
     // `at` and `delay` are exclusive
     assert!(
-        enqueue(serde_json::json!({"sink": "noop", "delay": 5, "at": 1}))
+        enqueue(serde_json::json!({"url":"noop://x", "delay": 5, "at": 1}))
             .await
             .is_err()
     );
     // `at` far ahead: the job waits
-    let id = enqueue(serde_json::json!({"sink": "noop", "at": 4_102_444_800_i64})).await?;
+    let id = enqueue(serde_json::json!({"url":"noop://x", "at": 4_102_444_800_i64})).await?;
     let waiting: bool =
         sqlx::query_scalar("SELECT at > now() + interval '1 day' FROM scheduled WHERE id = $1")
             .bind(id)
@@ -1117,8 +1113,7 @@ async fn enqueue_v1_body_is_a_string_or_json(pool: PgPool) -> anyhow::Result<()>
     let stored = |body: serde_json::Value| {
         let pool = pool.clone();
         async move {
-            let job =
-                serde_json::json!({"sink": "http", "url": "http://localhost/x", "body": body});
+            let job = serde_json::json!({"url": "http://localhost/x", "body": body});
             let id: i64 = sqlx::query_scalar("SELECT enqueue_v1($1::jsonb)")
                 .bind(job.to_string())
                 .fetch_one(&pool)

@@ -75,9 +75,7 @@ mod tests {
         let job = schemas["JobRequest"]["properties"]
             .as_object()
             .expect("properties");
-        for field in [
-            "sink", "url", "flow_key", "priority", "retry", "at", "callback",
-        ] {
+        for field in ["url", "flow_key", "priority", "retry", "at", "callback"] {
             assert!(job.get(field).is_some(), "{field}");
         }
         assert!(job.get("body_raw").is_none(), "an internal field");
@@ -100,16 +98,10 @@ mod tests {
             "{}",
             job["at"]
         );
-        assert!(
-            job["method"]["enum"]
-                .as_array()
-                .is_some_and(|v| v.contains(&"GET".into()))
-        );
-        // optional fields are not required
-        assert!(
-            !doc["components"]["schemas"]["JobRequest"]
-                .to_string()
-                .contains("\"required\"")
+        // the url is the only required field
+        assert_eq!(
+            schemas["JobRequest"]["required"],
+            serde_json::json!(["url"])
         );
         // a job repeats with the fields of a schedule
         for field in ["cron", "interval", "tz", "until"] {

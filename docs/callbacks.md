@@ -84,7 +84,7 @@ The API (`POST /api/v1/jobs`, `/to/`) refuses a request that breaks this with a 
 
 ```json
 {
-  "sink": "http", "method": "POST", "url": "https://pay.example/charge",
+  "method": "POST", "url": "https://pay.example/charge",
   "retry": { "policy": "exponential", "count": 5, "delay": 2 },
   "key": "order-42",
   "callback": {
@@ -296,7 +296,7 @@ retries, timeout and callback:
 
 ```json
 {
-  "sink": "http", "method": "POST", "url": "https://pay.example/charge",
+  "method": "POST", "url": "https://pay.example/charge",
   "callback": {
     "mode": "relay",
     "url": "https://irisqo.example/to/https://ship.example/orders?_retry=5|exponential|2&_callback_url=https://me.example/hooks/irisqo",
