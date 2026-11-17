@@ -3,7 +3,7 @@ use crate::features::schedules::{JobSchedule, ScheduleRule};
 use crate::models::headers::{is_reserved_callback_header, is_reserved_header};
 use crate::models::{
     FlowKey, HttpMeta, JobCallback, JobCreate, JobMeta, JobRetry, JobSink, MILLISECONDS_RULE,
-    PRIORITY_RULE, ParamError, Params, WorkerOptions, deserialize_method_of,
+    PRIORITY_RULE, ParamError, Params, WorkerOptions, deserialize_method_of, deserialize_uri_of,
 };
 use axum::body::Bytes;
 use base64::Engine as _;
@@ -41,7 +41,7 @@ pub struct JobRequest {
     #[schema(value_type = Option<String>)]
     pub(crate) method: Option<Method>,
     /// An `http` or `https` URL; `noop://…` is the `noop` sink. Required.
-    #[serde(with = "http_serde::uri")]
+    #[serde(deserialize_with = "deserialize_url")]
     #[schema(value_type = String)]
     pub(crate) url: Uri,
     /// The retry policy, the object or its text (`5|exponential|2`); no retries when absent.
@@ -90,6 +90,10 @@ pub struct JobRequest {
     /// The body as it came (`/to/`, the form): it is sent as it is, `body` is not looked at.
     #[serde(skip)]
     pub(crate) body_raw: Option<Bytes>,
+}
+
+fn deserialize_url<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Uri, D::Error> {
+    deserialize_uri_of("url", deserializer)
 }
 
 fn deserialize_method<'de, D: Deserializer<'de>>(
@@ -633,7 +637,11 @@ mod tests {
         for (meta, error) in [
             (r#"{}"#, "missing field `url`"),
             (r#"{"method":"GET"}"#, "missing field `url`"),
-            (r#"{"url":"not a url"}"#, "expected uri"),
+            (r#"{"url":"not a url"}"#, "url: is not a valid URL"),
+            (
+                r#"{"url":"noop://x","callback":{"url":"not a url"}}"#,
+                "callback.url: is not a valid URL",
+            ),
             (
                 r#"{"url":"https://example.com","method":"BAD METHOD"}"#,
                 "method: is not a valid HTTP method",

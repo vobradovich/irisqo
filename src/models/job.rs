@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use http_body_util::Full;
-use hyper::{HeaderMap, Method};
+use hyper::{HeaderMap, Method, Uri};
 
 use serde::{Deserialize, Serialize};
 
@@ -161,6 +161,15 @@ pub fn deserialize_method_of<'de, D: serde::Deserializer<'de>>(
             })
         })
         .transpose()
+}
+
+/// A URL, for `deserialize_with`; the error names `field`.
+pub fn deserialize_uri_of<'de, D: serde::Deserializer<'de>>(
+    field: &str,
+    deserializer: D,
+) -> Result<Uri, D::Error> {
+    let url = String::deserialize(deserializer)?;
+    Uri::try_from(url).map_err(|_| serde::de::Error::custom(format!("{field}: is not a valid URL")))
 }
 
 /// The key of a flow, as `enqueue_v1` checks it: 1 to 128 characters of `a-z 0-9 . _ : -`, the
