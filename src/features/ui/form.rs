@@ -11,7 +11,7 @@ use std::fmt::Write as _;
 use axum::body::Bytes;
 use chrono::{DateTime, NaiveDateTime, SecondsFormat, TimeZone, Utc, offset::LocalResult};
 use chrono_tz::Tz;
-use hyper::Method;
+use hyper::{Method, Uri};
 use url::form_urlencoded;
 
 use crate::{
@@ -303,12 +303,13 @@ impl JobForm {
             errors.insert("url", "is required".into());
         }
         let method = Method::from_bytes(self.method.as_bytes()).unwrap_or(Method::POST);
-        let request = JobRequest::http(
-            &method,
-            self.url.trim(),
-            headers,
-            Bytes::from(self.body.clone()),
-        );
+        let url = Uri::try_from(self.url.trim()).unwrap_or_else(|_| {
+            errors
+                .entry("url")
+                .or_insert_with(|| "is not a valid URL".into());
+            Uri::default()
+        });
+        let request = JobRequest::http(&method, url, headers, Bytes::from(self.body.clone()));
         let params = params
             .iter()
             .map(|(name, value)| (Cow::Borrowed(*name), Cow::Borrowed(value.as_str())));

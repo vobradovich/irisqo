@@ -12,6 +12,7 @@ pub use job::JobMeta;
 pub use job::JobRow;
 pub use job::JobSink;
 pub use job::JobWithAttempt;
+pub use job::deserialize_method_of;
 pub use job::parse_method;
 pub use jobretry::JobRetry;
 pub use problem::Problem;

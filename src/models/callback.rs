@@ -4,7 +4,8 @@ use hyper::{Method, Uri};
 use serde::{Deserialize, Serialize};
 
 use super::{
-    FlowKey, JobRetry, MILLISECONDS_RULE, PRIORITY_RULE, ParamError, Params, job::parse_method,
+    FlowKey, JobRetry, MILLISECONDS_RULE, PRIORITY_RULE, ParamError, Params,
+    job::{deserialize_method_of, parse_method},
 };
 
 /// The format of a callback: what it sends and how.
@@ -112,17 +113,10 @@ pub struct JobCallback {
     pub priority: Option<i32>,
 }
 
-/// The method of a callback in upper case, as [`parse_method`]; the error names the field.
 fn deserialize_method<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<Option<Method>, D::Error> {
-    Option::<String>::deserialize(deserializer)?
-        .map(|method| {
-            parse_method(&method).ok_or_else(|| {
-                serde::de::Error::custom("callback.method: is not a valid HTTP method")
-            })
-        })
-        .transpose()
+    deserialize_method_of("callback.method", deserializer)
 }
 
 impl JobCallback {
