@@ -269,6 +269,9 @@ async fn a_schedule_is_declared_with_put(pool: PgPool) -> anyhow::Result<()> {
     );
     let response = put_schedule(&state, addr, "a%01b", &job(60, "echo")).await;
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    // the key of the alias is the id of the path, and is named so
+    let body: serde_json::Value = serde_json::from_str(&common::text(response).await)?;
+    assert_eq!(body["errors"][0]["parameter"], "id", "{body}");
     Ok(())
 }
 

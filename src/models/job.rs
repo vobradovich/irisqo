@@ -334,10 +334,7 @@ mod tests {
                     method: Method::GET,
                     url: Uri::try_from("http://localhost").unwrap(),
                 }),
-                retry: Some(JobRetry::Fixed {
-                    retry_count: 3,
-                    retry_delay: 1,
-                }),
+                retry: Some(JobRetry::Fixed { count: 3, delay: 1 }),
                 timeout: Some(2000),
                 ..JobMeta::default()
             },

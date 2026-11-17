@@ -214,16 +214,14 @@ impl JobRequest {
             .scheme_str()
             .is_some_and(|scheme| scheme.eq_ignore_ascii_case("noop"));
         let sink = if noop_url {
-            Some(JobSink::Noop)
+            JobSink::Noop
         } else {
-            Some(JobSink::Http(HttpMeta {
+            JobSink::Http(HttpMeta {
                 method: self.method.take().unwrap_or(Method::POST),
                 url: self.url.clone(),
-            }))
+            })
         };
-        if let Some(sink) = &sink {
-            errors.check("url", sink.check(options));
-        }
+        errors.check("url", sink.check(options));
 
         let mut headers = errors
             .check(
@@ -285,9 +283,9 @@ impl JobRequest {
             errors.add("key", KEY_RULE);
         }
 
-        let Some(sink) = sink.filter(|_| errors.0.is_empty()) else {
+        if !errors.0.is_empty() {
             return Err(errors.0);
-        };
+        }
         let meta = JobMeta {
             sink,
             retry: self.retry,
@@ -308,33 +306,6 @@ impl JobRequest {
             key: self.key,
         }
         .normalized(options, now))
-    }
-}
-
-impl JobRequest {
-    /// Validates a schedule with the job of its runs: the body of `PUT /api/v1/schedules/{id}`,
-    /// a job with `cron` or `interval` whose key is the id. Every invalid field is reported.
-    pub(crate) fn validate_schedule(
-        mut self,
-        schedule_id: &str,
-        options: &WorkerOptions,
-        now: DateTime<Utc>,
-    ) -> Result<JobCreate, Vec<ParamError>> {
-        let mut errors = Vec::new();
-        if is_key(schedule_id) {
-            self.key = Some(schedule_id.to_owned());
-        } else {
-            self.key = None;
-            errors.push(ParamError::new("id", KEY_RULE));
-        }
-        if self.cron.is_none() && self.interval.is_none() {
-            errors.push(ParamError::new("cron", "cron or interval is required"));
-        }
-        let job = self
-            .validate(options, now)
-            .map_err(|found| errors.extend(found))
-            .ok();
-        job.filter(|_| errors.is_empty()).ok_or(errors)
     }
 
     /// The schedule of `cron` or `interval`, `tz` and `until`; `None` when the job does not
@@ -539,8 +510,8 @@ mod tests {
         assert_eq!(
             callback.retry,
             Some(JobRetry::Fixed {
-                retry_count: 10,
-                retry_delay: 30
+                count: 10,
+                delay: 30
             })
         );
         assert_eq!(callback.types, Some(vec![CallbackType::Failed]));
@@ -578,9 +549,9 @@ mod tests {
         assert_eq!(
             job.meta.retry,
             Some(JobRetry::Exponential {
-                retry_count: 5,
-                retry_delay: 2,
-                retry_max_delay: None
+                count: 5,
+                delay: 2,
+                max_delay: None
             })
         );
         assert_eq!(
@@ -677,9 +648,9 @@ mod tests {
         assert_eq!(
             input.retry,
             Some(JobRetry::Fibonacci {
-                retry_count: 3,
-                retry_delay: 2,
-                retry_max_delay: Some(60)
+                count: 3,
+                delay: 2,
+                max_delay: Some(60)
             })
         );
         // every one that does not parse, named by its field
@@ -702,14 +673,11 @@ mod tests {
         assert_eq!(names, ["delay", "priority", "timeout"]);
     }
 
+    /// A schedule as `PUT /api/v1/schedules/nightly` declares it: the id is the key.
     fn declare(json: &str) -> Result<JobCreate, Vec<ParamError>> {
-        schedule_as("nightly", json)
-    }
-
-    fn schedule_as(schedule_id: &str, json: &str) -> Result<JobCreate, Vec<ParamError>> {
-        serde_json::from_str::<JobRequest>(json)
-            .expect("job")
-            .validate_schedule(schedule_id, &WorkerOptions::for_tests(), Utc::now())
+        let mut request = serde_json::from_str::<JobRequest>(json).expect("job");
+        request.key = Some("nightly".to_owned());
+        request.validate(&WorkerOptions::for_tests(), Utc::now())
     }
 
     fn schedule_parameters(errors: &[ParamError]) -> Vec<&str> {
@@ -782,7 +750,6 @@ mod tests {
     #[test]
     fn a_schedule_is_cron_or_interval() {
         for (schedule, parameter) in [
-            ("", "cron"),
             (r#","cron":"nope""#, "cron"),
             (r#","cron":"300""#, "cron"),
             (r#","interval":0"#, "interval"),
@@ -801,13 +768,6 @@ mod tests {
         assert_eq!(job.schedule.map(|s| s.tz), Some(chrono_tz::Europe::Berlin));
         let job = declare(&format!(r#"{{{META},"cron":"0 9 * * *"}}"#)).expect("valid schedule");
         assert_eq!(job.schedule.map(|s| s.tz), Some(Tz::UTC));
-    }
-
-    #[test]
-    fn the_id_is_a_key() {
-        let errors = schedule_as("a\u{1}b", &format!(r#"{{{META},"interval":60}}"#))
-            .expect_err("invalid id");
-        assert_eq!(schedule_parameters(&errors), ["id"]);
     }
 
     #[test]

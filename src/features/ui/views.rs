@@ -76,33 +76,24 @@ pub fn short_id(id: &str) -> String {
 
 /// Attempts a job may get: the first one and its retries.
 pub fn max_attempts(retry: Option<JobRetry>) -> u32 {
-    retry.map_or(1, |retry| u32::from(retry.retry_count()) + 1)
+    retry.map_or(1, |retry| u32::from(retry.count()) + 1)
 }
 
 pub fn retry_policy(retry: Option<JobRetry>) -> String {
     let up_to = |max: Option<u32>| max.map(|max| format!(" ≤ {max} s")).unwrap_or_default();
     match retry {
-        None | Some(JobRetry::Fixed { retry_count: 0, .. }) => "none".into(),
-        Some(JobRetry::Fixed {
-            retry_count,
-            retry_delay,
-        }) => format!("fixed · {retry_count} × {retry_delay} s"),
+        None | Some(JobRetry::Fixed { count: 0, .. }) => "none".into(),
+        Some(JobRetry::Fixed { count, delay }) => format!("fixed · {count} × {delay} s"),
         Some(JobRetry::Fibonacci {
-            retry_count,
-            retry_delay,
-            retry_max_delay,
-        }) => format!(
-            "fibonacci · {retry_count} × {retry_delay} s{}",
-            up_to(retry_max_delay)
-        ),
+            count,
+            delay,
+            max_delay,
+        }) => format!("fibonacci · {count} × {delay} s{}", up_to(max_delay)),
         Some(JobRetry::Exponential {
-            retry_count,
-            retry_delay,
-            retry_max_delay,
-        }) => format!(
-            "exponential · {retry_count} × {retry_delay} s{}",
-            up_to(retry_max_delay)
-        ),
+            count,
+            delay,
+            max_delay,
+        }) => format!("exponential · {count} × {delay} s{}", up_to(max_delay)),
     }
 }
 
@@ -447,10 +438,7 @@ fn short_ids() {
     );
     assert_eq!(short_id("01JC8ZQ4V7M3N2K5R6T8W9XK7Q"), "01JC…K7Q");
     assert_eq!(
-        max_attempts(Some(JobRetry::Fixed {
-            retry_count: 3,
-            retry_delay: 5
-        })),
+        max_attempts(Some(JobRetry::Fixed { count: 3, delay: 5 })),
         4
     );
 }
