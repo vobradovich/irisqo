@@ -325,7 +325,7 @@ its `trace_id`/`span_id`. Exported spans do not depend on `RUST_LOG`.
 
 ### Delivery guarantees
 At least once. Every instance sends a heartbeat; jobs of an instance silent for 30 s are released,
-and so is any job locked for longer than `--max-timeout` + 60 s (a failed result write, a hung worker).
+and so is any job locked for longer than 3 × `--max-timeout` + 60 s (a failed result write, a hung worker).
 A late result of such an attempt is rejected: a job is completed only by its current attempt.
 On `SIGINT`/`SIGTERM` the instance stops taking jobs, finishes the ones in
 flight (up to `--shutdown-timeout`), writes their results and releases the rest: an abandoned

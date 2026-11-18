@@ -40,7 +40,7 @@ pub struct SchedulerOptions {
     /// Max jobs moved from `scheduled` to `enqueued` by one statement.
     pub prefetch: u16,
     /// A job locked for this long is released whatever instance holds it
-    /// (the result write failed, the worker hung): `max_timeout` + a grace period.
+    /// (the result write failed, the worker hung): up to two runs ahead and its own, `3 * max_timeout` + a grace period.
     pub lock_lease: Duration,
     /// Processed jobs older than this are deleted; `0` keeps them forever.
     pub retention_hours: u32,
@@ -306,7 +306,7 @@ impl AppState {
             scheduler_options: Some(SchedulerOptions {
                 poll_interval: Duration::from_millis(5000),
                 prefetch: 1000,
-                lock_lease: Duration::from_millis(u64::from(max_timeout)) + LOCK_GRACE,
+                lock_lease: Duration::from_millis(u64::from(max_timeout)) * 3 + LOCK_GRACE,
                 retention_hours: options.retention_hours.unwrap_or(7 * 24),
             }),
             worker_options: WorkerOptions {
