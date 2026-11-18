@@ -64,11 +64,6 @@ impl JobRetry {
     /// What is wrong with a delay above [`Self::MAX_DELAY`].
     const DELAY_RULE: &str = "delay and max_delay must be at most 604800 seconds";
 
-    /// `true` when the count is at most [`Self::MAX_COUNT`].
-    fn count_fits(self) -> bool {
-        self.count() <= Self::MAX_COUNT
-    }
-
     /// `true` when the delays are at most [`Self::MAX_DELAY`].
     fn delays_fit(self) -> bool {
         match self {
@@ -114,7 +109,7 @@ impl JobRetry {
 
             fn visit_map<A: de::MapAccess<'de>>(self, map: A) -> Result<Self::Value, A::Error> {
                 let retry = JobRetry::deserialize(de::value::MapAccessDeserializer::new(map))?;
-                if !retry.count_fits() {
+                if retry.count() > JobRetry::MAX_COUNT {
                     Err(de::Error::custom(JobRetry::COUNT_RULE))
                 } else if !retry.delays_fit() {
                     Err(de::Error::custom(JobRetry::DELAY_RULE))
@@ -156,8 +151,7 @@ impl JobRetry {
         let mut x = [1; N];
         let mut i: usize = 2;
         while i < N {
-            let next_x = x[i - 1] + x[i - 2];
-            x[i] = next_x;
+            x[i] = x[i - 1] + x[i - 2];
             i += 1;
         }
         x

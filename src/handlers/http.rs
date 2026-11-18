@@ -21,8 +21,7 @@ use hyper::{Method, Uri};
 use opentelemetry::KeyValue;
 
 use std::{borrow::Cow, collections::HashMap, sync::Arc};
-#[allow(unused_imports)]
-use tracing::{debug, error, info, warn};
+use tracing::debug;
 use url::{Url, form_urlencoded};
 
 pub fn routes(state: Arc<AppState>) -> Router {

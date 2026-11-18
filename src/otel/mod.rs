@@ -147,7 +147,7 @@ pub fn on_failure(
         ServerErrorsFailureClass::Error(ref s) => {
             span.record("exception.message", s);
         }
-        _ => {}
+        ServerErrorsFailureClass::StatusCode(_) => {}
     }
     tracing::warn!(
         "request failed latency={} ms status={}",
