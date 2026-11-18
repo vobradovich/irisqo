@@ -11,7 +11,7 @@ use crate::{
 use axum::{
     Router,
     body::Bytes,
-    extract::{DefaultBodyLimit, Path, RawQuery, State},
+    extract::{DefaultBodyLimit, OriginalUri, Path, RawQuery, State},
     http::{HeaderMap, HeaderValue, StatusCode},
     response::IntoResponse,
     routing::get,
@@ -42,15 +42,21 @@ pub fn routes(state: Arc<AppState>) -> Router {
 async fn job_create(
     State(state): State<Arc<AppState>>,
     method: Method,
-    Path(url): Path<String>,
+    OriginalUri(uri): OriginalUri,
+    Path(decoded): Path<String>,
     RawQuery(query): RawQuery,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<impl IntoResponse, Problem> {
-    let url = Uri::try_from(url).map_err(|_| Error::invalid("url", "is not a valid URL"))?;
-    let request = JobRequest::http(&method, url, forwarded_headers(&headers), body);
+    // The target as it came, still percent-encoded: decoded, `%20`, `%3F`, `%2F` would change it.
+    // A target encoded whole (`https%3A%2F%2F…`, as `encodeURIComponent` writes it) has no
+    // scheme of its own: it is the decoded one.
+    let raw = uri.path().strip_prefix("/to/").unwrap_or_default();
+    let target = if has_scheme(raw) { raw } else { &decoded };
+    let request = JobRequest::http(&method, forwarded_headers(&headers), body);
     let job = prepare_job(
         &state.worker_options,
+        target,
         request,
         form_urlencoded::parse(query.unwrap_or_default().as_bytes()),
         callback_headers(&headers),
@@ -59,6 +65,16 @@ async fn job_create(
     .map_err(Error::InvalidParams)?;
     let (job, status) = create_job(&state, job).await?;
     Ok((status, job_headers(&job)))
+}
+
+/// `true` when `s` starts with a scheme and its `:` (`https:`), as RFC 3986 writes one.
+fn has_scheme(s: &str) -> bool {
+    s.split_once(':').is_some_and(|(scheme, _)| {
+        scheme.starts_with(|c: char| c.is_ascii_alphabetic())
+            && scheme
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+    })
 }
 
 /// The `Location` and `Irisqo-*` headers of a created job.
@@ -79,20 +95,22 @@ pub fn job_headers(job: &JobCreateRow) -> HeaderMap {
     headers
 }
 
-/// Validates a job requested through `/to/{url}?{query}` (`input` is [`JobRequest::http`], the UI
-/// form builds the same; `params` are the pairs of the query) and builds the job: every invalid
-/// parameter is reported, not only the first one, named as the field of JSON (`delay`,
-/// `callback.url`). The `_*` parameters of the job and of its callback are theirs, the others
+/// Validates a job requested through `/to/{url}?{query}` (`target` is the URL, parsed here once:
+/// a space, non-ASCII and an international domain are encoded as a browser does; `input` is
+/// [`JobRequest::http`], the UI form builds the same; `params` are the pairs of the query) and
+/// builds the job: every invalid parameter is reported, not only the first one, named as the
+/// field of JSON (`delay`, `callback.url`). The `_*` parameters of the job and of its callback are theirs, the others
 /// stay on the URL. `callback_headers` are the `Irisqo-Callback-*` headers, which go to the
 /// callback.
 pub fn prepare_job<'a>(
     options: &WorkerOptions,
+    target: &str,
     input: JobRequest,
     params: impl IntoIterator<Item = (Cow<'a, str>, Cow<'a, str>)>,
     callback_headers: HashMap<String, String>,
     now: DateTime<Utc>,
 ) -> Result<JobCreate, Vec<ParamError>> {
-    let mut url = Url::parse(&input.url.to_string()).ok();
+    let mut url = Url::parse(target).ok();
     let (mut job, mut callback) = (HashMap::new(), HashMap::new());
     for (name, value) in params {
         let field =
@@ -121,12 +139,19 @@ pub fn prepare_job<'a>(
             errors.extend(found);
             None
         });
-    if let Some(url) = url.and_then(|url| Uri::try_from(url.as_str()).ok()) {
-        input.url = url;
+    let parsed = url
+        .and_then(|url| Uri::try_from(url.as_str()).ok())
+        .map(|url| input.url = url)
+        .is_some();
+    if !parsed {
+        errors.push(ParamError::new("url", "is not a valid URL"));
     }
+    // a target that does not parse is reported once, not again as not an http one
     let job = input
         .validate(options, now)
-        .map_err(|found| errors.extend(found))
+        .map_err(|found| {
+            errors.extend(found.into_iter().filter(|e| parsed || e.parameter != "url"))
+        })
         .ok();
     job.filter(|_| errors.is_empty()).ok_or(errors)
 }
@@ -191,19 +216,20 @@ mod tests {
     use crate::features::schedules::JobSchedule;
     use crate::models::{CallbackType, FlowKey, JobRetry};
 
-    fn prepare_query(query: &str) -> Result<JobCreate, Vec<ParamError>> {
+    /// A `GET` of `target` with the `query`, as `/to/` prepares it.
+    fn prepare(target: &str, query: &str) -> Result<JobCreate, Vec<ParamError>> {
         prepare_job(
             &WorkerOptions::for_tests(),
-            JobRequest::http(
-                &Method::GET,
-                "https://example.com".parse().unwrap(),
-                HashMap::new(),
-                Bytes::new(),
-            ),
+            target,
+            JobRequest::http(&Method::GET, HashMap::new(), Bytes::new()),
             form_urlencoded::parse(query.as_bytes()),
             HashMap::new(),
             Utc::now(),
         )
+    }
+
+    fn prepare_query(query: &str) -> Result<JobCreate, Vec<ParamError>> {
+        prepare("https://example.com", query)
     }
 
     #[test]
@@ -263,15 +289,11 @@ mod tests {
         }
         // the headers go to the callback, and need its url
         let prepare = |query: &str| {
-            let request = JobRequest::http(
-                &Method::GET,
-                "https://example.com".parse().unwrap(),
-                HashMap::new(),
-                Bytes::new(),
-            );
+            let request = JobRequest::http(&Method::GET, HashMap::new(), Bytes::new());
             let headers = HashMap::from([("x-own".to_owned(), "1".to_owned())]);
             prepare_job(
                 &WorkerOptions::for_tests(),
+                "https://example.com",
                 request,
                 form_urlencoded::parse(query.as_bytes()),
                 headers,
@@ -333,44 +355,60 @@ mod tests {
 
     #[test]
     fn noop_is_a_target_scheme() {
-        let options = WorkerOptions::for_tests();
-        let prepare = |url: &str| {
-            let request = JobRequest::http(
-                &Method::POST,
-                url.parse().unwrap(),
-                HashMap::new(),
-                Bytes::new(),
-            );
-            prepare_job(&options, request, [], HashMap::new(), Utc::now())
-        };
-        let job = prepare("noop://bench").expect("valid");
+        let job = prepare("noop://bench", "").expect("valid");
         assert_eq!(job.meta.sink, crate::models::JobSink::Noop);
-        assert!(prepare("none://bench").is_err(), "an unknown scheme");
+        assert!(prepare("none://bench", "").is_err(), "an unknown scheme");
     }
 
     #[test]
     fn a_target_is_an_http_url() {
-        let options = WorkerOptions::for_tests();
-        let prepare = |url: &str| {
-            prepare_job(
-                &options,
-                JobRequest::http(
-                    &Method::GET,
-                    url.parse().unwrap(),
-                    HashMap::new(),
-                    Bytes::new(),
-                ),
-                [],
-                HashMap::new(),
-                Utc::now(),
-            )
-        };
-        assert!(prepare("https://example.com/hook").is_ok());
-        assert!(Uri::try_from("not a url").is_err());
-        for url in ["ftp://example.com", "mailto:a@example.com"] {
-            let errors = prepare(url).expect_err(url);
+        assert!(prepare("https://example.com/hook", "").is_ok());
+        for url in [
+            "ftp://example.com",
+            "mailto:a@example.com",
+            "not a url",
+            "https%3A%2F%2Fexample.com",
+        ] {
+            let errors = prepare(url, "").expect_err(url);
             assert_eq!(errors.len(), 1, "{url}");
             assert_eq!(errors[0].parameter, "url", "{url}");
+        }
+    }
+
+    #[test]
+    fn a_target_is_encoded_as_a_browser_does() {
+        let url = |target: &str| {
+            let job = prepare(target, "").expect(target);
+            let crate::models::JobSink::Http(http) = job.meta.sink else {
+                panic!("an http job");
+            };
+            http.url.to_string()
+        };
+        // an international domain, as it comes in a request line and as it is typed
+        for target in [
+            "http://%D1%81%D0%B0%D0%B9%D1%82.%D1%80%D1%84/path",
+            "http://сайт.рф/path",
+        ] {
+            assert_eq!(url(target), "http://xn--80aswg.xn--p1ai/path", "{target}");
+        }
+        // what is encoded stays so, what is not is encoded
+        assert_eq!(
+            url("https://example.com/a%20b%3Fc%2Fd?x=1"),
+            "https://example.com/a%20b%3Fc%2Fd?x=1"
+        );
+        assert_eq!(
+            url("https://example.com/a b/ü"),
+            "https://example.com/a%20b/%C3%BC"
+        );
+    }
+
+    #[test]
+    fn a_scheme_is_as_rfc_3986_writes_it() {
+        for s in ["http://x", "https:", "noop://bench", "a+b-c.d:x"] {
+            assert!(has_scheme(s), "{s}");
+        }
+        for s in ["https%3A%2F%2Fx", "", "1http://x", "/http://x", "ht tp://x"] {
+            assert!(!has_scheme(s), "{s}");
         }
     }
 

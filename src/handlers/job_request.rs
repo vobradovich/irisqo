@@ -141,16 +141,12 @@ fn at<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<DateTime<Utc>
 }
 
 impl JobRequest {
-    /// An `http` job for `/to/` and the form: the target, the headers to send, the body as it is.
-    pub(crate) fn http(
-        method: &Method,
-        url: Uri,
-        headers: HashMap<String, String>,
-        body: Bytes,
-    ) -> Self {
+    /// An `http` job for `/to/` and the form: the method, the headers to send, the body as it is.
+    /// The target is not set yet: [`prepare_job`](super::http::prepare_job) parses it.
+    pub(crate) fn http(method: &Method, headers: HashMap<String, String>, body: Bytes) -> Self {
         Self {
             method: Some(method.clone()),
-            url,
+            url: Uri::default(),
             retry: None,
             timeout: None,
             flow_key: None,
@@ -644,17 +640,12 @@ mod tests {
                 .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
                 .collect::<HashMap<_, _>>()
         };
-        let (input, errors) = JobRequest::http(
-            &Method::GET,
-            "https://example.com".parse().unwrap(),
-            HashMap::new(),
-            Bytes::new(),
-        )
-        .with_params(&params(&[
-            ("delay", "5"),
-            ("retry", "3|fibonacci|2|60"),
-            ("key", ""),
-        ]));
+        let (input, errors) = JobRequest::http(&Method::GET, HashMap::new(), Bytes::new())
+            .with_params(&params(&[
+                ("delay", "5"),
+                ("retry", "3|fibonacci|2|60"),
+                ("key", ""),
+            ]));
         assert!(errors.is_empty(), "{errors:?}");
         assert_eq!((input.delay, input.key.as_deref()), (Some(5), None));
         assert_eq!(
@@ -666,18 +657,13 @@ mod tests {
             })
         );
         // every one that does not parse, named by its field
-        let (input, errors) = JobRequest::http(
-            &Method::GET,
-            "https://example.com".parse().unwrap(),
-            HashMap::new(),
-            Bytes::new(),
-        )
-        .with_params(&params(&[
-            ("delay", "soon"),
-            ("timeout", "0"),
-            ("priority", "high"),
-            ("flow_key", "q"),
-        ]));
+        let (input, errors) = JobRequest::http(&Method::GET, HashMap::new(), Bytes::new())
+            .with_params(&params(&[
+                ("delay", "soon"),
+                ("timeout", "0"),
+                ("priority", "high"),
+                ("flow_key", "q"),
+            ]));
         // the others are kept, for `validate` to check them
         assert_eq!(input.flow_key.as_ref().map(FlowKey::as_str), Some("q"));
         let mut names: Vec<_> = errors.iter().map(|e| e.parameter.as_ref()).collect();

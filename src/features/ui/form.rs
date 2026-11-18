@@ -10,7 +10,7 @@ use std::fmt::Write as _;
 
 use axum::body::Bytes;
 use chrono::{DateTime, SecondsFormat, Utc};
-use hyper::{Method, Uri};
+use hyper::Method;
 use jiff::civil;
 use jiff::tz::{AmbiguousOffset, TimeZone};
 use url::form_urlencoded;
@@ -308,17 +308,18 @@ impl JobForm {
             errors.insert("url", "is required".into());
         }
         let method = Method::from_bytes(self.method.as_bytes()).unwrap_or(Method::POST);
-        let url = Uri::try_from(self.url.trim()).unwrap_or_else(|_| {
-            errors
-                .entry("url")
-                .or_insert_with(|| "is not a valid URL".into());
-            Uri::default()
-        });
-        let request = JobRequest::http(&method, url, headers, Bytes::from(self.body.clone()));
+        let request = JobRequest::http(&method, headers, Bytes::from(self.body.clone()));
         let params = params
             .iter()
             .map(|(name, value)| (Cow::Borrowed(*name), Cow::Borrowed(value.as_str())));
-        match prepare_job(options, request, params, HashMap::new(), now) {
+        match prepare_job(
+            options,
+            self.url.trim(),
+            request,
+            params,
+            HashMap::new(),
+            now,
+        ) {
             Ok(job) if errors.is_empty() => Ok(job),
             Ok(_) => Err(errors),
             Err(param_errors) => {
@@ -475,6 +476,26 @@ mod tests {
                 .contains("Irisqo-Forward-authorization: ••••")
         );
         assert!(form.preview().contains("?_at=2030-01-02T03:04:00Z"));
+    }
+
+    #[test]
+    fn a_url_with_a_space_or_unicode_is_encoded() {
+        let form = JobForm::from_pairs(
+            "method=GET&url=https%3A%2F%2Fexample.com%2Fa+b%2F%C3%BC%3Fq%3D%C3%BC".as_bytes(),
+        );
+        let job = form
+            .prepare(
+                &options(),
+                DateTime::from_timestamp(1_700_000_000, 0).unwrap(),
+            )
+            .expect("valid");
+        let crate::models::JobSink::Http(http) = &job.meta.sink else {
+            panic!("an http job");
+        };
+        assert_eq!(
+            http.url.to_string(),
+            "https://example.com/a%20b/%C3%BC?q=%C3%BC"
+        );
     }
 
     #[test]
