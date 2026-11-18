@@ -128,11 +128,10 @@ pub async fn upsert(
 /// Returns `None` when the schedule was deleted or deactivated in the meantime,
 /// or when the job is not its latest run.
 ///
-/// The row of the schedule is locked first (`FOR UPDATE`): a declaration that is in flight is
-/// waited for, and when it has replaced the next run, the job is not the next run any more and
-/// nothing is created. The key of a run is `{schedule_id}-{ulid}`.
+/// Locks the schedule (paused or not), reads `next_id` and `paused` under the lock; key `{schedule_id}-{ulid}`.
 pub async fn clone_schedule_at<'e, E>(
     executor: E,
+    schedule_id: &str,
     job_id: i64,
     at: DateTime<Utc>,
     instance_id: &str,
@@ -141,15 +140,15 @@ where
     E: sqlx::Executor<'e, Database = Postgres>,
 {
     const SQL: &str = "
-    WITH a AS (
+    WITH s AS (
+        -- locked even when paused: a resume in flight is waited for, not missed
+        SELECT schedule_id, next_id, paused FROM schedules WHERE schedule_id = $5 FOR UPDATE
+    ), a AS (
         INSERT INTO jobs(meta, headers, body, schedule_id, key)
-        SELECT j.meta, j.headers, j.body, j.schedule_id,
-            j.schedule_id || '-' || $4::text
-        FROM jobs AS j
-        INNER JOIN schedules AS s ON s.schedule_id = j.schedule_id
+        SELECT j.meta, j.headers, j.body, s.schedule_id, s.schedule_id || '-' || $4::text
+        FROM s INNER JOIN jobs AS j ON j.id = s.next_id
         -- only the latest run continues the schedule (a manually retried old run does not)
-        WHERE j.id = $1 AND s.next_id = j.id AND NOT s.paused
-        FOR UPDATE OF s
+        WHERE s.next_id = $1 AND NOT s.paused
         RETURNING id, schedule_id, meta->>'flow_key' AS flow_key,
             coalesce((meta->>'priority')::int, 0) AS priority
     ), b AS (
@@ -169,6 +168,7 @@ where
         .bind(at)
         .bind(instance_id)
         .bind(new_ulid())
+        .bind(schedule_id)
         .fetch_optional(executor)
         .await?;
     Ok(job_id)
@@ -207,12 +207,14 @@ pub async fn resume(
     instance_id: &str,
 ) -> Result<bool, Error> {
     const SQL: &str = "
-    UPDATE schedules AS s SET paused = false
+    UPDATE schedules SET paused = false
     WHERE schedule_id = $1
-    RETURNING s.rule, s.tz, s.until, s.next_id, s.next_at,
-        EXISTS (SELECT 1 FROM scheduled WHERE id = s.next_id)
-            OR EXISTS (SELECT 1 FROM enqueued WHERE id = s.next_id)
-            OR EXISTS (SELECT 1 FROM claimed WHERE id = s.next_id) AS pending";
+    RETURNING rule, tz, until, next_id, next_at";
+    // a statement of its own: a new snapshot, after a completion that held the lock
+    const SQL_PENDING: &str = "
+    SELECT EXISTS (SELECT 1 FROM scheduled WHERE id = $1)
+        OR EXISTS (SELECT 1 FROM enqueued WHERE id = $1)
+        OR EXISTS (SELECT 1 FROM claimed WHERE id = $1)";
     #[derive(sqlx::FromRow)]
     struct Resumed {
         rule: String,
@@ -220,7 +222,6 @@ pub async fn resume(
         until: Option<DateTime<Utc>>,
         next_id: Option<i64>,
         next_at: Option<DateTime<Utc>>,
-        pending: bool,
     }
     let mut tx = pool.begin().await?;
     let Some(Resumed {
@@ -229,7 +230,6 @@ pub async fn resume(
         until,
         next_id,
         next_at,
-        pending,
     }) = sqlx::query_as::<_, Resumed>(SQL)
         .bind(schedule_id)
         .fetch_optional(&mut *tx)
@@ -237,13 +237,20 @@ pub async fn resume(
     else {
         return Ok(false);
     };
+    let Some(next_id) = next_id else {
+        tx.commit().await?;
+        return Ok(true);
+    };
+    let pending: bool = sqlx::query_scalar(SQL_PENDING)
+        .bind(next_id)
+        .fetch_one(&mut *tx)
+        .await?;
     if !pending
-        && let Some(next_id) = next_id
         && let Some(at) = JobSchedule::from_row(&rule, &tz, until)
             .map_err(|e| Error::InvalidParams(vec![e]))?
             .next(next_at.map_or(now, |at| at.max(now)))
     {
-        clone_schedule_at(&mut *tx, next_id, at, instance_id).await?;
+        clone_schedule_at(&mut *tx, schedule_id, next_id, at, instance_id).await?;
     }
     tx.commit().await?;
     Ok(true)
@@ -303,8 +310,19 @@ pub async fn delete(pool: &Pool<Postgres>, schedule_id: &str) -> Result<u64, Err
         INNER JOIN schedules AS s ON s.next_id = sc.id
         WHERE s.schedule_id = $1
     )";
+    // the next statements see the run of a declaration or a clone that held the lock
+    const SQL_LOCK: &str = "SELECT 1 FROM schedules WHERE schedule_id = $1 FOR UPDATE";
     const SQL: &str = "DELETE FROM schedules WHERE schedule_id = $1";
     let mut tx = pool.begin().await?;
+    // not locked, not deleted: a first declaration in flight would keep its run
+    if sqlx::query(SQL_LOCK)
+        .bind(schedule_id)
+        .fetch_optional(&mut *tx)
+        .await?
+        .is_none()
+    {
+        return Ok(0);
+    }
     sqlx::query(SQL_NEXT)
         .bind(schedule_id)
         .execute(&mut *tx)
