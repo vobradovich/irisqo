@@ -61,3 +61,35 @@ async fn http_job_is_queued_and_delivered(pool: PgPool) -> anyhow::Result<()> {
     assert_eq!(history, ["enqueued", "claimed", "completed"]);
     Ok(())
 }
+
+/// The target of `/to/` is kept as it came: `%20`, `%3F` and `%2F` stay encoded. A target
+/// encoded whole (no scheme of its own) is decoded once.
+#[sqlx::test(migrations = "./sql/migrations")]
+async fn http_job_keeps_an_encoded_path(pool: PgPool) -> anyhow::Result<()> {
+    let state = common::state(pool.clone());
+    let addr = common::spawn_app(&state).await;
+
+    for (target, url) in [
+        (
+            format!("http://{addr}/echo/a%20b%3Fc%2Fd?x=1"),
+            format!("http://{addr}/echo/a%20b%3Fc%2Fd?x=1"),
+        ),
+        (
+            format!("http%3A%2F%2F{addr}%2Fecho%2Fa%2520b"),
+            format!("http://{addr}/echo/a%20b"),
+        ),
+    ] {
+        let response = common::create(&state, addr, &target).await;
+        assert_eq!(response.status(), StatusCode::CREATED, "{target}");
+        let job_id: i64 = common::header(&response, "irisqo-job-id")
+            .and_then(|v| v.parse().ok())
+            .expect("job-id header");
+
+        let meta: String = sqlx::query_scalar("SELECT meta::text FROM jobs WHERE id = $1")
+            .bind(job_id)
+            .fetch_one(&pool)
+            .await?;
+        assert!(meta.contains(&format!("\"{url}\"")), "{target}: {meta}");
+    }
+    Ok(())
+}
