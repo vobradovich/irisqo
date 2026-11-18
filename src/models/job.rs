@@ -191,11 +191,9 @@ impl FlowKey {
 
     /// The flow key of a request: an empty one is none, as in `enqueue_v1`.
     pub fn parse_optional(value: &str) -> Result<Option<Self>, &'static str> {
-        if value.is_empty() {
-            Ok(None)
-        } else {
-            Self::try_from(value.to_owned()).map(Some)
-        }
+        (!value.is_empty())
+            .then(|| Self::try_from(value.to_owned()))
+            .transpose()
     }
 
     /// For `deserialize_with`: a flow key of a request, where an empty one is none.

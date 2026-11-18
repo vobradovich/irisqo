@@ -106,16 +106,17 @@ impl JobSchedule {
             // at the first one, one that does not exist runs when the clock jumps over it;
             // a frequent rule runs at the times the clock shows.
             ScheduleRule::Cron(cron) => {
-                let after =
-                    Timestamp::new(after.timestamp(), after.timestamp_subsec_nanos() as i32)
-                        .ok()?
-                        .to_zoned(self.tz.clone());
+                let nanos = i32::try_from(after.timestamp_subsec_nanos()).ok()?;
+                let after = Timestamp::new(after.timestamp(), nanos)
+                    .ok()?
+                    .to_zoned(self.tz.clone());
                 let next = Cron::from_str(cron)
                     .ok()?
                     .find_next_occurrence(&after, false)
                     .ok()?
                     .timestamp();
-                DateTime::from_timestamp(next.as_second(), next.subsec_nanosecond() as u32)?
+                let nanos = u32::try_from(next.subsec_nanosecond()).ok()?;
+                DateTime::from_timestamp(next.as_second(), nanos)?
             }
         };
         (Self::in_range(next) && self.until.is_none_or(|u| next <= u)).then_some(next)
@@ -123,6 +124,9 @@ impl JobSchedule {
 }
 
 impl ScheduleRule {
+    /// What is wrong with an interval that does not parse or is 0.
+    pub const INTERVAL_RULE: &str = "must be a positive number of seconds";
+
     /// A cron expression: an interval written as a number is not one. Errors name `cron`.
     pub fn parse_cron(s: &str) -> Result<Self, ParamError> {
         match s
@@ -146,10 +150,7 @@ impl FromStr for ScheduleRule {
         }
         if let Ok(interval) = s.parse::<u32>() {
             return match interval {
-                0 => Err(ParamError::new(
-                    "interval",
-                    "must be a positive number of seconds",
-                )),
+                0 => Err(ParamError::new("interval", Self::INTERVAL_RULE)),
                 interval => Ok(ScheduleRule::Interval(interval)),
             };
         }

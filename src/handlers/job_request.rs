@@ -144,6 +144,7 @@ impl JobRequest {
     /// An `http` job for `/to/` and the form: the method, the headers to send, the body as it is.
     /// The target is not set yet: [`prepare_job`](super::http::prepare_job) parses it.
     pub(crate) fn http(method: &Method, headers: HashMap<String, String>, body: Bytes) -> Self {
+        // every field spelled out: a new one must be decided here too
         Self {
             method: Some(method.clone()),
             url: Uri::default(),
@@ -176,6 +177,7 @@ impl JobRequest {
     /// The request with the fields of [`Self::PARAMS`] in `params` (`/to/` sets nothing else of
     /// them), and the errors of the ones that do not parse, named by their field. The fields are
     /// checked by [`Self::validate`].
+    #[must_use = "the errors of the parameters that do not parse must be reported"]
     pub(crate) fn with_params(self, params: &HashMap<String, String>) -> (Self, Vec<ParamError>) {
         let mut p = Params::new(params, "");
         let request = Self {
@@ -196,7 +198,7 @@ impl JobRequest {
                 .filter(|key| !key.is_empty())
                 .map(str::to_owned),
             cron: p.raw("cron").map(str::to_owned),
-            interval: p.parse("interval", INTERVAL_RULE, |v| v.parse().ok()),
+            interval: p.parse("interval", ScheduleRule::INTERVAL_RULE, |v| v.parse().ok()),
             tz: p.parse("tz", TZ_RULE, |v| TimeZone::get(v).ok()),
             until: p.parse("until", TIME_RULE, JobSchedule::parse_time),
             ..self
@@ -335,7 +337,7 @@ impl JobRequest {
                 .map_err(|err| errors.0.push(err))
                 .ok(),
             (None, Some(0)) => {
-                errors.add("interval", INTERVAL_RULE);
+                errors.add("interval", ScheduleRule::INTERVAL_RULE);
                 None
             }
             (None, Some(interval)) => Some(ScheduleRule::Interval(interval)),
@@ -347,9 +349,6 @@ impl JobRequest {
         })
     }
 }
-
-/// What is wrong with an interval that does not parse or is 0.
-const INTERVAL_RULE: &str = "must be a positive number of seconds";
 
 /// What the types of a [`JobCallback`] do not say, however it was made: the target, the method,
 /// the headers. Errors go to `errors` (`callback.<field>`); the callback is normalized.

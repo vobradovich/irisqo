@@ -82,14 +82,12 @@ impl<'a> Params<'a> {
     }
 
     pub fn error(&mut self, name: &str, detail: impl Into<String>) {
-        let parameter = match self.prefix {
-            "" => Cow::Owned(name.to_owned()),
-            prefix => Cow::Owned(format!("{prefix}{name}")),
-        };
+        let parameter = format!("{}{name}", self.prefix);
         self.errors.push(ParamError::new(parameter, detail));
     }
 
     /// The errors of the parameters that did not parse, and of the ones that were not read.
+    #[must_use = "the errors must be reported"]
     pub fn into_errors(mut self) -> Vec<ParamError> {
         let mut unread: Vec<&str> = (self.values.keys())
             .map(String::as_str)

@@ -394,10 +394,10 @@ async fn read_limited(
             chunks.push(data);
         }
     }
-    Ok(ResponseBody::Whole(match chunks.len() {
-        0 => Bytes::new(),
-        1 => chunks.swap_remove(0),
-        _ => chunks.concat().into(),
+    Ok(ResponseBody::Whole(match chunks.as_mut_slice() {
+        [] => Bytes::new(),
+        [whole] => std::mem::take(whole),
+        many => many.concat().into(),
     }))
 }
 
