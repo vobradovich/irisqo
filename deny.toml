@@ -10,6 +10,10 @@ ignore = [
     # unmaintained `basic-toml`, pulled in by askama_derive at build time only;
     # drop once askama moves off it
     { id = "RUSTSEC-2026-0374", reason = "build-time dependency of askama" },
+    # `chrono` is pulled in by sqlx (feature `chrono`), by our own code and by
+    # opentelemetry-stdout; drop once we move to jiff (+ jiff-sqlx) and
+    # opentelemetry-stdout stops depending on chrono
+    { id = "RUSTSEC-2026-0543", reason = "chrono via sqlx/opentelemetry-stdout; migrating to jiff" },
 ]
 
 [licenses]
