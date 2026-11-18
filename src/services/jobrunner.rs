@@ -497,10 +497,16 @@ async fn processed_scheduled(app_state: &AppState, completion: &Completion) -> R
         warn!({ instance_id, job_id }, "job is not locked by this attempt, skip");
         return Ok(());
     }
-    if let Some(next_at) = next_at {
+    if let (Some(schedule_id), Some(next_at)) = (schedule_id.as_deref(), next_at) {
         // `None`: the schedule was deleted or deactivated meanwhile
-        if let Some(next_id) =
-            features::schedules::clone_schedule_at(&mut *tx, job_id, next_at, instance_id).await?
+        if let Some(next_id) = features::schedules::clone_schedule_at(
+            &mut *tx,
+            schedule_id,
+            job_id,
+            next_at,
+            instance_id,
+        )
+        .await?
         {
             debug!({ instance_id, job_id, next_id, next_at = %next_at }, "==> clone and schedule");
         }
@@ -520,9 +526,6 @@ async fn schedule_next_at(
     let Some(row) = features::schedules::get_by_id(&app_state.pool, schedule_id).await? else {
         return Ok(None);
     };
-    if row.paused {
-        return Ok(None);
-    }
     let Ok(schedule) = JobSchedule::from_row(&row.rule, &row.tz, row.until).inspect_err(|err| {
         error!({ instance_id = app_state.instance_id, schedule_id }, "JobSchedule::parse error {:?}", err);
     }) else {

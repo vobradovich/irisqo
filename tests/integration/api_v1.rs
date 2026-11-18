@@ -101,7 +101,7 @@ async fn flow_and_priority_reach_the_tables(pool: PgPool) -> anyhow::Result<()> 
         .fetch_one(&pool)
         .await?;
     let at = chrono::Utc::now() + chrono::Duration::hours(2);
-    let next = irisqo::features::schedules::db::clone_schedule_at(&pool, id, at, "t").await?;
+    let next = irisqo::features::schedules::db::clone_schedule_at(&pool, "s", id, at, "t").await?;
     assert!(next.is_some());
     assert_eq!(stored().await?, [(None, 3), (None, 3)]);
     Ok(())
@@ -403,7 +403,8 @@ async fn a_run_after_a_cancelled_one_has_its_own_key(pool: PgPool) -> anyhow::Re
     assert!(old.starts_with("nightly-"));
 
     // the run that continues the schedule is at the time of the cancelled one
-    let next = irisqo::features::schedules::clone_schedule_at(&pool, run, at, "test").await?;
+    let next =
+        irisqo::features::schedules::clone_schedule_at(&pool, "nightly", run, at, "test").await?;
     assert!(next.is_some());
     let key: String = sqlx::query_scalar("SELECT key FROM jobs WHERE id = $1")
         .bind(next)
@@ -445,6 +446,7 @@ async fn a_run_that_finishes_during_a_declaration_does_not_continue_the_old_sche
         async move {
             irisqo::features::schedules::clone_schedule_at(
                 &pool,
+                "nightly",
                 old_run,
                 chrono::Utc::now(),
                 "test",

@@ -421,17 +421,23 @@ pub async fn cancel(
         }
         .callback()
     });
-    let cancelled = sqlx::query_scalar::<_, bool>(SQL_CANCEL)
-        .bind(job_id)
-        .bind(instance_id)
-        .bind(spawned.as_ref().map(|job| Json(&job.meta)))
-        .bind(spawned.as_ref().map(|job| Json(&job.headers)))
-        .bind(spawned.as_ref().and_then(JobCreate::body_bytes))
-        .bind(spawned.as_ref().and_then(|job| job.key.as_deref()))
-        .bind(taken_back.unwrap_or("cancelled by a user"))
-        .fetch_one(conn)
-        .await?;
-    Ok(u64::from(cancelled))
+    // once more with a new snapshot: a promotion in flight moved the job to `enqueued`
+    for _ in 0..2 {
+        let cancelled = sqlx::query_scalar::<_, bool>(SQL_CANCEL)
+            .bind(job_id)
+            .bind(instance_id)
+            .bind(spawned.as_ref().map(|job| Json(&job.meta)))
+            .bind(spawned.as_ref().map(|job| Json(&job.headers)))
+            .bind(spawned.as_ref().and_then(JobCreate::body_bytes))
+            .bind(spawned.as_ref().and_then(|job| job.key.as_deref()))
+            .bind(taken_back.unwrap_or("cancelled by a user"))
+            .fetch_one(&mut *conn)
+            .await?;
+        if cancelled {
+            return Ok(1);
+        }
+    }
+    Ok(0)
 }
 
 pub async fn cancel_job(
