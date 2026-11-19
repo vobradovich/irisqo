@@ -105,7 +105,7 @@ CREATE TABLE scheduled (
     flow_key     text NULL,                    -- meta.flow_key
     priority int NOT NULL DEFAULT 0   -- meta.priority, higher runs first
 );
-CREATE INDEX ix_scheduled_at ON scheduled (at);
+CREATE INDEX ix_scheduled_at ON scheduled (at, id);  -- the order of promote: ORDER BY at, id LIMIT n
 ```
 
 A retry with a delay goes back to `scheduled`, whatever its flow.
@@ -153,7 +153,7 @@ CREATE TABLE claimed (
     at          timestamptz NOT NULL DEFAULT now()  -- claim time
 );
 CREATE INDEX ix_claimed_flow        ON claimed (flow_key) WHERE flow_key IS NOT NULL;
-CREATE INDEX ix_claimed_instance_id ON claimed (instance_id);
+CREATE INDEX ix_claimed_instance_id ON claimed (instance_id, id);  -- id: lookups by id + instance
 CREATE INDEX ix_claimed_at          ON claimed (at);  -- the lock reaper
 ```
 

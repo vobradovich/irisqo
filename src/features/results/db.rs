@@ -52,8 +52,10 @@ where
                              $9::jsonb[], $10::jsonb[], $11::bytea[], $12::text[])
             AS t(id, attempt, status, meta, headers, body, message, cb_meta, cb_headers, cb_body, cb_key)
     ), a AS (
-        DELETE FROM claimed AS c USING input AS i
-        WHERE c.id = i.id AND c.attempt = i.attempt AND c.instance_id = $7
+        -- no join with `input`: with stale stats the planner expects one claimed row and rescans `input` per row
+        DELETE FROM claimed AS c
+        WHERE c.id = ANY($1::bigint[]) AND c.instance_id = $7
+          AND c.attempt = ($2::int[])[array_position($1::bigint[], c.id)]
         RETURNING c.id
     ), hist AS (
         INSERT INTO history(id, attempt, kind, instance_id, message)
