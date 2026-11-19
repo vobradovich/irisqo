@@ -58,7 +58,7 @@ CREATE TABLE scheduled (
     autovacuum_vacuum_scale_factor = 0, autovacuum_vacuum_threshold = 1000,
     autovacuum_analyze_scale_factor = 0, autovacuum_analyze_threshold = 1000
 );
-CREATE INDEX ix_scheduled_at ON scheduled (at);
+CREATE INDEX ix_scheduled_at ON scheduled (at, id);
 
 CREATE TABLE enqueued (
     id       bigint PRIMARY KEY REFERENCES jobs ON DELETE CASCADE,
@@ -88,7 +88,9 @@ CREATE TABLE claimed (
     autovacuum_analyze_scale_factor = 0, autovacuum_analyze_threshold = 1000
 );
 CREATE INDEX ix_claimed_flow        ON claimed (flow_key) WHERE flow_key IS NOT NULL;
-CREATE INDEX ix_claimed_instance_id ON claimed (instance_id);
+-- `id` in the key: the lookups by `id` and `instance_id` (retry, unlock, completion) must not read all the jobs of the
+-- instance (the planner picked this index over the primary key and filtered ~1000 rows a lookup)
+CREATE INDEX ix_claimed_instance_id ON claimed (instance_id, id);
 CREATE INDEX ix_claimed_at          ON claimed (at);
 
 CREATE TABLE processed (
@@ -490,7 +492,8 @@ BEGIN
         WHERE names.flow_key IS NOT NULL
           AND NOT coalesce(f.paused, false)
           AND flow_rate_free_v1(f.rate, f.rate_period, f.next_at) >= 1
-          AND (SELECT count(*) FROM claimed c WHERE c.flow_key = names.flow_key) < coalesce(f.concurrency, 1)
+          AND NOT EXISTS (SELECT 1 FROM claimed c WHERE c.flow_key = names.flow_key
+                          OFFSET coalesce(f.concurrency, 1) - 1 LIMIT 1)
     )
     SELECT coalesce(array_agg(l.flow_key), '{}')
     INTO v_flows
@@ -510,7 +513,8 @@ BEGIN
             WHERE e.flow_key = u.name
             ORDER BY e.priority DESC, e.attempt, e.id
             LIMIT least(greatest(coalesce(f.concurrency, 1)
-                                 - (SELECT count(*) FROM claimed cl WHERE cl.flow_key = u.name), 0),
+                                 - (SELECT count(*) FROM (SELECT 1 FROM claimed cl WHERE cl.flow_key = u.name
+                                                          LIMIT coalesce(f.concurrency, 1)) n), 0),
                         flow_rate_free_v1(f.rate, f.rate_period, f.next_at))
         ) x
         ORDER BY x.id
