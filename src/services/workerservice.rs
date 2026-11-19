@@ -19,7 +19,7 @@ const COMPLETER_GRACE: Duration = Duration::from_secs(5);
 ///
 /// - The loader assigns jobs to this instance in batches (one db round trip per batch).
 /// - `--workers` long-lived worker tasks drive up to `--prefetch` jobs each concurrently
-///   (`buffer_unordered`); they all pull from the same channel, so a slow job never
+///   (`for_each_concurrent`); they all pull from the same channel, so a slow job never
 ///   blocks the others.
 /// - The completer writes the final results: whatever has piled up while the previous
 ///   write was running goes into the next statement, so under load results are written
@@ -140,16 +140,19 @@ async fn run_worker(
     let instance_id = &app_state.instance_id;
     info!({ instance_id, idx, per_worker }, "run_worker");
     let state: &AppState = app_state;
+    let done_tx = &done_tx;
     // Ends when the channel is closed and drained and all in-flight jobs are done.
-    rx.map(|entry| jobrunner::job_execute(state, entry))
-        .buffer_unordered(per_worker)
-        .for_each(|completion| async {
-            if let Some(completion) = completion {
-                // the completer outlives the workers: send fails only if it panicked
-                _ = done_tx.send(completion).await;
-            }
-        })
-        .await;
+    // Each job sends its own result: a job waiting for room in the completer's channel must
+    // not stop the others. (`buffer_unordered` + an await in `for_each` stops polling them:
+    // a stopped job that holds a pool connection keeps it, the completer cannot get one to
+    // make room, and all of them wait until the completer's write gives up.)
+    rx.for_each_concurrent(per_worker, |entry| async move {
+        if let Some(completion) = jobrunner::job_execute(state, entry).await {
+            // the completer outlives the workers: send fails only if it panicked
+            _ = done_tx.send(completion).await;
+        }
+    })
+    .await;
     info!({ instance_id, idx }, "stop_worker");
 }
 
