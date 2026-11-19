@@ -80,7 +80,7 @@ async fn a_flow_is_declared_changed_paused_and_deleted(pool: PgPool) -> anyhow::
     assert_eq!(row["paused"], true);
     // a paused flow holds its jobs
     let id = common::insert_enqueued(&pool, 1).await[0];
-    sqlx::query("UPDATE enqueued SET flow_key = 'emails' WHERE id = $1")
+    sqlx::query("UPDATE queue SET flow_key = 'emails' WHERE state = 'ready' AND id = $1")
         .bind(id)
         .execute(&pool)
         .await?;
@@ -219,7 +219,7 @@ async fn the_ui_filters_and_pages_the_flows(pool: PgPool) -> anyhow::Result<()> 
         .into_iter()
         .zip(["free-a", "free-b"])
     {
-        sqlx::query("UPDATE enqueued SET flow_key = $2 WHERE id = $1")
+        sqlx::query("UPDATE queue SET flow_key = $2 WHERE state = 'ready' AND id = $1")
             .bind(id)
             .bind(flow)
             .execute(&pool)
@@ -270,23 +270,27 @@ async fn the_ui_filters_and_pages_the_flows(pool: PgPool) -> anyhow::Result<()> 
 async fn the_jobs_of_a_flow_are_held_and_are_no_lag(pool: PgPool) -> anyhow::Result<()> {
     let ids = common::insert_enqueued(&pool, 3).await;
     // two jobs of a flow, one of them an hour old; one job without a flow
-    sqlx::query("UPDATE enqueued SET flow_key = 'q' WHERE id = ANY($1)")
+    sqlx::query("UPDATE queue SET flow_key = 'q' WHERE state = 'ready' AND id = ANY($1)")
         .bind(&ids[..2])
         .execute(&pool)
         .await?;
-    sqlx::query("UPDATE enqueued SET at = now() - interval '1 hour' WHERE id = $1")
-        .bind(ids[0])
-        .execute(&pool)
-        .await?;
+    sqlx::query(
+        "UPDATE queue SET at = now() - interval '1 hour' WHERE state = 'ready' AND id = $1",
+    )
+    .bind(ids[0])
+    .execute(&pool)
+    .await?;
     let stats = irisqo::db::stats::queue_stats(&pool).await?;
     assert_eq!((stats.enqueued, stats.held), (3, 2));
     assert!(stats.lag < 60.0, "a held job is no lag: {}", stats.lag);
 
     // the job without a flow waits: that is the lag
-    sqlx::query("UPDATE enqueued SET at = now() - interval '1 hour' WHERE id = $1")
-        .bind(ids[2])
-        .execute(&pool)
-        .await?;
+    sqlx::query(
+        "UPDATE queue SET at = now() - interval '1 hour' WHERE state = 'ready' AND id = $1",
+    )
+    .bind(ids[2])
+    .execute(&pool)
+    .await?;
     let stats = irisqo::db::stats::queue_stats(&pool).await?;
     assert!(stats.lag > 3000.0, "{}", stats.lag);
     Ok(())
@@ -303,7 +307,7 @@ async fn the_ui_shows_until_when_the_rate_limit_holds_the_jobs(pool: PgPool) -> 
     .execute(&pool)
     .await?;
     for id in common::insert_enqueued(&pool, 2).await {
-        sqlx::query("UPDATE enqueued SET flow_key = 'q' WHERE id = $1")
+        sqlx::query("UPDATE queue SET flow_key = 'q' WHERE state = 'ready' AND id = $1")
             .bind(id)
             .execute(&pool)
             .await?;

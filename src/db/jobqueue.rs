@@ -48,7 +48,7 @@ async fn create_enqueue(
     ), hist AS (
         INSERT INTO history(id, attempt, kind, instance_id) SELECT id, 0, 'enqueued', $5 FROM a
     )
-    INSERT INTO enqueued(id, flow_key, priority) SELECT id, $6, $7 FROM a RETURNING id";
+    INSERT INTO queue(id, state, flow_key, priority) SELECT id, 'ready', $6, $7 FROM a RETURNING id";
 
     let body = job.body_bytes();
     let (flow_key, priority) = (
@@ -87,7 +87,7 @@ async fn create_at(
     ), hist AS (
         INSERT INTO history(id, attempt, kind, instance_id) SELECT id, 0, 'scheduled', $6 FROM a
     )
-    INSERT INTO scheduled(id, at, flow_key, priority) SELECT id, $5::timestamptz, $7, $8 FROM a RETURNING id
+    INSERT INTO queue(id, state, at, flow_key, priority) SELECT id, 'scheduled', $5::timestamptz, $7, $8 FROM a RETURNING id
     ";
 
     let body = job.body_bytes();
@@ -165,19 +165,20 @@ pub async fn delete(pool: &Pool<Postgres>, job_id: i64) -> Result<u64, Error> {
     Ok(res.rows_affected())
 }
 
-/// Moves up to `limit` due jobs from `scheduled` to `enqueued`.
+/// Moves up to `limit` due jobs from `scheduled` to `ready` (`at` is kept: the lag counts from
+/// the moment the job was due).
 pub async fn enqueue_scheduled(
     pool: &Pool<Postgres>,
     instance_id: &str,
     limit: i32,
 ) -> Result<u64, Error> {
     const SQL: &str = "
-    WITH a AS (
-        DELETE FROM scheduled
-        WHERE id = ANY(ARRAY(SELECT id FROM scheduled WHERE at <= now() ORDER BY at, id LIMIT $1 FOR UPDATE SKIP LOCKED))
-        RETURNING id, attempt, at, flow_key, priority
-    ), b AS (
-        INSERT INTO enqueued(id, attempt, at, flow_key, priority) SELECT id, attempt, at, flow_key, priority FROM a RETURNING id, attempt
+    WITH b AS (
+        UPDATE queue SET state = 'ready'
+        WHERE id = ANY(ARRAY(SELECT id FROM queue WHERE state = 'scheduled' AND at <= now()
+                             ORDER BY at, id LIMIT $1 FOR UPDATE SKIP LOCKED))
+          AND state = 'scheduled'
+        RETURNING id, attempt
     )
     INSERT INTO history(id, attempt, kind, instance_id) SELECT id, attempt, 'enqueued', $2 FROM b";
     let res = sqlx::query(SQL)
@@ -188,7 +189,7 @@ pub async fn enqueue_scheduled(
     Ok(res.rows_affected())
 }
 
-/// Puts a job back to `enqueued` for an immediate retry.
+/// Puts a job back to `ready` for an immediate retry.
 /// Only the current attempt (`instance_id` + `attempt`) may do it: returns 0 otherwise.
 pub async fn unlock(
     pool: &Pool<Postgres>,
@@ -197,10 +198,10 @@ pub async fn unlock(
     message: &str,
 ) -> Result<u64, Error> {
     const SQL: &str = "
-    WITH a AS (
-        DELETE FROM claimed WHERE id = $1 AND instance_id = $2 AND attempt = $3 RETURNING id, attempt, flow_key, priority
-    ), b AS (
-        INSERT INTO enqueued(id, attempt, flow_key, priority) SELECT id, attempt + 1, flow_key, priority FROM a RETURNING id, attempt
+    WITH b AS (
+        UPDATE queue SET state = 'ready', instance_id = NULL, attempt = attempt + 1, at = now()
+        WHERE id = $1 AND state = 'claimed' AND instance_id = $2 AND attempt = $3
+        RETURNING id, attempt
     )
     INSERT INTO history(id, attempt, kind, instance_id, message) SELECT id, attempt, 'retried', $2, $4 FROM b";
     let res = sqlx::query(SQL)
@@ -213,7 +214,8 @@ pub async fn unlock(
     Ok(res.rows_affected())
 }
 
-/// Moves a job to `scheduled` for a retry at `at`.
+/// Moves a job to `scheduled` for a retry at `at`, or straight to `ready` when `at` has already
+/// come (no promotion needed).
 /// Only the current attempt (`instance_id` + `attempt`) may do it: returns 0 otherwise.
 pub async fn retry(
     pool: &Pool<Postgres>,
@@ -223,11 +225,12 @@ pub async fn retry(
     message: &str,
 ) -> Result<u64, Error> {
     const SQL: &str = "
-    WITH a AS (
-        DELETE FROM claimed WHERE id = $1 AND instance_id = $3 AND attempt = $4
-        RETURNING id, attempt + 1 AS attempt, flow_key, priority, instance_id
-    ), s AS (
-        INSERT INTO scheduled(id, at, attempt, flow_key, priority) SELECT id, $2::timestamptz, attempt, flow_key, priority FROM a RETURNING id, attempt
+    WITH s AS (
+        UPDATE queue
+        SET state = CASE WHEN $2::timestamptz <= now() THEN 'ready' ELSE 'scheduled' END,
+            instance_id = NULL, attempt = attempt + 1, at = $2::timestamptz
+        WHERE id = $1 AND state = 'claimed' AND instance_id = $3 AND attempt = $4
+        RETURNING id, attempt
     )
     INSERT INTO history(id, attempt, kind, instance_id, message) SELECT id, attempt, 'retried', $3, $5 FROM s";
     let res = sqlx::query(SQL)
@@ -250,15 +253,17 @@ pub async fn reap_expired_locks(
     limit: i32,
 ) -> Result<u64, Error> {
     const SQL: &str = "
-    WITH a AS (
-        DELETE FROM claimed
-        WHERE id = ANY(ARRAY(SELECT id FROM claimed WHERE at < now() - $1 ORDER BY at LIMIT $3 FOR UPDATE SKIP LOCKED))
-        RETURNING id, attempt, flow_key, priority, instance_id
-    ), b AS (
-        INSERT INTO enqueued(id, attempt, flow_key, priority) SELECT id, attempt + 1, flow_key, priority FROM a
+    WITH s AS (
+        SELECT id, instance_id FROM queue
+        WHERE state = 'claimed' AND at < now() - $1
+        ORDER BY at LIMIT $3 FOR UPDATE SKIP LOCKED
+    ), a AS (
+        UPDATE queue AS q SET state = 'ready', instance_id = NULL, attempt = q.attempt + 1, at = now()
+        FROM s WHERE q.id = s.id AND q.state = 'claimed'
+        RETURNING q.id, q.attempt, s.instance_id AS locked_by
     )
     INSERT INTO history(id, attempt, kind, instance_id, message)
-    SELECT id, attempt + 1, 'retried', $2, 'lock expired: ' || instance_id FROM a";
+    SELECT id, attempt, 'retried', $2, 'lock expired: ' || locked_by FROM a";
     let res = sqlx::query(SQL)
         .bind(lease)
         .bind(instance_id)
@@ -356,12 +361,8 @@ pub async fn cancel(
     const SQL_SOURCE: &str = "
     SELECT meta, key, schedule_id FROM jobs WHERE id = $1 AND meta ? 'callback'";
     const SQL_CANCEL: &str = "
-    WITH s AS (
-        DELETE FROM scheduled WHERE id = $1 RETURNING id, attempt
-    ), e AS (
-        DELETE FROM enqueued WHERE id = $1 RETURNING id, attempt
-    ), c AS (
-        SELECT id, attempt FROM s UNION ALL SELECT id, attempt FROM e
+    WITH c AS (
+        DELETE FROM queue WHERE id = $1 AND state IN ('scheduled', 'ready') RETURNING id, attempt
     ), hist AS (
         INSERT INTO history(id, attempt, kind, instance_id, message)
         SELECT id, attempt, 'cancelled', $2, $7 FROM c
@@ -380,8 +381,8 @@ pub async fn cancel(
         FROM p WHERE $3::jsonb IS NOT NULL
         RETURNING id, parent_id
     ), cbe AS (
-        INSERT INTO enqueued(id, flow_key, priority)
-        SELECT cb.id, $3::jsonb->>'flow_key', coalesce(($3::jsonb->>'priority')::int, 0) FROM cb
+        INSERT INTO queue(id, state, flow_key, priority)
+        SELECT cb.id, 'ready', $3::jsonb->>'flow_key', coalesce(($3::jsonb->>'priority')::int, 0) FROM cb
     ), cbh AS (
         INSERT INTO history(id, attempt, kind, message)
         SELECT cb.id, 0, 'enqueued', 'callback of #' || cb.parent_id FROM cb
@@ -421,23 +422,19 @@ pub async fn cancel(
         }
         .callback()
     });
-    // once more with a new snapshot: a promotion in flight moved the job to `enqueued`
-    for _ in 0..2 {
-        let cancelled = sqlx::query_scalar::<_, bool>(SQL_CANCEL)
-            .bind(job_id)
-            .bind(instance_id)
-            .bind(spawned.as_ref().map(|job| Json(&job.meta)))
-            .bind(spawned.as_ref().map(|job| Json(&job.headers)))
-            .bind(spawned.as_ref().and_then(JobCreate::body_bytes))
-            .bind(spawned.as_ref().and_then(|job| job.key.as_deref()))
-            .bind(taken_back.unwrap_or("cancelled by a user"))
-            .fetch_one(&mut *conn)
-            .await?;
-        if cancelled {
-            return Ok(1);
-        }
-    }
-    Ok(0)
+    // once: a promotion in flight is an UPDATE of the same row, the DELETE waits for it and
+    // re-checks the state of the new version (V3 ran it twice: the job moved to another table)
+    let cancelled = sqlx::query_scalar::<_, bool>(SQL_CANCEL)
+        .bind(job_id)
+        .bind(instance_id)
+        .bind(spawned.as_ref().map(|job| Json(&job.meta)))
+        .bind(spawned.as_ref().map(|job| Json(&job.headers)))
+        .bind(spawned.as_ref().and_then(JobCreate::body_bytes))
+        .bind(spawned.as_ref().and_then(|job| job.key.as_deref()))
+        .bind(taken_back.unwrap_or("cancelled by a user"))
+        .fetch_one(&mut *conn)
+        .await?;
+    Ok(u64::from(cancelled))
 }
 
 pub async fn cancel_job(
@@ -463,8 +460,8 @@ pub async fn requeue_job(
     WITH p AS (
         DELETE FROM processed WHERE id = $1 RETURNING id, attempt
     ), e AS (
-        INSERT INTO enqueued(id, attempt, flow_key, priority)
-        SELECT p.id, p.attempt + 1, j.meta->>'flow_key', coalesce((j.meta->>'priority')::int, 0)
+        INSERT INTO queue(id, state, attempt, flow_key, priority)
+        SELECT p.id, 'ready', p.attempt + 1, j.meta->>'flow_key', coalesce((j.meta->>'priority')::int, 0)
         FROM p INNER JOIN jobs AS j ON j.id = p.id
         RETURNING id, attempt
     )

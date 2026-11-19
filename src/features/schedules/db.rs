@@ -62,7 +62,7 @@ pub async fn upsert(
     ), hist AS (
         INSERT INTO history(id, attempt, kind, instance_id) SELECT id, 0, 'scheduled', $7 FROM a
     )
-    INSERT INTO scheduled(id, at, flow_key, priority) SELECT id, $6::timestamptz, $8, $9 FROM a RETURNING id";
+    INSERT INTO queue(id, state, at, flow_key, priority) SELECT id, 'scheduled', $6::timestamptz, $8, $9 FROM a RETURNING id";
 
     let (Some(schedule_id), Some(schedule)) = (job.key.as_deref(), job.schedule.as_ref()) else {
         return Err(Error::invalid("schedule", "needs an id and a rule"));
@@ -159,8 +159,8 @@ where
     ), hist AS (
         INSERT INTO history(id, attempt, kind, instance_id) SELECT id, 0, 'scheduled', $3 FROM a
     )
-    INSERT INTO scheduled(id, at, flow_key, priority)
-    SELECT a.id, $2::timestamptz, a.flow_key, a.priority FROM a RETURNING id
+    INSERT INTO queue(id, state, at, flow_key, priority)
+    SELECT a.id, 'scheduled', $2::timestamptz, a.flow_key, a.priority FROM a RETURNING id
     ";
 
     let job_id = sqlx::query_scalar::<_, i64>(SQL)
@@ -212,9 +212,7 @@ pub async fn resume(
     RETURNING rule, tz, until, next_id, next_at";
     // a statement of its own: a new snapshot, after a completion that held the lock
     const SQL_PENDING: &str = "
-    SELECT EXISTS (SELECT 1 FROM scheduled WHERE id = $1)
-        OR EXISTS (SELECT 1 FROM enqueued WHERE id = $1)
-        OR EXISTS (SELECT 1 FROM claimed WHERE id = $1)";
+    SELECT EXISTS (SELECT 1 FROM queue WHERE id = $1)";
     #[derive(sqlx::FromRow)]
     struct Resumed {
         rule: String,
@@ -279,13 +277,11 @@ pub async fn list_view(pool: &Pool<Postgres>, limit: i32) -> Result<Vec<Schedule
     const SQL: &str = "
     SELECT s.schedule_id, s.rule, s.tz, s.until, s.next_id,
         s.next_at, s.paused, j.meta,
-        (sc.id IS NOT NULL OR e.id IS NOT NULL OR c.id IS NOT NULL) AS pending,
+        (q.id IS NOT NULL) AS pending,
         lp.id AS last_id, lp.status AS last_status, lp.at AS last_run_at
     FROM schedules AS s
     LEFT JOIN jobs AS j ON j.id = s.next_id
-    LEFT JOIN scheduled AS sc ON sc.id = s.next_id
-    LEFT JOIN enqueued AS e ON e.id = s.next_id
-    LEFT JOIN claimed AS c ON c.id = s.next_id
+    LEFT JOIN queue AS q ON q.id = s.next_id
     LEFT JOIN LATERAL (
         SELECT p.id, p.status, p.at
         FROM jobs AS j2 INNER JOIN processed AS p ON p.id = j2.id
@@ -306,9 +302,9 @@ pub async fn list_view(pool: &Pool<Postgres>, limit: i32) -> Result<Vec<Schedule
 pub async fn delete(pool: &Pool<Postgres>, schedule_id: &str) -> Result<u64, Error> {
     const SQL_NEXT: &str = "
     DELETE FROM jobs WHERE id IN (
-        SELECT sc.id FROM scheduled AS sc
+        SELECT sc.id FROM queue AS sc
         INNER JOIN schedules AS s ON s.next_id = sc.id
-        WHERE s.schedule_id = $1
+        WHERE s.schedule_id = $1 AND sc.state = 'scheduled'
     )";
     // the next statements see the run of a declaration or a clone that held the lock
     const SQL_LOCK: &str = "SELECT 1 FROM schedules WHERE schedule_id = $1 FOR UPDATE";

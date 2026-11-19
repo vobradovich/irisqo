@@ -158,7 +158,11 @@ async fn form_creates_the_job(pool: PgPool) -> anyhow::Result<()> {
     );
     assert_eq!((auth.as_str(), key.as_str()), ("Bearer x", "order-1"));
     assert_eq!(
-        common::count(&pool, "SELECT count(*) FROM scheduled").await,
+        common::count(
+            &pool,
+            "SELECT count(*) FROM queue WHERE state = 'scheduled'"
+        )
+        .await,
         1
     );
     Ok(())

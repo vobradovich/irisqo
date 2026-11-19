@@ -14,8 +14,9 @@ pub async fn list(
 ) -> Result<Vec<FlowListRow>, Error> {
     const SQL: &str = "
     SELECT flow_id, concurrency, rate, rate_period, paused, next_at,
-           (SELECT count(*) FROM (SELECT 1 FROM enqueued e WHERE e.flow_key = flows.flow_id LIMIT 101) w) AS waiting,
-           (SELECT count(*) FROM claimed c WHERE c.flow_key = flows.flow_id) AS processing,
+           (SELECT count(*) FROM (SELECT 1 FROM queue e
+                                  WHERE e.state = 'ready' AND e.flow_key = flows.flow_id LIMIT 101) w) AS waiting,
+           (SELECT count(*) FROM queue c WHERE c.state = 'claimed' AND c.flow_key = flows.flow_id) AS processing,
            CASE WHEN rate IS NULL THEN NULL
                 ELSE flow_rate_free_v1(rate, rate_period, next_at) END AS rate_left
     FROM flows
@@ -45,14 +46,18 @@ pub async fn list_undeclared(
     const SQL: &str = "
     WITH RECURSIVE names(flow_key) AS (
         SELECT (SELECT min(m) FROM (
-                   SELECT min(flow_key) AS m FROM enqueued WHERE flow_key > coalesce($1::text, '')
+                   SELECT min(flow_key) AS m FROM queue
+                   WHERE state = 'ready' AND flow_key IS NOT NULL AND flow_key > coalesce($1::text, '')
                    UNION ALL
-                   SELECT min(flow_key) FROM claimed WHERE flow_key > coalesce($1::text, '')) s)
+                   SELECT min(flow_key) FROM queue
+                   WHERE state = 'claimed' AND flow_key IS NOT NULL AND flow_key > coalesce($1::text, '')) s)
         UNION ALL
         SELECT (SELECT min(m) FROM (
-                   SELECT min(flow_key) AS m FROM enqueued WHERE flow_key > names.flow_key
+                   SELECT min(flow_key) AS m FROM queue
+                   WHERE state = 'ready' AND flow_key IS NOT NULL AND flow_key > names.flow_key
                    UNION ALL
-                   SELECT min(flow_key) FROM claimed WHERE flow_key > names.flow_key) s)
+                   SELECT min(flow_key) FROM queue
+                   WHERE state = 'claimed' AND flow_key IS NOT NULL AND flow_key > names.flow_key) s)
         FROM names
         WHERE names.flow_key IS NOT NULL
     ), page AS (
@@ -62,8 +67,9 @@ pub async fn list_undeclared(
         LIMIT $2 OFFSET $3
     )
     SELECT p.flow_key AS flow_id,
-           (SELECT count(*) FROM (SELECT 1 FROM enqueued e WHERE e.flow_key = p.flow_key LIMIT 101) w) AS waiting,
-           (SELECT count(*) FROM claimed c WHERE c.flow_key = p.flow_key) AS processing
+           (SELECT count(*) FROM (SELECT 1 FROM queue e
+                                  WHERE e.state = 'ready' AND e.flow_key = p.flow_key LIMIT 101) w) AS waiting,
+           (SELECT count(*) FROM queue c WHERE c.state = 'claimed' AND c.flow_key = p.flow_key) AS processing
     FROM page p
     ORDER BY p.flow_key";
     let rows = sqlx::query_as::<_, UndeclaredFlowRow>(SQL)

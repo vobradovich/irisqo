@@ -267,7 +267,7 @@ async fn cancelling_a_waiting_job_makes_a_callback(pool: PgPool) -> anyhow::Resu
     let state = common::state(pool.clone());
     let addr = common::spawn_app(&state).await;
     let id = job_id(&state, addr, &target(addr, "_delay=600")).await;
-    sqlx::query("UPDATE scheduled SET attempt = 3 WHERE id = $1")
+    sqlx::query("UPDATE queue SET attempt = 3 WHERE state = 'scheduled' AND id = $1")
         .bind(id)
         .execute(&pool)
         .await?;

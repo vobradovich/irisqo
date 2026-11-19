@@ -47,49 +47,37 @@ CREATE UNIQUE INDEX ux_jobs_key  ON jobs (key) WHERE key IS NOT NULL;
 CREATE INDEX ix_jobs_schedule_id ON jobs (schedule_id) WHERE schedule_id IS NOT NULL;
 CREATE INDEX ix_jobs_parent_id   ON jobs (parent_id, id) WHERE parent_id IS NOT NULL;
 
-CREATE TABLE scheduled (
-    id       bigint PRIMARY KEY REFERENCES jobs ON DELETE CASCADE,
-    at       timestamptz NOT NULL,
-    attempt  int NOT NULL DEFAULT 0
-             CHECK (attempt >= 0),
-    flow_key text NULL,
-    priority int NOT NULL DEFAULT 0
-) WITH (
-    autovacuum_vacuum_scale_factor = 0, autovacuum_vacuum_threshold = 1000,
-    autovacuum_analyze_scale_factor = 0, autovacuum_analyze_threshold = 1000
-);
-CREATE INDEX ix_scheduled_at ON scheduled (at);
-
-CREATE TABLE enqueued (
-    id       bigint PRIMARY KEY REFERENCES jobs ON DELETE CASCADE,
-    attempt  int NOT NULL DEFAULT 0
-             CHECK (attempt >= 0),
-    at       timestamptz NOT NULL DEFAULT now(),
-    flow_key text NULL,
-    priority int NOT NULL DEFAULT 0
-) WITH (
-    autovacuum_vacuum_scale_factor = 0, autovacuum_vacuum_threshold = 1000,
-    autovacuum_analyze_scale_factor = 0, autovacuum_analyze_threshold = 1000
-);
-CREATE INDEX ix_enqueued_candidates ON enqueued (priority DESC, attempt, id)
-    WHERE flow_key IS NULL;
-CREATE INDEX ix_enqueued_flow       ON enqueued (flow_key, priority DESC, attempt, id)
-    WHERE flow_key IS NOT NULL;
-
-CREATE TABLE claimed (
+-- V1a: the jobs that wait or run, one row per job, the state in a column.
+--   scheduled: waits for `at`;      ready: due, waits for a worker (`at`: since when);
+--   claimed:   runs on `instance_id` since `at`.
+-- A transition is an UPDATE of the row; the partial indexes keep each state apart.
+CREATE TABLE queue (
     id          bigint PRIMARY KEY REFERENCES jobs ON DELETE CASCADE,
-    attempt     int NOT NULL,
+    state       text NOT NULL DEFAULT 'ready'
+                CHECK (state IN ('scheduled', 'ready', 'claimed')),
+    at          timestamptz NOT NULL DEFAULT now(),
+    attempt     int NOT NULL DEFAULT 0
+                CHECK (attempt >= 0),
     flow_key    text NULL,
     priority    int NOT NULL DEFAULT 0,
-    instance_id text NOT NULL,
-    at          timestamptz NOT NULL DEFAULT now()
+    instance_id text NULL,
+    CONSTRAINT ck_queue_instance_id CHECK ((state = 'claimed') = (instance_id IS NOT NULL))
 ) WITH (
     autovacuum_vacuum_scale_factor = 0, autovacuum_vacuum_threshold = 1000,
     autovacuum_analyze_scale_factor = 0, autovacuum_analyze_threshold = 1000
 );
-CREATE INDEX ix_claimed_flow        ON claimed (flow_key) WHERE flow_key IS NOT NULL;
-CREATE INDEX ix_claimed_instance_id ON claimed (instance_id);
-CREATE INDEX ix_claimed_at          ON claimed (at);
+-- (at, id): the order of `promote` (ORDER BY at, id LIMIT n); with (at) alone, jobs due at the
+-- same time are sorted in full before the limit
+CREATE INDEX ix_queue_scheduled_at    ON queue (at, id) WHERE state = 'scheduled';
+CREATE INDEX ix_queue_candidates      ON queue (priority DESC, attempt, id)
+    WHERE state = 'ready' AND flow_key IS NULL;
+CREATE INDEX ix_queue_flow            ON queue (flow_key, priority DESC, attempt, id)
+    WHERE state = 'ready' AND flow_key IS NOT NULL;
+CREATE INDEX ix_queue_claimed_flow    ON queue (flow_key) WHERE state = 'claimed' AND flow_key IS NOT NULL;
+CREATE INDEX ix_queue_claimed_instance_id ON queue (instance_id, id) WHERE state = 'claimed';
+-- no index on `at` of the claimed rows: the reaper reads them all (only the jobs in flight), and every claimed-row
+-- partial index is a candidate for the lookups by id (`state = 'claimed'` matches its predicate): the planner
+-- scanned all of ix_queue_claimed_at for each retry. ix_queue_claimed_instance_id has `id` in its key.
 
 CREATE TABLE processed (
     id          bigint PRIMARY KEY REFERENCES jobs ON DELETE CASCADE,
@@ -345,10 +333,10 @@ BEGIN
         RETURN (SELECT j.id FROM jobs j WHERE j.key = v_key);
     END IF;
     IF v_at IS NULL THEN
-        INSERT INTO enqueued (id, flow_key, priority) VALUES (new_id, v_flow, v_priority);
+        INSERT INTO queue (id, state, flow_key, priority) VALUES (new_id, 'ready', v_flow, v_priority);
         INSERT INTO history (id, attempt, kind) VALUES (new_id, 0, 'enqueued');
     ELSE
-        INSERT INTO scheduled (id, at, flow_key, priority) VALUES (new_id, v_at, v_flow, v_priority);
+        INSERT INTO queue (id, state, at, flow_key, priority) VALUES (new_id, 'scheduled', v_at, v_flow, v_priority);
         INSERT INTO history (id, attempt, kind) VALUES (new_id, 0, 'scheduled');
     END IF;
     RETURN new_id;
@@ -359,18 +347,15 @@ LANGUAGE plpgsql SET search_path FROM CURRENT AS $$
 DECLARE
     n int;
 BEGIN
-    WITH d AS (
-        DELETE FROM scheduled
+    WITH b AS (
+        UPDATE queue SET state = 'ready'
         WHERE id = ANY(ARRAY(SELECT s.id
-                             FROM scheduled s
-                             WHERE s.at <= now()
+                             FROM queue s
+                             WHERE s.state = 'scheduled' AND s.at <= now()
                              ORDER BY s.at, s.id
                              LIMIT p_limit
                              FOR UPDATE SKIP LOCKED))
-        RETURNING id, attempt, at, flow_key, priority
-    ), b AS (
-        INSERT INTO enqueued (id, attempt, at, flow_key, priority)
-        SELECT * FROM d
+          AND state = 'scheduled'
         RETURNING id, attempt
     ), hist AS (
         INSERT INTO history (id, attempt, kind, instance_id)
@@ -393,23 +378,25 @@ BEGIN
 
     INSERT INTO stats (name, value, at)
     SELECT v.name, v.value, clock_timestamp()
-    FROM (SELECT count(*) AS n,
-                 count(*) FILTER (WHERE flow_key IS NOT NULL) AS held,
-                 min(at) FILTER (WHERE flow_key IS NULL) AS due
-          FROM enqueued) AS e,
+    -- one aggregate per partial index: a single pass over `queue` would read the scheduled too
+    FROM (SELECT count(*) AS n, min(at) AS due
+          FROM queue WHERE state = 'ready' AND flow_key IS NULL) AS e,
+         (SELECT count(*) AS held
+          FROM queue WHERE state = 'ready' AND flow_key IS NOT NULL) AS h,
          (SELECT count(*) AS n, count(*) FILTER (WHERE status = 'failed') AS failed
           FROM processed
           WHERE at > now() - interval '24 hours') AS p,
          LATERAL (VALUES
-            ('scheduled', (SELECT count(*) FROM scheduled)),
-            ('enqueued',  e.n),
-            ('held',      e.held),
-            ('claimed',   (SELECT count(*) FROM claimed)),
+            ('scheduled', (SELECT count(*) FROM queue WHERE state = 'scheduled')),
+            ('enqueued',  e.n + h.held),
+            ('held',      h.held),
+            ('claimed',   (SELECT count(*) FROM queue WHERE state = 'claimed')),
             ('lag_seconds',
                 (SELECT coalesce(floor(extract(epoch FROM clock_timestamp() - min(d.at))), 0)::bigint
                  FROM (SELECT e.due AS at
                        UNION ALL
-                       SELECT min(s.at) FROM scheduled s WHERE s.at <= clock_timestamp()) d)),
+                       SELECT min(s.at) FROM queue s
+                       WHERE s.state = 'scheduled' AND s.at <= clock_timestamp()) d)),
             ('processed_24h', p.n),
             ('failed_24h', p.failed),
             ('instances', (SELECT count(*) FROM instances i WHERE i.stopped_at IS NULL))
@@ -429,22 +416,19 @@ RETURNS TABLE (
     attempt     int
 )
 LANGUAGE sql SET search_path FROM CURRENT AS $$
-    WITH b AS (
-        DELETE FROM enqueued
+    WITH c AS (
+        UPDATE queue SET state = 'claimed', instance_id = p_instance_id, at = now()
         WHERE id = ANY(ARRAY(SELECT e.id
-                             FROM enqueued AS e
-                             WHERE e.flow_key IS NULL
+                             FROM queue AS e
+                             WHERE e.state = 'ready' AND e.flow_key IS NULL
                              ORDER BY e.priority DESC, e.attempt, e.id
                              LIMIT p_limit
                              FOR UPDATE SKIP LOCKED))
+          AND state = 'ready'
         RETURNING id, attempt, priority
     ), hist AS (
         INSERT INTO history (id, attempt, kind, instance_id)
-        SELECT b.id, b.attempt, 'claimed', p_instance_id FROM b
-    ), c AS (
-        INSERT INTO claimed (id, attempt, priority, instance_id)
-        SELECT b.id, b.attempt, b.priority, p_instance_id FROM b
-        RETURNING claimed.id, claimed.attempt, claimed.priority
+        SELECT c.id, c.attempt, 'claimed', p_instance_id FROM c
     )
     SELECT j.id, j.meta, j.headers, j.body, j.schedule_id, j.key, c.attempt
     FROM c
@@ -478,9 +462,12 @@ DECLARE
     v_flows text[];
 BEGIN
     WITH RECURSIVE names(flow_key) AS (
-        (SELECT e.flow_key FROM enqueued e WHERE e.flow_key IS NOT NULL ORDER BY e.flow_key LIMIT 1)
+        (SELECT e.flow_key FROM queue e
+         WHERE e.state = 'ready' AND e.flow_key IS NOT NULL ORDER BY e.flow_key LIMIT 1)
         UNION ALL
-        SELECT (SELECT e.flow_key FROM enqueued e WHERE e.flow_key > names.flow_key ORDER BY e.flow_key LIMIT 1)
+        SELECT (SELECT e.flow_key FROM queue e
+                WHERE e.state = 'ready' AND e.flow_key IS NOT NULL AND e.flow_key > names.flow_key
+                ORDER BY e.flow_key LIMIT 1)
         FROM names
         WHERE names.flow_key IS NOT NULL
     ), ready AS MATERIALIZED (
@@ -490,7 +477,10 @@ BEGIN
         WHERE names.flow_key IS NOT NULL
           AND NOT coalesce(f.paused, false)
           AND flow_rate_free_v1(f.rate, f.rate_period, f.next_at) >= 1
-          AND (SELECT count(*) FROM claimed c WHERE c.flow_key = names.flow_key) < coalesce(f.concurrency, 1)
+          -- a free place: no `concurrency`-th running job (reads at most `concurrency` entries)
+          AND NOT EXISTS (SELECT 1 FROM queue c
+                          WHERE c.state = 'claimed' AND c.flow_key = names.flow_key
+                          OFFSET coalesce(f.concurrency, 1) - 1 LIMIT 1)
     )
     SELECT coalesce(array_agg(l.flow_key), '{}')
     INTO v_flows
@@ -506,17 +496,22 @@ BEGIN
         LEFT JOIN flows f ON f.flow_id = u.name
         CROSS JOIN LATERAL (
             SELECT e.id
-            FROM enqueued e
-            WHERE e.flow_key = u.name
+            FROM queue e
+            WHERE e.state = 'ready' AND e.flow_key = u.name
             ORDER BY e.priority DESC, e.attempt, e.id
+            -- counted again under the lock of the flow, up to `concurrency`
             LIMIT least(greatest(coalesce(f.concurrency, 1)
-                                 - (SELECT count(*) FROM claimed cl WHERE cl.flow_key = u.name), 0),
+                                 - (SELECT count(*) FROM (SELECT 1 FROM queue cl
+                                                          WHERE cl.state = 'claimed' AND cl.flow_key = u.name
+                                                          LIMIT coalesce(f.concurrency, 1)) n), 0),
                         flow_rate_free_v1(f.rate, f.rate_period, f.next_at))
         ) x
         ORDER BY x.id
         LIMIT p_limit
     ), b AS (
-        DELETE FROM enqueued WHERE id = ANY(ARRAY(SELECT a.id FROM a)) RETURNING id, attempt, flow_key, priority
+        UPDATE queue SET state = 'claimed', instance_id = p_instance_id, at = now()
+        WHERE id = ANY(ARRAY(SELECT a.id FROM a)) AND state = 'ready'
+        RETURNING id, attempt, flow_key, priority
     ), hist AS (
         INSERT INTO history (id, attempt, kind, instance_id)
         SELECT b.id, b.attempt, 'claimed', p_instance_id FROM b
@@ -525,15 +520,11 @@ BEGIN
         SET next_at = greatest(f.next_at, now()) + make_interval(secs => f.rate_period::float8 * y.n / f.rate)
         FROM (SELECT b.flow_key, count(*) AS n FROM b GROUP BY b.flow_key) y
         WHERE f.flow_id = y.flow_key AND f.rate IS NOT NULL
-    ), c AS (
-        INSERT INTO claimed (id, attempt, flow_key, priority, instance_id)
-        SELECT b.id, b.attempt, b.flow_key, b.priority, p_instance_id FROM b
-        RETURNING claimed.id, claimed.attempt, claimed.priority
     )
-    SELECT j.id, j.meta, j.headers, j.body, j.schedule_id, j.key, c.attempt
-    FROM c
-    INNER JOIN jobs AS j ON j.id = c.id
-    ORDER BY c.priority DESC, c.attempt, c.id;
+    SELECT j.id, j.meta, j.headers, j.body, j.schedule_id, j.key, b.attempt
+    FROM b
+    INNER JOIN jobs AS j ON j.id = b.id
+    ORDER BY b.priority DESC, b.attempt, b.id;
 END $$;
 
 CREATE FUNCTION claim_v1(p_instance_id text, p_limit int)

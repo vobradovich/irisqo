@@ -212,20 +212,19 @@ pub struct JobView {
 
 const VIEW: &str = "
     SELECT j.id, j.meta, j.schedule_id, j.parent_id, j.key, j.created_at,
-        CASE
-            WHEN s.id IS NOT NULL THEN CASE WHEN s.attempt > 0 THEN 'retrying' ELSE 'scheduled' END
-            WHEN e.id IS NOT NULL THEN 'enqueued'
-            WHEN c.id IS NOT NULL THEN 'processing'
-            WHEN p.id IS NOT NULL THEN p.status
-            ELSE 'unknown'
+        CASE q.state
+            WHEN 'scheduled' THEN CASE WHEN q.attempt > 0 THEN 'retrying' ELSE 'scheduled' END
+            WHEN 'ready' THEN 'enqueued'
+            WHEN 'claimed' THEN 'processing'
+            ELSE coalesce(p.status, 'unknown')
         END AS status,
-        coalesce(s.attempt, e.attempt, c.attempt, p.attempt, 0) AS attempt,
-        s.at AS scheduled_at, e.at AS enqueued_at, c.at AS claimed_at,
-        c.instance_id::text AS instance_id, p.at AS processed_at
+        coalesce(q.attempt, p.attempt, 0) AS attempt,
+        CASE WHEN q.state = 'scheduled' THEN q.at END AS scheduled_at,
+        CASE WHEN q.state = 'ready' THEN q.at END AS enqueued_at,
+        CASE WHEN q.state = 'claimed' THEN q.at END AS claimed_at,
+        q.instance_id::text AS instance_id, p.at AS processed_at
     FROM jobs AS j
-    LEFT JOIN scheduled AS s ON s.id = j.id
-    LEFT JOIN enqueued AS e ON e.id = j.id
-    LEFT JOIN claimed AS c ON c.id = j.id
+    LEFT JOIN queue AS q ON q.id = j.id
     LEFT JOIN processed AS p ON p.id = j.id";
 
 /// `%` and `_` of a search term match themselves in `ILIKE`.
@@ -237,44 +236,58 @@ fn like_pattern(term: &str) -> String {
     format!("%{escaped}%")
 }
 
+/// Where the jobs of a status are read: a filter must not scan `jobs` (millions of finished
+/// rows) to find a few waiting ones.
+enum Source {
+    /// Every job.
+    Jobs,
+    /// The rows of `queue` (`q`) that match: the view's own join with `queue` becomes inner.
+    Queue(&'static str),
+    /// The ids of `processed` that match.
+    Processed(&'static str),
+}
+
 impl StatusFilter {
-    /// The ids that can have this status, read from the state table(s) of it: a filter must not
-    /// scan `jobs` (millions of finished rows) to find a few waiting ones. `None`: every job.
-    const fn candidates(self) -> Option<&'static str> {
-        Some(match self {
-            StatusFilter::All | StatusFilter::Only(JobStatus::Unknown) => return None,
-            StatusFilter::Active => {
-                "SELECT id FROM scheduled UNION ALL SELECT id FROM enqueued UNION ALL SELECT id FROM claimed"
-            }
+    const fn source(self) -> Source {
+        match self {
+            StatusFilter::All | StatusFilter::Only(JobStatus::Unknown) => Source::Jobs,
+            StatusFilter::Active => Source::Queue("true"),
             StatusFilter::Only(JobStatus::Scheduled) => {
-                "SELECT id FROM scheduled WHERE attempt = 0"
+                Source::Queue("q.state = 'scheduled' AND q.attempt = 0")
             }
-            StatusFilter::Only(JobStatus::Retrying) => "SELECT id FROM scheduled WHERE attempt > 0",
-            StatusFilter::Only(JobStatus::Enqueued) => "SELECT id FROM enqueued",
-            StatusFilter::Only(JobStatus::Processing) => "SELECT id FROM claimed",
+            StatusFilter::Only(JobStatus::Retrying) => {
+                Source::Queue("q.state = 'scheduled' AND q.attempt > 0")
+            }
+            StatusFilter::Only(JobStatus::Enqueued) => Source::Queue("q.state = 'ready'"),
+            StatusFilter::Only(JobStatus::Processing) => Source::Queue("q.state = 'claimed'"),
             StatusFilter::Only(JobStatus::Completed) => {
-                "SELECT id FROM processed WHERE status = 'completed'"
+                Source::Processed("SELECT id FROM processed WHERE status = 'completed'")
             }
             StatusFilter::Only(JobStatus::Failed) => {
-                "SELECT id FROM processed WHERE status = 'failed'"
+                Source::Processed("SELECT id FROM processed WHERE status = 'failed'")
             }
             StatusFilter::Only(JobStatus::Cancelled) => {
-                "SELECT id FROM processed WHERE status = 'cancelled'"
+                Source::Processed("SELECT id FROM processed WHERE status = 'cancelled'")
             }
-        })
+        }
     }
 }
 
 /// Newest first, `query.limit` at most.
 pub async fn list(pool: &Pool<Postgres>, query: &JobQuery) -> Result<Vec<JobView>, Error> {
     // start from the rows of the status asked for, then the same view as `get`
-    let view = match query.status.candidates() {
-        Some(ids) => VIEW.replacen(
+    let view = match query.status.source() {
+        Source::Jobs => VIEW.to_owned(),
+        Source::Queue(cond) => VIEW.replacen(
+            "LEFT JOIN queue AS q ON q.id = j.id",
+            &format!("INNER JOIN queue AS q ON q.id = j.id AND {cond}"),
+            1,
+        ),
+        Source::Processed(ids) => VIEW.replacen(
             "FROM jobs AS j",
             &format!("FROM jobs AS j INNER JOIN ({ids}) AS cand ON cand.id = j.id"),
             1,
         ),
-        None => VIEW.to_owned(),
     };
     let sql = format!(
         "WITH v AS ({view}

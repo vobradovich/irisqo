@@ -162,8 +162,8 @@ async fn a_long_response_fails_the_job(pool: PgPool) -> anyhow::Result<()> {
     assert_eq!(common::run_enqueued(&state).await, 1);
     assert_eq!(common::processed_status(&pool, id).await, None);
     let waiting: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM (SELECT id FROM scheduled WHERE id = $1 AND attempt = 1
-         UNION ALL SELECT id FROM enqueued WHERE id = $1 AND attempt = 1) AS w",
+        "SELECT count(*) FROM (SELECT id FROM queue WHERE state = 'scheduled' AND id = $1 AND attempt = 1
+         UNION ALL SELECT id FROM queue WHERE state = 'ready' AND id = $1 AND attempt = 1) AS w",
     )
     .bind(id)
     .fetch_one(&pool)

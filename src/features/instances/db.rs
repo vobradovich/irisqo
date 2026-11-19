@@ -100,7 +100,7 @@ pub async fn list_view(
     const SQL: &str = "
     WITH e AS (
         SELECT instance_id, count(*) AS processing
-        FROM claimed GROUP BY instance_id
+        FROM queue WHERE state = 'claimed' GROUP BY instance_id
     ), p AS (
         SELECT instance_id,
             count(*) FILTER (WHERE status = 'completed') AS completed_24h,

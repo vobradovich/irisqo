@@ -147,7 +147,7 @@ pub fn header(response: &hyper::Response<hyper::body::Incoming>, name: &str) -> 
 
 /// Makes every scheduled job due and moves it to `enqueued`.
 pub async fn enqueue_all_scheduled(state: &AppState) -> u64 {
-    sqlx::query("UPDATE scheduled SET at = to_timestamp(1)")
+    sqlx::query("UPDATE queue SET at = to_timestamp(1) WHERE state = 'scheduled'")
         .execute(&state.pool)
         .await
         .expect("make scheduled due");
@@ -170,7 +170,7 @@ pub async fn insert_enqueued(pool: &PgPool, n: i32) -> Vec<i64> {
             INSERT INTO jobs(meta) SELECT '{\"sink\": \"noop\", \"timeout\": 1000}'::jsonb
             FROM generate_series(1, $1) RETURNING id
         )
-        INSERT INTO enqueued(id) SELECT id FROM a RETURNING id",
+        INSERT INTO queue(id) SELECT id FROM a RETURNING id",
     )
     .bind(n)
     .fetch_all(pool)

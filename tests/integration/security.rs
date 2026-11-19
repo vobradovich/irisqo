@@ -492,7 +492,12 @@ async fn ui_refuses_cross_site_posts(pool: PgPool) -> anyhow::Result<()> {
     let response = common::create(&state, addr, &format!("http://{addr}/echo?_delay=600")).await;
     let id = common::header(&response, "irisqo-job-id").expect("job-id");
     let cancel = format!("http://{addr}/ui/jobs/{id}/cancel");
-    let pending = || common::count(&pool, "SELECT count(*) FROM scheduled");
+    let pending = || {
+        common::count(
+            &pool,
+            "SELECT count(*) FROM queue WHERE state = 'scheduled'",
+        )
+    };
 
     // the cases of the headers are in csrf::tests; here: the layer is on and nothing changes
     let evil_origin = "https://evil.example";

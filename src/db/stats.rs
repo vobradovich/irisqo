@@ -19,21 +19,22 @@ pub struct QueueStats {
 pub async fn queue_stats(pool: &Pool<Postgres>) -> Result<QueueStats, Error> {
     const SQL: &str = "
     SELECT
-        (SELECT count(*) FROM scheduled) AS scheduled,
-        e.enqueued,
-        e.held,
-        (SELECT count(*) FROM claimed) AS processing,
+        (SELECT count(*) FROM queue WHERE state = 'scheduled') AS scheduled,
+        e.n + h.held AS enqueued,
+        h.held,
+        (SELECT count(*) FROM queue WHERE state = 'claimed') AS processing,
         greatest(0, coalesce(extract(epoch FROM now() - (
             SELECT min(d.at) FROM (
                 SELECT e.due AS at
                 UNION ALL
-                SELECT min(at) FROM scheduled WHERE at <= now()
+                SELECT min(at) FROM queue WHERE state = 'scheduled' AND at <= now()
             ) AS d
         )), 0))::float8 AS lag
-    FROM (SELECT count(*) AS enqueued,
-                 count(*) FILTER (WHERE flow_key IS NOT NULL) AS held,
-                 min(at) FILTER (WHERE flow_key IS NULL) AS due
-          FROM enqueued) AS e";
+    -- one aggregate per partial index: a single pass over `queue` would read the scheduled too
+    FROM (SELECT count(*) AS n, min(at) AS due
+          FROM queue WHERE state = 'ready' AND flow_key IS NULL) AS e,
+         (SELECT count(*) AS held
+          FROM queue WHERE state = 'ready' AND flow_key IS NOT NULL) AS h";
     let stats = sqlx::query_as::<_, QueueStats>(SQL).fetch_one(pool).await?;
     Ok(stats)
 }

@@ -173,7 +173,7 @@ async fn schedule_runs_start_linked_traces(pool: PgPool) -> anyhow::Result<()> {
     }
     // the next run keeps the request context as is
     let traceparent: Option<String> = sqlx::query_scalar(
-        "SELECT meta->>'traceparent' FROM jobs WHERE id IN (SELECT id FROM scheduled)",
+        "SELECT meta->>'traceparent' FROM jobs WHERE id IN (SELECT id FROM queue WHERE state = 'scheduled')",
     )
     .fetch_one(&pool)
     .await?;

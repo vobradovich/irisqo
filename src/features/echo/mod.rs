@@ -64,7 +64,7 @@ async fn bench(
         FROM generate_series(1, $2)
         RETURNING id
     ), e AS (
-        INSERT INTO enqueued(id) SELECT id FROM a
+        INSERT INTO queue(id, state) SELECT id, 'ready' FROM a
     )
     SELECT min(id) FROM a";
     let first: Option<i64> = sqlx::query_scalar(INSERT)

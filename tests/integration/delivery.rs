@@ -159,7 +159,7 @@ async fn shutdown_timeout_abandons_running_jobs(pool: PgPool) -> anyhow::Result<
         async move { WorkerService::new(state).run().await }
     });
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-    while common::count(&pool, "SELECT count(*) FROM claimed").await == 0 {
+    while common::count(&pool, "SELECT count(*) FROM queue WHERE state = 'claimed'").await == 0 {
         assert!(tokio::time::Instant::now() < deadline, "job not started");
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
@@ -172,7 +172,7 @@ async fn shutdown_timeout_abandons_running_jobs(pool: PgPool) -> anyhow::Result<
     // what main does on exit: the abandoned job runs again elsewhere, same attempt
     db::instances::kill(&pool, &state.instance_id).await?;
     let (attempt, locked): (i32, bool) = sqlx::query_as(
-        "SELECT attempt, EXISTS (SELECT 1 FROM claimed WHERE id = $1) FROM enqueued WHERE id = $1",
+        "SELECT attempt, EXISTS (SELECT 1 FROM queue WHERE state = 'claimed' AND id = $1) FROM queue WHERE state = 'ready' AND id = $1",
     )
     .bind(job_id)
     .fetch_one(&pool)

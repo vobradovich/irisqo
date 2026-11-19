@@ -60,7 +60,7 @@ async fn flow_and_priority_reach_the_tables(pool: PgPool) -> anyhow::Result<()> 
     let state = common::state(pool.clone());
     let addr = common::spawn_app(&state).await;
     let job = |extra: &str| format!(r#"{{"url":"noop://x",{extra}"key":"k"}}"#);
-    let sql = "SELECT flow_key, priority FROM enqueued UNION ALL SELECT flow_key, priority FROM scheduled";
+    let sql = "SELECT flow_key, priority FROM queue WHERE state = 'ready' UNION ALL SELECT flow_key, priority FROM queue WHERE state = 'scheduled'";
     let stored = || async {
         sqlx::query_as::<_, (Option<String>, i32)>(sql)
             .fetch_all(&pool)
@@ -156,7 +156,11 @@ async fn json_job_with_delay_is_scheduled(pool: PgPool) -> anyhow::Result<()> {
     let response = post_job(&state, addr, &json).await;
     assert_eq!(response.status(), StatusCode::CREATED);
     assert_eq!(
-        common::count(&pool, "SELECT count(*) FROM scheduled").await,
+        common::count(
+            &pool,
+            "SELECT count(*) FROM queue WHERE state = 'scheduled'"
+        )
+        .await,
         1
     );
     Ok(())
@@ -209,7 +213,11 @@ async fn a_schedule_is_declared_with_put(pool: PgPool) -> anyhow::Result<()> {
         1
     );
     assert_eq!(
-        common::count(&pool, "SELECT count(*) FROM scheduled").await,
+        common::count(
+            &pool,
+            "SELECT count(*) FROM queue WHERE state = 'scheduled'"
+        )
+        .await,
         1
     );
 
@@ -224,7 +232,11 @@ async fn a_schedule_is_declared_with_put(pool: PgPool) -> anyhow::Result<()> {
         1
     );
     assert_eq!(
-        common::count(&pool, "SELECT count(*) FROM scheduled").await,
+        common::count(
+            &pool,
+            "SELECT count(*) FROM queue WHERE state = 'scheduled'"
+        )
+        .await,
         1
     );
     assert_eq!(
@@ -247,7 +259,11 @@ async fn a_schedule_is_declared_with_put(pool: PgPool) -> anyhow::Result<()> {
     let again = put_schedule(&state, addr, "nightly", &job(7200, "error")).await;
     assert_eq!(again.status(), StatusCode::OK);
     assert_eq!(
-        common::count(&pool, "SELECT count(*) FROM scheduled").await,
+        common::count(
+            &pool,
+            "SELECT count(*) FROM queue WHERE state = 'scheduled'"
+        )
+        .await,
         1
     );
 
@@ -324,7 +340,11 @@ async fn a_cron_schedule_runs_in_its_time_zone(pool: PgPool) -> anyhow::Result<(
     assert_eq!(declare("UTC").await.status(), StatusCode::OK);
     assert_eq!(next().await?, ("UTC".to_owned(), 9));
     assert_eq!(
-        common::count(&pool, "SELECT count(*) FROM scheduled").await,
+        common::count(
+            &pool,
+            "SELECT count(*) FROM queue WHERE state = 'scheduled'"
+        )
+        .await,
         1
     );
     Ok(())
@@ -355,7 +375,11 @@ async fn a_schedule_through_to_is_declared_the_same_way(pool: PgPool) -> anyhow:
         1
     );
     assert_eq!(
-        common::count(&pool, "SELECT count(*) FROM scheduled").await,
+        common::count(
+            &pool,
+            "SELECT count(*) FROM queue WHERE state = 'scheduled'"
+        )
+        .await,
         1
     );
     assert_eq!(
@@ -385,9 +409,10 @@ async fn a_run_after_a_cancelled_one_has_its_own_key(pool: PgPool) -> anyhow::Re
     let run: i64 = common::header(&response, "irisqo-job-id")
         .and_then(|id| id.parse().ok())
         .expect("job id");
-    let at: chrono::DateTime<chrono::Utc> = sqlx::query_scalar("SELECT at FROM scheduled")
-        .fetch_one(&pool)
-        .await?;
+    let at: chrono::DateTime<chrono::Utc> =
+        sqlx::query_scalar("SELECT at FROM queue WHERE state = 'scheduled'")
+            .fetch_one(&pool)
+            .await?;
 
     let cancel = common::request(
         &state,

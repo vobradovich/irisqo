@@ -163,10 +163,11 @@ async fn cancel_and_retry_through_the_api(pool: PgPool) -> anyhow::Result<()> {
             .0,
         StatusCode::NO_CONTENT
     );
-    let attempt: i32 = sqlx::query_scalar("SELECT attempt FROM enqueued WHERE id = $1")
-        .bind(pending)
-        .fetch_one(&pool)
-        .await?;
+    let attempt: i32 =
+        sqlx::query_scalar("SELECT attempt FROM queue WHERE state = 'ready' AND id = $1")
+            .bind(pending)
+            .fetch_one(&pool)
+            .await?;
     assert_eq!(attempt, 1);
     assert_eq!(common::run_enqueued(&state).await, 1);
     assert_eq!(
@@ -197,7 +198,11 @@ async fn schedule_pause_resume_and_one_chain(pool: PgPool) -> anyhow::Result<()>
         StatusCode::NO_CONTENT
     );
     assert_eq!(
-        common::count(&pool, "SELECT count(*) FROM scheduled").await,
+        common::count(
+            &pool,
+            "SELECT count(*) FROM queue WHERE state = 'scheduled'"
+        )
+        .await,
         0
     );
     assert_eq!(
@@ -214,7 +219,11 @@ async fn schedule_pause_resume_and_one_chain(pool: PgPool) -> anyhow::Result<()>
         StatusCode::NO_CONTENT
     );
     assert_eq!(
-        common::count(&pool, "SELECT count(*) FROM scheduled").await,
+        common::count(
+            &pool,
+            "SELECT count(*) FROM queue WHERE state = 'scheduled'"
+        )
+        .await,
         1
     );
     assert_eq!(
@@ -224,7 +233,11 @@ async fn schedule_pause_resume_and_one_chain(pool: PgPool) -> anyhow::Result<()>
     // resuming again does not add a run
     send(&state, Method::POST, &api("resume"), false).await;
     assert_eq!(
-        common::count(&pool, "SELECT count(*) FROM scheduled").await,
+        common::count(
+            &pool,
+            "SELECT count(*) FROM queue WHERE state = 'scheduled'"
+        )
+        .await,
         1
     );
 
@@ -232,7 +245,11 @@ async fn schedule_pause_resume_and_one_chain(pool: PgPool) -> anyhow::Result<()>
     common::enqueue_all_scheduled(&state).await;
     common::run_enqueued(&state).await;
     assert_eq!(
-        common::count(&pool, "SELECT count(*) FROM scheduled").await,
+        common::count(
+            &pool,
+            "SELECT count(*) FROM queue WHERE state = 'scheduled'"
+        )
+        .await,
         1
     );
     let old: i64 = sqlx::query_scalar("SELECT id FROM processed WHERE status = 'completed'")
@@ -245,7 +262,11 @@ async fn schedule_pause_resume_and_one_chain(pool: PgPool) -> anyhow::Result<()>
     );
     assert_eq!(common::run_enqueued(&state).await, 1);
     assert_eq!(
-        common::count(&pool, "SELECT count(*) FROM scheduled").await,
+        common::count(
+            &pool,
+            "SELECT count(*) FROM queue WHERE state = 'scheduled'"
+        )
+        .await,
         1,
         "one chain only"
     );
@@ -351,7 +372,7 @@ async fn ui_pages_and_actions(pool: PgPool) -> anyhow::Result<()> {
     assert_eq!(
         common::count(
             &pool,
-            "SELECT count(*) FROM jobs WHERE id IN (SELECT id FROM enqueued)"
+            "SELECT count(*) FROM jobs WHERE id IN (SELECT id FROM queue WHERE state = 'ready')"
         )
         .await,
         0
@@ -384,11 +405,13 @@ async fn instances_page_shows_heartbeats_and_work(pool: PgPool) -> anyhow::Resul
     .execute(&pool)
     .await?;
     let ids = common::insert_enqueued(&pool, 2).await;
-    sqlx::query("WITH a AS (DELETE FROM enqueued WHERE id = ANY($2) RETURNING id, attempt) INSERT INTO claimed(id, attempt, instance_id) SELECT id, attempt, $1 FROM a")
-        .bind(&state.instance_id)
-        .bind(&ids)
-        .execute(&pool)
-        .await?;
+    sqlx::query(
+        "UPDATE queue SET state = 'claimed', instance_id = $1, at = now() WHERE id = ANY($2)",
+    )
+    .bind(&state.instance_id)
+    .bind(&ids)
+    .execute(&pool)
+    .await?;
 
     let (status, _, html) = send(
         &state,
