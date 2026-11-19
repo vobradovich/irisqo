@@ -361,12 +361,12 @@ DECLARE
 BEGIN
     WITH d AS (
         DELETE FROM scheduled
-        WHERE id IN (SELECT s.id
-                     FROM scheduled s
-                     WHERE s.at <= now()
-                     ORDER BY s.at, s.id
-                     LIMIT p_limit
-                     FOR UPDATE SKIP LOCKED)
+        WHERE id = ANY(ARRAY(SELECT s.id
+                             FROM scheduled s
+                             WHERE s.at <= now()
+                             ORDER BY s.at, s.id
+                             LIMIT p_limit
+                             FOR UPDATE SKIP LOCKED))
         RETURNING id, attempt, at, flow_key, priority
     ), b AS (
         INSERT INTO enqueued (id, attempt, at, flow_key, priority)
@@ -431,12 +431,12 @@ RETURNS TABLE (
 LANGUAGE sql SET search_path FROM CURRENT AS $$
     WITH b AS (
         DELETE FROM enqueued
-        WHERE id IN (SELECT e.id
-                     FROM enqueued AS e
-                     WHERE e.flow_key IS NULL
-                     ORDER BY e.priority DESC, e.attempt, e.id
-                     LIMIT p_limit
-                     FOR UPDATE SKIP LOCKED)
+        WHERE id = ANY(ARRAY(SELECT e.id
+                             FROM enqueued AS e
+                             WHERE e.flow_key IS NULL
+                             ORDER BY e.priority DESC, e.attempt, e.id
+                             LIMIT p_limit
+                             FOR UPDATE SKIP LOCKED))
         RETURNING id, attempt, priority
     ), hist AS (
         INSERT INTO history (id, attempt, kind, instance_id)
@@ -516,7 +516,7 @@ BEGIN
         ORDER BY x.id
         LIMIT p_limit
     ), b AS (
-        DELETE FROM enqueued WHERE id IN (SELECT a.id FROM a) RETURNING id, attempt, flow_key, priority
+        DELETE FROM enqueued WHERE id = ANY(ARRAY(SELECT a.id FROM a)) RETURNING id, attempt, flow_key, priority
     ), hist AS (
         INSERT INTO history (id, attempt, kind, instance_id)
         SELECT b.id, b.attempt, 'claimed', p_instance_id FROM b

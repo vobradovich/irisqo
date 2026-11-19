@@ -304,7 +304,7 @@ impl AppState {
             pool,
             client: Client::builder(TokioExecutor::new()).build::<_, Full<Bytes>>(https),
             scheduler_options: Some(SchedulerOptions {
-                poll_interval: Duration::from_millis(5000),
+                poll_interval: Duration::from_secs(1),
                 prefetch: 1000,
                 lock_lease: Duration::from_millis(u64::from(max_timeout)) * 3 + LOCK_GRACE,
                 retention_hours: options.retention_hours.unwrap_or(7 * 24),
