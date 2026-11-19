@@ -174,7 +174,7 @@ pub async fn enqueue_scheduled(
     const SQL: &str = "
     WITH a AS (
         DELETE FROM scheduled
-        WHERE id IN (SELECT id FROM scheduled WHERE at <= now() ORDER BY at, id LIMIT $1 FOR UPDATE SKIP LOCKED)
+        WHERE id = ANY(ARRAY(SELECT id FROM scheduled WHERE at <= now() ORDER BY at, id LIMIT $1 FOR UPDATE SKIP LOCKED))
         RETURNING id, attempt, at, flow_key, priority
     ), b AS (
         INSERT INTO enqueued(id, attempt, at, flow_key, priority) SELECT id, attempt, at, flow_key, priority FROM a RETURNING id, attempt
@@ -252,7 +252,7 @@ pub async fn reap_expired_locks(
     const SQL: &str = "
     WITH a AS (
         DELETE FROM claimed
-        WHERE id IN (SELECT id FROM claimed WHERE at < now() - $1 ORDER BY at LIMIT $3 FOR UPDATE SKIP LOCKED)
+        WHERE id = ANY(ARRAY(SELECT id FROM claimed WHERE at < now() - $1 ORDER BY at LIMIT $3 FOR UPDATE SKIP LOCKED))
         RETURNING id, attempt, flow_key, priority, instance_id
     ), b AS (
         INSERT INTO enqueued(id, attempt, flow_key, priority) SELECT id, attempt + 1, flow_key, priority FROM a
