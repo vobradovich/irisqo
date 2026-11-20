@@ -263,13 +263,21 @@ impl AppState {
             .await
             .expect("Unable to connect to Postgres");
 
-        // the migrations and their table `_sqlx_migrations` go to the first schema of the path
+        // the migrations and their table `_sqlx_migrations` go to the first schema of the path.
+        // `CREATE SCHEMA IF NOT EXISTS` fails on a concurrent create (unique violation of pg_namespace)
+        // when several instances start on a new database: an advisory lock serializes it
+        let mut tx = pool.begin().await.expect("Unable to create the schema");
+        sqlx::query("SELECT pg_advisory_xact_lock(hashtext('irisqo.create_schema'))")
+            .execute(&mut *tx)
+            .await
+            .expect("Unable to create the schema");
         sqlx::query(sqlx::AssertSqlSafe(format!(
             "CREATE SCHEMA IF NOT EXISTS \"{schema}\""
         )))
-        .execute(&pool)
+        .execute(&mut *tx)
         .await
         .expect("Unable to create the schema");
+        tx.commit().await.expect("Unable to create the schema");
         sqlx::migrate!("./sql/migrations")
             .run(&pool)
             .await
