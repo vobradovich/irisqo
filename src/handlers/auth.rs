@@ -18,7 +18,7 @@ pub async fn require_api_token(
     request: Request,
     next: Next,
 ) -> Response {
-    let Some(tokens) = &state.api_tokens else {
+    let Some(tokens) = &state.options.api_tokens else {
         return next.run(request).await;
     };
     let token = request

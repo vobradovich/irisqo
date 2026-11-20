@@ -112,12 +112,9 @@ async fn scheduler_enqueues_every_due_job(pool: PgPool) -> anyhow::Result<()> {
     sqlx::query("WITH a AS (DELETE FROM enqueued RETURNING id) INSERT INTO scheduled(id, at) SELECT id, to_timestamp(1) FROM a")
         .execute(&pool)
         .await?;
-    let options = state.scheduler_options.as_ref().expect("scheduler options");
-    assert!(i64::from(options.prefetch) < 2500);
+    assert!(i64::from(state.options.scheduler.prefetch) < 2500);
 
-    SchedulerService::new(Arc::clone(&state))
-        .tick(options)
-        .await;
+    SchedulerService::new(Arc::clone(&state)).tick().await;
 
     assert_eq!(
         common::count(&pool, "SELECT count(*) FROM scheduled").await,
@@ -343,7 +340,7 @@ async fn timeout_is_capped(pool: PgPool) -> anyhow::Result<()> {
     let timeout: i64 = sqlx::query_scalar("SELECT (meta->>'timeout')::bigint FROM jobs")
         .fetch_one(&pool)
         .await?;
-    assert_eq!(timeout, i64::from(state.worker_options.max_timeout));
+    assert_eq!(timeout, i64::from(state.options.worker.max_timeout));
     Ok(())
 }
 
@@ -794,16 +791,10 @@ async fn the_app_creates_and_uses_its_own_schema(pool: PgPool) -> anyhow::Result
         .await?;
     let mut url = url::Url::parse(&std::env::var("DATABASE_URL")?)?;
     url.set_path(&database);
-    let options = irisqo::models::Options::from_vec(vec![
-        "--db-url".into(),
-        url.to_string().into(),
-        "--db-schema".into(),
-        "mine".into(),
-        "--env".into(),
-        "development".into(),
-    ])
-    .expect("options");
-    let state = irisqo::AppState::new(&options).await;
+    let mut options = irisqo::models::Options::new(url.to_string());
+    options.db.schema = "mine".to_owned();
+    options.environment = irisqo::models::Environment::Development;
+    let state = irisqo::AppState::new(options).await;
 
     let (inside, outside): (i64, i64) = sqlx::query_as(
         "SELECT count(*) FILTER (WHERE table_schema = 'mine'),

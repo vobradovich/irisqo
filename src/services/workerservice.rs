@@ -44,8 +44,9 @@ impl WorkerService {
     pub async fn run(&self) {
         let instance_id = &self.app_state.instance_id;
         let app_state: &Arc<AppState> = &self.app_state;
-        let workers_count = app_state.worker_options.workers;
-        let per_worker = usize::from(app_state.worker_options.prefetch).max(1);
+        let options = &app_state.options.worker;
+        let workers_count = options.workers;
+        let per_worker = usize::from(options.prefetch).max(1);
         let concurrency = workers_count * per_worker;
         // one fetch fills every worker
         let batch = concurrency;
@@ -53,8 +54,8 @@ impl WorkerService {
 
         // An empty queue is polled after `--interval`, then less often: 2x per empty poll up to
         // `--max-interval`. A claim that finds jobs starts over.
-        let interval = app_state.worker_options.poll_interval;
-        let max_interval = app_state.worker_options.max_poll_interval.max(interval);
+        let interval = options.poll_interval;
+        let max_interval = options.max_poll_interval.max(interval);
         let mut pause = interval;
 
         let (tx, rx) = async_channel::bounded::<JobWithAttempt>(batch);
@@ -123,7 +124,7 @@ impl WorkerService {
         // Past `shutdown_timeout` the jobs still running are abandoned: they stay
         // assigned to this instance and `kill` releases them on exit.
         tx.close();
-        let deadline = time::Instant::now() + app_state.worker_options.shutdown_timeout;
+        let deadline = time::Instant::now() + options.shutdown_timeout;
         let drained = time::timeout_at(deadline, async {
             while running_workers.join_next().await.is_some() {}
         });

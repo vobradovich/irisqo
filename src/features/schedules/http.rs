@@ -26,7 +26,7 @@ pub fn routes(state: Arc<AppState>) -> Router {
             get(get_by_id)
                 .put(upsert)
                 .delete(delete)
-                .layer(DefaultBodyLimit::max(state.max_body_size)),
+                .layer(DefaultBodyLimit::max(state.options.max_body_size)),
         )
         .route("/schedules/{id}/pause", post(pause))
         .route("/schedules/{id}/resume", post(resume))
@@ -64,7 +64,7 @@ pub(crate) async fn upsert(
     // the key is the id of the path, and its error is the error of "id"
     request.key = Some(schedule_id.clone());
     let job = request
-        .validate(&state.worker_options, Utc::now())
+        .validate(&state.options.worker, &state.targets, Utc::now())
         .map_err(|mut errors| {
             for e in errors.iter_mut().filter(|e| e.parameter == "key") {
                 e.parameter = "id".into();

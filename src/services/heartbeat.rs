@@ -11,14 +11,11 @@ pub const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 /// An instance without a heartbeat for this long is dead: its jobs are released.
 pub const INSTANCE_EXPIRE: Duration = Duration::from_secs(30);
 
-/// What this process runs: the server and the worker always, the rest when enabled.
+/// What this process runs: the server, the worker and the scheduler always, the retention when enabled.
 fn roles(app_state: &AppState) -> Vec<&'static str> {
-    let mut roles = vec!["http", "worker"];
-    if let Some(options) = &app_state.scheduler_options {
-        roles.push("scheduler");
-        if options.retention_hours > 0 {
-            roles.push("retention");
-        }
+    let mut roles = vec!["http", "worker", "scheduler"];
+    if app_state.options.scheduler.retention_hours > 0 {
+        roles.push("retention");
     }
     roles
 }

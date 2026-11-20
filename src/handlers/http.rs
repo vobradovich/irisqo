@@ -3,7 +3,8 @@ use crate::{
     db,
     handlers::job_request::JobRequest,
     models::{
-        AppState, Error, JobCallback, JobCreate, JobCreateRow, ParamError, WorkerOptions,
+        AppState, Error, JobCallback, JobCreate, JobCreateRow, ParamError, TargetPolicy,
+        WorkerOptions,
         headers::{callback_headers, forwarded_headers},
     },
     otel::metrics::metrics,
@@ -33,7 +34,7 @@ pub fn routes(state: Arc<AppState>) -> Router {
                 .put(job_create)
                 .delete(job_create)
                 .patch(job_create)
-                .layer(DefaultBodyLimit::max(state.max_body_size)),
+                .layer(DefaultBodyLimit::max(state.options.max_body_size)),
         )
         .with_state(state)
 }
@@ -54,7 +55,8 @@ async fn job_create(
     let target = if has_scheme(raw) { raw } else { &decoded };
     let request = JobRequest::http(&method, forwarded_headers(&headers), body);
     let job = prepare_job(
-        &state.worker_options,
+        &state.options.worker,
+        &state.targets,
         target,
         request,
         form_urlencoded::parse(query.unwrap_or_default().as_bytes()),
@@ -103,6 +105,7 @@ pub fn job_headers(job: &JobCreateRow) -> HeaderMap {
 /// callback.
 pub fn prepare_job<'a>(
     options: &WorkerOptions,
+    targets: &TargetPolicy,
     target: &str,
     input: JobRequest,
     params: impl IntoIterator<Item = (Cow<'a, str>, Cow<'a, str>)>,
@@ -147,7 +150,7 @@ pub fn prepare_job<'a>(
     }
     // a target that does not parse is reported once, not again as not an http one
     let job = input
-        .validate(options, now)
+        .validate(options, targets, now)
         .map_err(|found| {
             errors.extend(found.into_iter().filter(|e| parsed || e.parameter != "url"))
         })
@@ -219,6 +222,7 @@ mod tests {
     fn prepare(target: &str, query: &str) -> Result<JobCreate, Vec<ParamError>> {
         prepare_job(
             &WorkerOptions::for_tests(),
+            &TargetPolicy::allow_all(),
             target,
             JobRequest::http(&Method::GET, HashMap::new(), Bytes::new()),
             form_urlencoded::parse(query.as_bytes()),
@@ -292,6 +296,7 @@ mod tests {
             let headers = HashMap::from([("x-own".to_owned(), "1".to_owned())]);
             prepare_job(
                 &WorkerOptions::for_tests(),
+                &TargetPolicy::allow_all(),
                 "https://example.com",
                 request,
                 form_urlencoded::parse(query.as_bytes()),

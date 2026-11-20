@@ -4,7 +4,7 @@ use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
 use irisqo::{
     AppState, db,
-    models::{JobWithAttempt, Options, new_instance_id},
+    models::{JobWithAttempt, new_instance_id},
     services::jobrunner,
 };
 use sqlx::PgPool;
@@ -23,8 +23,10 @@ pub fn state_with(pool: PgPool, args: &[&str]) -> Arc<AppState> {
     if !args.iter().any(|arg| arg == "--env") {
         args.extend(["--env".into(), "development".into()]);
     }
-    let options = Options::from_vec(args).expect("options");
-    AppState::with_pool(pool, new_instance_id(), &options)
+    // the pool is given, the URL is not used
+    args.extend(["--db-url".into(), "postgres://unused/unused".into()]);
+    let options = irisqo::cli::options_from_args(args).expect("options");
+    AppState::with_pool(pool, new_instance_id(), options)
 }
 
 /// Serves the app (API, UI, and `/echo`, `/error` in development) on a random local port.

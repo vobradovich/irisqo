@@ -125,7 +125,7 @@ pub async fn require_login(
     request: Request,
     next: Next,
 ) -> Response {
-    let open = match &state.api_tokens {
+    let open = match &state.options.api_tokens {
         None => true,
         Some(tokens) => {
             is_open(request.uri().path())
@@ -186,7 +186,7 @@ pub async fn login_page(
     Query(query): Query<LoginQuery>,
 ) -> Response {
     let next = safe_next(query.next.as_deref());
-    if state.api_tokens.is_none() {
+    if state.options.api_tokens.is_none() {
         return Redirect::to(next).into_response();
     }
     LoginPage::new(next, false).into_response()
@@ -205,7 +205,7 @@ pub async fn login_submit(
 ) -> Response {
     let next = safe_next(form.next.as_deref());
     let token = form.token.trim();
-    let Some(tokens) = &state.api_tokens else {
+    let Some(tokens) = &state.options.api_tokens else {
         return Redirect::to(next).into_response();
     };
     if !tokens.accepts(token) {

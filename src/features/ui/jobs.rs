@@ -305,7 +305,7 @@ async fn load_job(state: &AppState, id: i64) -> Result<Option<JobDetailView>, Er
         &job,
         result.as_ref(),
         history,
-        state.trace_url.as_deref(),
+        state.options.trace_url.as_deref(),
         &callbacks,
         Utc::now(),
     )))

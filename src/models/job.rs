@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::features::schedules::JobSchedule;
 
-use super::{CallbackMode, Error, JobCallback, JobRetry, WorkerOptions};
+use super::{CallbackMode, Error, JobCallback, JobRetry, TargetPolicy, WorkerOptions};
 
 #[derive(Debug, Clone, sqlx::FromRow, Serialize, utoipa::ToSchema)]
 pub struct JobRow {
@@ -237,12 +237,12 @@ pub enum JobSink {
 impl JobSink {
     /// Why the target of the job is not allowed, `Ok` when it is. Every sink says it here, so a
     /// new one cannot be added without it (the API paths call this, none checks a sink itself).
-    pub fn check(&self, options: &WorkerOptions) -> Result<(), &'static str> {
+    pub fn check(&self, targets: &TargetPolicy) -> Result<(), &'static str> {
         match self {
             JobSink::Noop => Ok(()),
             // a private IP address or localhost; a name is checked when it is resolved
             JobSink::Http(http) => match (http.url.scheme_str(), http.url.host()) {
-                (Some("http" | "https"), Some(host)) => options.targets.check_host(host),
+                (Some("http" | "https"), Some(host)) => targets.check_host(host),
                 _ => Err("must be an http or https URL"),
             },
         }
@@ -287,17 +287,17 @@ mod tests {
 
     #[test]
     fn a_sink_checks_its_target() {
-        let options = WorkerOptions::for_tests();
+        let targets = TargetPolicy::allow_all();
         let http = |url: &str| {
             JobSink::Http(HttpMeta {
                 method: Method::GET,
                 url: Uri::try_from(url).unwrap(),
             })
         };
-        assert_eq!(JobSink::Noop.check(&options), Ok(()));
-        assert_eq!(http("https://example.com").check(&options), Ok(()));
+        assert_eq!(JobSink::Noop.check(&targets), Ok(()));
+        assert_eq!(http("https://example.com").check(&targets), Ok(()));
         for url in ["ftp://example.com", "mailto:a@example.com", "/relative"] {
-            assert!(http(url).check(&options).is_err(), "{url}");
+            assert!(http(url).check(&targets).is_err(), "{url}");
         }
     }
 

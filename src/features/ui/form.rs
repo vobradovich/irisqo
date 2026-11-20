@@ -19,7 +19,7 @@ use crate::{
     features::schedules::JobSchedule,
     handlers::{http::prepare_job, job_request::JobRequest},
     models::{
-        JobCreate, ParamError, WorkerOptions,
+        JobCreate, ParamError, TargetPolicy, WorkerOptions,
         headers::{is_reserved_header, shown_value},
     },
 };
@@ -297,6 +297,7 @@ impl JobForm {
     pub fn prepare(
         &self,
         options: &WorkerOptions,
+        targets: &TargetPolicy,
         now: DateTime<Utc>,
     ) -> Result<JobCreate, BTreeMap<&'static str, String>> {
         let (params, mut errors) = self.job_params();
@@ -314,6 +315,7 @@ impl JobForm {
             .map(|(name, value)| (Cow::Borrowed(*name), Cow::Borrowed(value.as_str())));
         match prepare_job(
             options,
+            targets,
             self.url.trim(),
             request,
             params,
@@ -437,6 +439,7 @@ mod tests {
         let errors = form
             .prepare(
                 &options(),
+                &TargetPolicy::allow_all(),
                 DateTime::from_timestamp(1_700_000_000, 0).unwrap(),
             )
             .expect_err("invalid");
@@ -456,6 +459,7 @@ mod tests {
         let job = form
             .prepare(
                 &options(),
+                &TargetPolicy::allow_all(),
                 DateTime::from_timestamp(1_700_000_000, 0).unwrap(),
             )
             .expect("valid");
@@ -486,6 +490,7 @@ mod tests {
         let job = form
             .prepare(
                 &options(),
+                &TargetPolicy::allow_all(),
                 DateTime::from_timestamp(1_700_000_000, 0).unwrap(),
             )
             .expect("valid");
@@ -507,7 +512,7 @@ mod tests {
         };
         let now = DateTime::from_timestamp(1_700_000_000, 0).unwrap();
         let job = form("&flow_key=order-42")
-            .prepare(&options(), now)
+            .prepare(&options(), &TargetPolicy::allow_all(), now)
             .expect("valid");
         assert_eq!(
             job.meta.flow_key.as_ref().map(FlowKey::as_str),
@@ -518,10 +523,12 @@ mod tests {
                 .preview()
                 .contains("?_flow_key=order-42")
         );
-        let job = form("&priority=7").prepare(&options(), now).expect("valid");
+        let job = form("&priority=7")
+            .prepare(&options(), &TargetPolicy::allow_all(), now)
+            .expect("valid");
         assert_eq!(job.meta.priority, Some(7));
         let errors = form("&flow_key=A&priority=x")
-            .prepare(&options(), now)
+            .prepare(&options(), &TargetPolicy::allow_all(), now)
             .expect_err("invalid");
         assert_eq!(
             errors.keys().copied().collect::<Vec<_>>(),
