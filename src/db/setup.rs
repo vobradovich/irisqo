@@ -1,0 +1,59 @@
+//! The connection and the schema: what an instance (or `irisqo migrate`) does before it works.
+
+use std::{str::FromStr, time::Duration};
+
+use sqlx::{
+    Pool, Postgres,
+    postgres::{PgConnectOptions, PgPoolOptions},
+};
+
+use crate::models::DbOptions;
+
+/// A pool whose connections see the tables of the schema first.
+pub async fn connect(db: &DbOptions, app_name: &str) -> Pool<Postgres> {
+    let conn = PgConnectOptions::from_str(&db.url)
+        .expect("Unable to parse the database URL")
+        .application_name(app_name)
+        // every statement and every function sees the tables of the schema
+        .options([("search_path", db.schema.as_str())]);
+    PgPoolOptions::new()
+        .max_connections(db.connections)
+        .acquire_timeout(Duration::from_secs(10))
+        .connect_with(conn)
+        .await
+        .expect("Unable to connect to Postgres")
+}
+
+/// Drops the schema with everything in it. The caller checks the environment: this is for
+/// development and tests (`irisqo migrate --recreate`).
+pub async fn drop_schema(pool: &Pool<Postgres>, schema: &str) {
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"
+    )))
+    .execute(pool)
+    .await
+    .expect("Unable to drop the schema");
+}
+
+/// Creates the schema when missing, then runs the migrations in it.
+pub async fn migrate_schema(pool: &Pool<Postgres>, schema: &str) {
+    // the migrations and their table `_sqlx_migrations` go to the first schema of the path.
+    // `CREATE SCHEMA IF NOT EXISTS` fails on a concurrent create (unique violation of pg_namespace)
+    // when several instances start on a new database: an advisory lock serializes it
+    let mut tx = pool.begin().await.expect("Unable to create the schema");
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtext('irisqo.create_schema'))")
+        .execute(&mut *tx)
+        .await
+        .expect("Unable to create the schema");
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "CREATE SCHEMA IF NOT EXISTS \"{schema}\""
+    )))
+    .execute(&mut *tx)
+    .await
+    .expect("Unable to create the schema");
+    tx.commit().await.expect("Unable to create the schema");
+    sqlx::migrate!("./sql/migrations")
+        .run(pool)
+        .await
+        .expect("Unable to run migrations");
+}

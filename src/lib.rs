@@ -3,6 +3,7 @@ use std::sync::Arc;
 use axum::Router;
 use tower_http::trace::TraceLayer;
 
+pub mod cli;
 pub mod db;
 pub mod features;
 pub mod handlers;
@@ -35,7 +36,7 @@ pub fn app(state: &Arc<AppState>) -> Router {
         .merge(features::ui::routes(Arc::clone(state)));
     // /echo and /error answer whatever is asked (a status, a delay): for development and
     // the tests only
-    let router = if state.environment.is_development() {
+    let router = if state.options.environment.is_development() {
         router.merge(features::echo::routes(Arc::clone(state)))
     } else {
         router

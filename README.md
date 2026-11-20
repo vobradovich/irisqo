@@ -262,6 +262,18 @@ IRISQO_DB_URL=postgres://user:pass@localhost/irisqo cargo run --release -- --hel
 | `--api-token` | — | bearer tokens of the API, comma separated, see [Authentication](#authentication) |
 | `--allow-targets` | — | private addresses and networks a job may call anyway, see [Targets](#targets) |
 | `--env` | production | `development`, `staging` or `production`: development serves `/echo` and `/error`; also `deployment.environment.name` in the telemetry |
+| `--no-migrate` | — | do not create the schema or run the migrations: apply them first with `irisqo migrate` |
+
+### Migrations
+
+By default every instance creates the schema and runs the migrations at the start. To do it as a separate
+deploy step, run `irisqo migrate` (it takes `--db-url`, `--db-connections`, `--db-schema`, then exits) and
+start the servers with `--no-migrate`.
+
+`irisqo migrate --recreate --env development` **drops the schema with all its data** and creates it anew, for
+development and tests. It is refused in `production`, which is the default: the environment comes from
+`--env` or `IRISQO_ENV` (a `.env` file too), so it cannot tell a production database that is declared
+as `development`. It never drops `public`.
 
 Each option can also be set by an `IRISQO_` variable, in the environment or a `.env` file:
 `--max-timeout` is `IRISQO_MAX_TIMEOUT`, `--env` is `IRISQO_ENV`. The command line wins.

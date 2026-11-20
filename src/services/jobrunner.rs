@@ -224,7 +224,7 @@ async fn job_run_http(
 ) -> Result<JobResult, Error> {
     let job_id = job.id;
     // jobs stored before the limit existed may carry a bigger timeout
-    let options = &app_state.worker_options;
+    let options = &app_state.options.worker;
     let timeout_ms = job
         .meta
         .timeout
@@ -273,7 +273,7 @@ async fn job_run_http(
         // an IP address in the URL is not resolved: checked here (a name is checked when
         // resolved, see models::targets)
         if let Some(host) = req.uri().host()
-            && let Err(detail) = app_state.worker_options.targets.check_host(host)
+            && let Err(detail) = app_state.targets.check_host(host)
         {
             return Err(Error::BlockedTarget(format!("{host} {detail}")));
         }

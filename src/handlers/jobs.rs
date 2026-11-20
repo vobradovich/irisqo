@@ -19,7 +19,7 @@ pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
         .route(
             "/jobs",
-            post(create).layer(DefaultBodyLimit::max(state.max_body_size)),
+            post(create).layer(DefaultBodyLimit::max(state.options.max_body_size)),
         )
         .route("/jobs", get(list))
         .route("/jobs/{id}", get(get_by_id).delete(delete_by_id))
@@ -50,7 +50,7 @@ pub(crate) async fn create(
     body: Bytes,
 ) -> Result<impl IntoResponse, Problem> {
     let job = parse_body::<JobRequest>(&body, "job")?
-        .validate(&state.worker_options, Utc::now())
+        .validate(&state.options.worker, &state.targets, Utc::now())
         .map_err(Error::InvalidParams)?;
     let (job, status) = create_job(&state, job).await?;
     Ok((status, job_headers(&job), Json(job)))

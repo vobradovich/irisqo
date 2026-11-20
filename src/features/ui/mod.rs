@@ -47,7 +47,7 @@ impl Nav {
     pub fn new(state: &AppState, current: &'static str) -> Self {
         Nav {
             current,
-            logout: state.api_tokens.is_some(),
+            logout: state.options.api_tokens.is_some(),
         }
     }
 }
@@ -78,7 +78,7 @@ pub fn routes(state: Arc<AppState>) -> Router {
             "/ui/jobs",
             get(jobs::jobs_page)
                 .post(create_job_from_form)
-                .layer(DefaultBodyLimit::max(state.max_body_size)),
+                .layer(DefaultBodyLimit::max(state.options.max_body_size)),
         )
         .route("/ui/jobs/live", get(jobs::jobs_live))
         .route("/ui/jobs/new", get(new_job_page))
@@ -171,7 +171,7 @@ fn page(state: &AppState, form: JobForm) -> NewJobPage {
 async fn new_job_page(State(state): State<Arc<AppState>>) -> NewJobPage {
     page(
         &state,
-        JobForm::default().with_limits(&state.worker_options),
+        JobForm::default().with_limits(&state.options.worker),
     )
 }
 
@@ -182,7 +182,7 @@ async fn new_job_form(
 ) -> JobFormPartial {
     let form = JobForm::from_pairs(query.unwrap_or_default().as_bytes());
     JobFormPartial {
-        form: form.with_limits(&state.worker_options),
+        form: form.with_limits(&state.options.worker),
     }
 }
 
@@ -192,7 +192,7 @@ async fn new_job_preview(
 ) -> JobPreviewPartial {
     let form = JobForm::from_pairs(query.unwrap_or_default().as_bytes());
     JobPreviewPartial {
-        form: form.with_limits(&state.worker_options),
+        form: form.with_limits(&state.options.worker),
     }
 }
 
@@ -203,8 +203,8 @@ async fn create_job_from_form(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    let form = JobForm::from_pairs(&body).with_limits(&state.worker_options);
-    let outcome = match form.prepare(&state.worker_options, Utc::now()) {
+    let form = JobForm::from_pairs(&body).with_limits(&state.options.worker);
+    let outcome = match form.prepare(&state.options.worker, &state.targets, Utc::now()) {
         Err(errors) => Err(errors),
         Ok(job) => create_job(&state, job).await.map_err(|err| {
             error!("ui create_job error {:?}", err);
@@ -213,7 +213,7 @@ async fn create_job_from_form(
     };
     let (status, form, trigger) = match outcome {
         Ok((row, _)) => {
-            let mut fresh = JobForm::default().with_limits(&state.worker_options);
+            let mut fresh = JobForm::default().with_limits(&state.options.worker);
             fresh.created = Some(Created {
                 id: row.id,
                 schedule_id: row.schedule_id,

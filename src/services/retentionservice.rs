@@ -24,11 +24,7 @@ impl RetentionService {
 
     pub async fn run(&self) {
         let instance_id = &self.app_state.instance_id;
-        let hours = self
-            .app_state
-            .scheduler_options
-            .as_ref()
-            .map_or(0, |o| o.retention_hours);
+        let hours = self.app_state.options.scheduler.retention_hours;
         if hours == 0 {
             info!({ instance_id }, "disabled");
             return;

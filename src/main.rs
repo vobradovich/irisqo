@@ -2,8 +2,10 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use irisqo::{
-    AppState, db,
-    models::Options,
+    AppState,
+    cli::Command,
+    db::{self, setup},
+    models::{DbOptions, Options},
     otel::{self, Telemetry},
     services,
 };
@@ -13,12 +15,35 @@ use tokio_util::sync::CancellationToken;
 
 #[tokio::main]
 async fn main() {
-    let options = Options::load();
-    let telemetry = Telemetry::init(options.environment());
+    match Command::load() {
+        Command::Serve(options) => serve(options).await,
+        Command::Migrate { options, recreate } => {
+            let telemetry = Telemetry::init(options.environment);
+            migrate(&options.db, recreate).await;
+            telemetry.shutdown();
+        }
+    }
+}
 
-    let state = AppState::new(&options).await;
-    tracing::info!(environment = %state.environment, "starting");
-    if state.api_tokens.is_none() && !state.environment.is_development() {
+/// `irisqo migrate`: creates the schema (dropping it first with `--recreate`) and runs the migrations.
+async fn migrate(db: &DbOptions, recreate: bool) {
+    let schema = db.schema.as_str();
+    let pool = setup::connect(db, "irisqo migrate").await;
+    if recreate {
+        tracing::warn!(schema, "--recreate: dropping the schema with all its data");
+        setup::drop_schema(&pool, schema).await;
+    }
+    setup::migrate_schema(&pool, schema).await;
+    pool.close().await;
+    tracing::info!(schema, "migrations applied");
+}
+
+async fn serve(options: Options) {
+    let telemetry = Telemetry::init(options.environment);
+
+    let state = AppState::new(options).await;
+    tracing::info!(environment = %state.options.environment, "starting");
+    if state.options.api_tokens.is_none() && !state.options.environment.is_development() {
         tracing::warn!(
             "no --api-token (IRISQO_API_TOKEN): the API is open to anyone who reaches it"
         );
@@ -53,7 +78,7 @@ async fn main() {
 }
 
 async fn start_http_server(state: &Arc<AppState>) {
-    let addr: SocketAddr = SocketAddr::from(([0, 0, 0, 0], state.port));
+    let addr: SocketAddr = SocketAddr::from(([0, 0, 0, 0], state.options.port));
     let app = irisqo::app(state);
 
     let listener = TcpListener::bind(addr).await.expect("Failed to bind");

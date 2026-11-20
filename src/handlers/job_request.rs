@@ -3,7 +3,8 @@ use crate::features::schedules::{JobSchedule, ScheduleRule};
 use crate::models::headers::{is_reserved_callback_header, is_reserved_header};
 use crate::models::{
     FlowKey, HttpMeta, JobCallback, JobCreate, JobMeta, JobRetry, JobSink, MILLISECONDS_RULE,
-    PRIORITY_RULE, ParamError, Params, WorkerOptions, deserialize_method_of, deserialize_uri_of,
+    PRIORITY_RULE, ParamError, Params, TargetPolicy, WorkerOptions, deserialize_method_of,
+    deserialize_uri_of,
 };
 use axum::body::Bytes;
 use base64::Engine as _;
@@ -211,6 +212,7 @@ impl JobRequest {
     pub(crate) fn validate(
         mut self,
         options: &WorkerOptions,
+        targets: &TargetPolicy,
         now: DateTime<Utc>,
     ) -> Result<JobCreate, Vec<ParamError>> {
         let mut errors = Errors::default();
@@ -228,7 +230,7 @@ impl JobRequest {
                 url: self.url.clone(),
             })
         };
-        errors.check("url", sink.check(options));
+        errors.check("url", sink.check(targets));
 
         let mut headers = errors
             .check(
@@ -270,7 +272,7 @@ impl JobRequest {
         let callback = self
             .callback
             .take()
-            .map(|callback| check_callback(callback, options, &mut errors));
+            .map(|callback| check_callback(callback, targets, &mut errors));
         if self.at.is_some() && self.delay.is_some() {
             errors.add("delay", "cannot be set together with at");
         }
@@ -354,14 +356,14 @@ impl JobRequest {
 /// the headers. Errors go to `errors` (`callback.<field>`); the callback is normalized.
 fn check_callback(
     mut callback: JobCallback,
-    options: &WorkerOptions,
+    targets: &TargetPolicy,
     errors: &mut Errors,
 ) -> JobCallback {
     let target = JobSink::Http(HttpMeta {
         method: Method::POST,
         url: callback.url.clone(),
     });
-    errors.check("callback.url", target.check(options));
+    errors.check("callback.url", target.check(targets));
     if callback
         .method
         .as_ref()
@@ -433,8 +435,9 @@ mod tests {
     #[test]
     fn json_job_preparation() -> anyhow::Result<()> {
         let options = WorkerOptions::for_tests();
+        let targets = TargetPolicy::allow_all();
         let now = Utc::now();
-        let prepare = |spec| JobRequest::validate(spec, &options, now);
+        let prepare = |spec| JobRequest::validate(spec, &options, &targets, now);
 
         let spec = serde_json::from_str(
             r#"{"method":"POST","url":"https://example.com","delay":2,
@@ -674,7 +677,11 @@ mod tests {
     fn declare(json: &str) -> Result<JobCreate, Vec<ParamError>> {
         let mut request = serde_json::from_str::<JobRequest>(json).expect("job");
         request.key = Some("nightly".to_owned());
-        request.validate(&WorkerOptions::for_tests(), Utc::now())
+        request.validate(
+            &WorkerOptions::for_tests(),
+            &TargetPolicy::allow_all(),
+            Utc::now(),
+        )
     }
 
     fn schedule_parameters(errors: &[ParamError]) -> Vec<&str> {

@@ -4,7 +4,7 @@ use tracing::{debug, error, info, trace, warn};
 
 use crate::{
     db,
-    models::{AppState, SchedulerOptions},
+    models::AppState,
     otel::metrics::metrics,
     services::{drain_batches, heartbeat::INSTANCE_EXPIRE},
 };
@@ -25,15 +25,11 @@ impl SchedulerService {
 
     pub async fn run(&self) {
         let instance_id = &self.app_state.instance_id;
-        let Some(options) = &self.app_state.scheduler_options else {
-            warn!({ instance_id }, "disabled");
-            return;
-        };
         info!({ instance_id }, "start");
-        let mut interval = time::interval(options.poll_interval);
+        let mut interval = time::interval(self.app_state.options.scheduler.poll_interval);
         interval.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
         while !self.app_state.shutdown_token.is_cancelled() {
-            self.tick(options).await;
+            self.tick().await;
             select!(
                 biased;
                 () = self.app_state.shutdown_token.cancelled() => {}
@@ -44,9 +40,10 @@ impl SchedulerService {
     }
 
     /// One pass; every step runs (and logs its error) on its own.
-    pub async fn tick(&self, options: &SchedulerOptions) {
+    pub async fn tick(&self) {
         let instance_id = &self.app_state.instance_id;
         let pool = &self.app_state.pool;
+        let lock_lease = self.app_state.options.lock_lease();
         trace!({ instance_id }, "tick");
         _ = db::instances::kill_expired(pool, INSTANCE_EXPIRE, instance_id)
             .await
@@ -57,7 +54,7 @@ impl SchedulerService {
                 }
             })
             .inspect_err(|err| error!({ instance_id }, "kill_expired error {:?}", err));
-        _ = db::jobqueue::reap_expired_locks(pool, options.lock_lease, instance_id, REAP_LIMIT)
+        _ = db::jobqueue::reap_expired_locks(pool, lock_lease, instance_id, REAP_LIMIT)
             .await
             .inspect(|&reaped| {
                 if reaped > 0 {
@@ -66,13 +63,13 @@ impl SchedulerService {
                 }
             })
             .inspect_err(|err| error!({ instance_id }, "reap_expired_locks error {:?}", err));
-        self.enqueue_due(options).await;
+        self.enqueue_due().await;
     }
 
     /// Moves every due job to the queue, `prefetch` at a time.
-    async fn enqueue_due(&self, options: &SchedulerOptions) {
+    async fn enqueue_due(&self) {
         let state = &self.app_state;
-        let limit = i32::from(options.prefetch.max(1));
+        let limit = i32::from(state.options.scheduler.prefetch.max(1));
         let total = drain_batches(state, "enqueue_scheduled", limit, usize::MAX, || {
             db::jobqueue::enqueue_scheduled(&state.pool, &state.instance_id, limit)
         })
