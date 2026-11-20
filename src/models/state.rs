@@ -1,6 +1,5 @@
 use bytes::Bytes;
 use http_body_util::Full;
-use hyper_tls::HttpsConnector;
 use hyper_util::client::legacy::{Client, connect::HttpConnector};
 use hyper_util::rt::TokioExecutor;
 use sqlx::{Pool, Postgres};
@@ -9,6 +8,65 @@ use tokio_util::sync::CancellationToken;
 
 use super::{Options, TargetPolicy, targets::GuardedResolver};
 use crate::db::setup;
+
+#[cfg(not(any(feature = "rustls", feature = "native-tls")))]
+compile_error!("enable a TLS backend: feature `rustls` (default) or `native-tls`");
+
+/// The TLS of the HTTP client; `rustls` wins when both features are on (e.g. `--all-features`).
+#[cfg(feature = "rustls")]
+type HttpsConnector<C> = hyper_rustls::HttpsConnector<C>;
+#[cfg(all(feature = "native-tls", not(feature = "rustls")))]
+type HttpsConnector<C> = hyper_tls::HttpsConnector<C>;
+
+/// # Panics
+/// With `rustls`, when `ca_file` is unreadable or holds no certificate, or when no root at all is found.
+fn https_connector(
+    http: HttpConnector<GuardedResolver>,
+    ca_file: Option<&std::path::Path>,
+) -> HttpsConnector<HttpConnector<GuardedResolver>> {
+    #[cfg(feature = "rustls")]
+    {
+        use rustls::pki_types::{CertificateDer, pem::PemObject};
+        // the system store (rustls-native-certs honours SSL_CERT_FILE / SSL_CERT_DIR) and --ca-file
+        let mut roots = rustls::RootCertStore::empty();
+        let native = rustls_native_certs::load_native_certs();
+        roots.add_parsable_certificates(native.certs);
+        if let Some(path) = ca_file {
+            let pem =
+                std::fs::read(path).unwrap_or_else(|e| panic!("--ca-file {}: {e}", path.display()));
+            let certs: Vec<_> = CertificateDer::pem_slice_iter(&pem)
+                .collect::<Result<_, _>>()
+                .unwrap_or_else(|e| panic!("--ca-file {}: {e}", path.display()));
+            assert!(
+                !certs.is_empty(),
+                "--ca-file {}: no certificate",
+                path.display()
+            );
+            roots.add_parsable_certificates(certs);
+        }
+        assert!(
+            !roots.is_empty(),
+            "no trusted CA certificates: set SSL_CERT_FILE or --ca-file"
+        );
+        let config = rustls::ClientConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_safe_default_protocol_versions()
+        .expect("tls versions")
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+        hyper_rustls::HttpsConnectorBuilder::new()
+            .with_tls_config(config)
+            .https_or_http()
+            .enable_http1()
+            .wrap_connector(http)
+    }
+    #[cfg(all(feature = "native-tls", not(feature = "rustls")))]
+    {
+        let _ = ca_file;
+        HttpsConnector::new_with_connector(http)
+    }
+}
 
 #[derive(Debug)]
 pub struct AppState {
@@ -57,7 +115,7 @@ impl AppState {
         // host names resolve only to the allowed addresses
         let mut http = HttpConnector::new_with_resolver(GuardedResolver::new(Arc::clone(&targets)));
         http.enforce_http(false);
-        let https = HttpsConnector::new_with_connector(http);
+        let https = https_connector(http, options.ca_file.as_deref());
         Arc::new(AppState {
             options,
             instance_id,
