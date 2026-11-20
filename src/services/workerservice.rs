@@ -1,6 +1,11 @@
 use async_channel::Receiver;
 use futures::StreamExt;
-use tokio::{select, sync::mpsc, task::JoinSet, time};
+use tokio::{
+    select,
+    sync::{Notify, mpsc},
+    task::JoinSet,
+    time,
+};
 use tracing::{error, info, warn};
 
 use crate::{
@@ -24,6 +29,8 @@ const COMPLETER_GRACE: Duration = Duration::from_secs(5);
 /// - The completer writes the final results: whatever has piled up while the previous
 ///   write was running goes into the next statement, so under load results are written
 ///   in batches, and a lone result is written right away.
+/// - A written result or retry that makes a job claimable (a freed place of a flow, a callback)
+///   wakes the loader from its pause: the freed place is taken at once, not at the next poll.
 #[derive(Debug)]
 pub struct WorkerService {
     app_state: Arc<AppState>,
@@ -52,18 +59,22 @@ impl WorkerService {
 
         let (tx, rx) = async_channel::bounded::<JobWithAttempt>(batch);
         let (done_tx, done_rx) = mpsc::channel::<Completion>(concurrency);
+        // one stored permit: a wake while the loader is fetching makes its next pause end at once
+        let wake = Arc::new(Notify::new());
 
         let completer = tokio::spawn({
             let state = Arc::clone(app_state);
-            async move { run_completer(&state, done_rx).await }
+            let wake = Arc::clone(&wake);
+            async move { run_completer(&state, done_rx, &wake).await }
         });
         let mut running_workers = JoinSet::new();
         for idx in 0..workers_count {
             let state = Arc::clone(app_state);
             let rx_worker = rx.clone();
             let done_tx = done_tx.clone();
+            let wake = Arc::clone(&wake);
             running_workers.spawn(async move {
-                run_worker(&state, idx, per_worker, rx_worker, done_tx).await
+                run_worker(&state, idx, per_worker, rx_worker, done_tx, &wake).await
             });
         }
         drop(done_tx);
@@ -103,6 +114,7 @@ impl WorkerService {
                 select!(
                     biased;
                     () = app_state.shutdown_token.cancelled() => {},
+                    () = wake.notified() => pause = interval,
                     () = time::sleep(wait) => {},
                 );
             }
@@ -136,6 +148,7 @@ async fn run_worker(
     per_worker: usize,
     rx: Receiver<JobWithAttempt>,
     done_tx: mpsc::Sender<Completion>,
+    wake: &Notify,
 ) {
     let instance_id = &app_state.instance_id;
     info!({ instance_id, idx, per_worker }, "run_worker");
@@ -147,9 +160,13 @@ async fn run_worker(
     // a stopped job that holds a pool connection keeps it, the completer cannot get one to
     // make room, and all of them wait until the completer's write gives up.)
     rx.for_each_concurrent(per_worker, |entry| async move {
-        if let Some(completion) = jobrunner::job_execute(state, entry).await {
+        let in_flow = entry.job.meta.flow_key.is_some();
+        match jobrunner::job_execute(state, entry).await {
             // the completer outlives the workers: send fails only if it panicked
-            _ = done_tx.send(completion).await;
+            Some(completion) => _ = done_tx.send(completion).await,
+            // a retry is written already: it freed the place of the job in its flow
+            None if in_flow => wake.notify_one(),
+            None => {}
         }
     })
     .await;
@@ -157,9 +174,13 @@ async fn run_worker(
 }
 
 /// Ends when every worker is gone and all results are written.
-async fn run_completer(app_state: &AppState, mut rx: mpsc::Receiver<Completion>) {
+async fn run_completer(app_state: &AppState, mut rx: mpsc::Receiver<Completion>, wake: &Notify) {
     let mut buf = Vec::with_capacity(COMPLETE_BATCH);
     while rx.recv_many(&mut buf, COMPLETE_BATCH).await > 0 {
+        let wakes = buf.iter().any(|c| c.wakes);
         jobrunner::complete(app_state, std::mem::take(&mut buf)).await;
+        if wakes {
+            wake.notify_one();
+        }
     }
 }

@@ -39,6 +39,8 @@ pub struct Completion {
     pub result: JobResult,
     /// The callback this outcome makes, built with the outcome and written with it.
     pub callback: Option<JobCreate>,
+    /// Writing it makes a job claimable: it frees a place of its flow or enqueues a callback.
+    pub wakes: bool,
 }
 
 /// Runs a job and writes its result right away.
@@ -143,6 +145,7 @@ async fn job_attempt(app_state: &AppState, job_with_attempt: JobWithAttempt) -> 
     });
     Some(Completion {
         entry,
+        wakes: job.meta.flow_key.is_some() || callback.is_some(),
         schedule_id: job.schedule_id,
         result,
         callback,
@@ -484,6 +487,7 @@ async fn processed_scheduled(app_state: &AppState, completion: &Completion) -> R
         schedule_id,
         result,
         callback,
+        ..
     } = completion;
     let entry = *entry;
     let job_id = entry.id;
