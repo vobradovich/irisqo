@@ -46,6 +46,9 @@ pub struct Options {
     /// Link to a trace in the UI: `{trace_id}` is replaced, e.g.
     /// `http://localhost:5080/web/traces?trace_id={trace_id}`.
     pub trace_url: Option<String>,
+    /// PEM file with CA certificates to trust when calling the targets, besides the system
+    /// store (`rustls` feature only). Postgres has `sslrootcert` in its URL.
+    pub ca_file: Option<std::path::PathBuf>,
     /// Private addresses and networks a job may call anyway.
     pub allow_targets: AllowTargets,
     /// Do not create the schema or run the migrations at the start: the deploy does it.
@@ -67,6 +70,7 @@ impl Options {
             max_body_size: DEFAULT_MAX_BODY_SIZE,
             api_tokens: None,
             trace_url: None,
+            ca_file: None,
             allow_targets: AllowTargets::default(),
             no_migrate: false,
             roles: Roles::default(),

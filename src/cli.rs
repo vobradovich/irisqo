@@ -1,7 +1,7 @@
 //! The command line of the binary: flags, then the `IRISQO_*` variables, become the
 //! [`Options`] of the library (which can also be built by hand).
 
-use std::{ffi::OsString, fmt::Display, str::FromStr, time::Duration};
+use std::{ffi::OsString, fmt::Display, path::PathBuf, str::FromStr, time::Duration};
 
 use dotenvy::dotenv;
 
@@ -47,6 +47,10 @@ xflags::xflags! {
         optional --shutdown-timeout n: u64
         /// Keep processed jobs for this many hours, 0 keeps them forever. Default: 168 (7 days)
         optional --retention-hours n: u32
+        /// PEM file with CA certificates to trust, besides the system store (SSL_CERT_FILE and
+        /// SSL_CERT_DIR are honoured) when calling the targets. For Postgres use
+        /// `?sslmode=verify-full&sslrootcert=/path` in the URL. Default: none
+        optional --ca-file path: PathBuf
         /// UI link to a trace, `{trace_id}` is replaced. Default: none (the id is shown)
         optional --trace-url template: String
         /// development, staging or production: development serves /echo and /error and
@@ -172,6 +176,7 @@ impl Serve {
             shutdown_timeout,
             retention_hours,
             trace_url,
+            ca_file,
             env,
             allow_targets,
             api_token,
@@ -195,6 +200,7 @@ impl Serve {
         take(shutdown_timeout, "IRISQO_SHUTDOWN_TIMEOUT", &var)?;
         take(retention_hours, "IRISQO_RETENTION_HOURS", &var)?;
         take(trace_url, "IRISQO_TRACE_URL", &var)?;
+        take(ca_file, "IRISQO_CA_FILE", &var)?;
         take(env, "IRISQO_ENV", &var)?;
         take(allow_targets, "IRISQO_ALLOW_TARGETS", &var)?;
         take(api_token, "IRISQO_API_TOKEN", &var)?;
@@ -223,6 +229,7 @@ impl Serve {
             max_body_size: self.max_body_size.unwrap_or(d.max_body_size),
             api_tokens: self.api_token,
             trace_url: self.trace_url.filter(|url| url.contains("{trace_id}")),
+            ca_file: self.ca_file,
             allow_targets: self.allow_targets.unwrap_or(d.allow_targets),
             no_migrate: self.no_migrate,
             roles: self.roles.unwrap_or(d.roles),

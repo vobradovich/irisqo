@@ -22,7 +22,10 @@ axum = "0.8"
 tower-http = { version = "0.7", features = ["trace"] }
 hyper = { version = "1.12", features = ["full"] }
 hyper-util = { version = "0.1.21", features = ["client-legacy"] }
-hyper-tls = { version = "0.6" }
+hyper-tls = { version = "0.6", optional = true }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"], optional = true }
+rustls-native-certs = { version = "0.8", optional = true }
+hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "tls12", "ring", "native-tokio"], optional = true }
 http = "1"
 http-body-util = { version = "0.1" }
 url = { version = "2.5" }
@@ -46,7 +49,7 @@ tracing-opentelemetry = { version = "0.34" }
 xflags = { version = "0.3" }
 
 # DB
-sqlx = { version = "0.9", features = ["runtime-tokio", "tls-native-tls", "postgres", "macros", "migrate", "chrono", "json"] }
+sqlx = { version = "0.9", features = ["runtime-tokio", "postgres", "macros", "migrate", "chrono", "json"] }
 # sqlb = "0.0.8"
 # Types
 thiserror = "2"
@@ -60,11 +63,21 @@ fastrand = "2"
 utoipa = { version = "6", features = ["chrono"] }
 
 [features]
+# Both on by default; `default-features = false` keeps the platform TLS library (native-tls) and
+# the system time zone database, as before. Pick one TLS backend: `rustls` or `native-tls`.
+default = ["rustls", "tzdb-bundled"]
+# TLS in pure Rust (rustls + ring, roots of the system) for Postgres and for HTTP targets
+rustls = ["dep:hyper-rustls", "dep:rustls", "dep:rustls-native-certs", "sqlx/tls-rustls-ring-native-roots"]
+# TLS of the platform (OpenSSL, Security.framework, SChannel)
+native-tls = ["dep:hyper-tls", "sqlx/tls-native-tls"]
+# The time zone database is built into the binary (for scratch images without /usr/share/zoneinfo)
+tzdb-bundled = ["jiff/tzdb-bundle-always"]
 # Integration tests need a Postgres server: DATABASE_URL=postgres://... cargo test --features integration-tests
 integration-tests = []
 
 [dev-dependencies]
 anyhow = "1"
+rcgen = "0.14"
 opentelemetry_sdk = { version = "0.33", features = ["testing"] }
 
 [[test]]

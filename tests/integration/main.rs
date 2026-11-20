@@ -19,5 +19,6 @@ mod roles;
 mod security;
 mod smoke;
 mod telemetry;
+mod tls;
 mod ui;
 mod ui_jobs;
