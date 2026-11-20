@@ -34,7 +34,7 @@ impl AppState {
         options.validate().expect("invalid options");
         let instance_id = new_instance_id();
         let pool = setup::connect(&options.db, &instance_id).await;
-        // with --no-migrate the schema and the migrations are `irisqo migrate`'s job
+        // with --no-migrate the schema and the migrations are `irisqo migrations run`'s job
         if !options.no_migrate {
             setup::migrate_schema(&pool, &options.db.schema).await;
         }

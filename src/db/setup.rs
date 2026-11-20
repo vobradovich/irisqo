@@ -1,13 +1,17 @@
-//! The connection and the schema: what an instance (or `irisqo migrate`) does before it works.
+//! The connection and the schema: what an instance (or `irisqo migrations run`) does before it works.
 
 use std::{str::FromStr, time::Duration};
 
 use sqlx::{
     Pool, Postgres,
+    migrate::Migrator,
     postgres::{PgConnectOptions, PgPoolOptions},
 };
 
 use crate::models::DbOptions;
+
+/// The migrations of `sql/migrations`, embedded in the binary.
+static MIGRATOR: Migrator = sqlx::migrate!("./sql/migrations");
 
 /// A pool whose connections see the tables of the schema first.
 pub async fn connect(db: &DbOptions, app_name: &str) -> Pool<Postgres> {
@@ -25,7 +29,7 @@ pub async fn connect(db: &DbOptions, app_name: &str) -> Pool<Postgres> {
 }
 
 /// Drops the schema with everything in it. The caller checks the environment: this is for
-/// development and tests (`irisqo migrate --recreate`).
+/// development and tests (`irisqo migrations run --recreate`).
 pub async fn drop_schema(pool: &Pool<Postgres>, schema: &str) {
     sqlx::query(sqlx::AssertSqlSafe(format!(
         "DROP SCHEMA IF EXISTS \"{schema}\" CASCADE"
@@ -52,8 +56,40 @@ pub async fn migrate_schema(pool: &Pool<Postgres>, schema: &str) {
     .await
     .expect("Unable to create the schema");
     tx.commit().await.expect("Unable to create the schema");
-    sqlx::migrate!("./sql/migrations")
-        .run(pool)
-        .await
-        .expect("Unable to run migrations");
+    MIGRATOR.run(pool).await.expect("Unable to run migrations");
+}
+
+/// The SQL of the migrations, in order, as one script for a tool other than `irisqo migrations run`
+/// (Flyway, Liquibase, EF, psql). It starts by creating the schema and making it the default
+/// one, as the connections of the server do: the migrations name no schema.
+///
+/// `schema` is quoted into the script, so it must be valid (`Options::validate` checks it).
+pub fn migrations_sql(schema: &str) -> String {
+    let mut sql =
+        format!("CREATE SCHEMA IF NOT EXISTS \"{schema}\";\nSET search_path TO \"{schema}\";\n");
+    for migration in MIGRATOR
+        .iter()
+        .filter(|migration| migration.migration_type.is_up_migration())
+    {
+        let body = migration.sql.as_str();
+        sql += &format!(
+            "\n-- migration {}: {}\n{body}",
+            migration.version, migration.description
+        );
+        if !body.ends_with('\n') {
+            sql.push('\n');
+        }
+    }
+    sql
+}
+
+#[test]
+fn the_script_has_every_migration_after_the_schema() {
+    let sql = migrations_sql("mine");
+    assert!(
+        sql.starts_with("CREATE SCHEMA IF NOT EXISTS \"mine\";\nSET search_path TO \"mine\";\n")
+    );
+    assert!(sql.contains("\n-- migration 1: init\n"));
+    assert!(sql.contains("CREATE TABLE instances ("));
+    assert!(sql.ends_with('\n'));
 }

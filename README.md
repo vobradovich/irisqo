@@ -262,15 +262,26 @@ IRISQO_DB_URL=postgres://user:pass@localhost/irisqo cargo run --release -- --hel
 | `--api-token` | — | bearer tokens of the API, comma separated, see [Authentication](#authentication) |
 | `--allow-targets` | — | private addresses and networks a job may call anyway, see [Targets](#targets) |
 | `--env` | production | `development`, `staging` or `production`: development serves `/echo` and `/error`; also `deployment.environment.name` in the telemetry |
-| `--no-migrate` | — | do not create the schema or run the migrations: apply them first with `irisqo migrate` |
+| `--no-migrate` | — | do not create the schema or run the migrations: apply them first with `irisqo migrations run` |
 
 ### Migrations
 
 By default every instance creates the schema and runs the migrations at the start. To do it as a separate
-deploy step, run `irisqo migrate` (it takes `--db-url`, `--db-connections`, `--db-schema`, then exits) and
+deploy step, run `irisqo migrations run` (it takes `--db-url`, `--db-connections`, `--db-schema`, then exits) and
 start the servers with `--no-migrate`.
 
-`irisqo migrate --recreate --env development` **drops the schema with all its data** and creates it anew, for
+To run the migrations with another tool (Flyway, Liquibase, EF, plain `psql`), `irisqo migrations sql`
+prints them to stdout as one script, with no database needed: it first creates the schema (`--db-schema`,
+`IRISQO_DB_SCHEMA`, `irisqo` by default) and makes it the default one, as the connections of the server
+do, because the migrations name no schema. Start the servers with `--no-migrate` then. A database that
+`irisqo` has already migrated needs a baseline at its version in the other tool: it keeps its own
+history table, and `irisqo` keeps `_sqlx_migrations`.
+
+```bash
+irisqo migrations sql --db-schema irisqo | psql "$DATABASE_URL" -v ON_ERROR_STOP=1
+```
+
+`irisqo migrations run --recreate --env development` **drops the schema with all its data** and creates it anew, for
 development and tests. It is refused in `production`, which is the default: the environment comes from
 `--env` or `IRISQO_ENV` (a `.env` file too), so it cannot tell a production database that is declared
 as `development`. It never drops `public`.

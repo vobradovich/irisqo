@@ -17,7 +17,9 @@ use tokio_util::sync::CancellationToken;
 async fn main() {
     match Command::load() {
         Command::Serve(options) => serve(options).await,
-        Command::Migrate { options, recreate } => {
+        // only the SQL on stdout: no telemetry, which may log there
+        Command::MigrationsSql { schema } => print!("{}", setup::migrations_sql(&schema)),
+        Command::MigrationsRun { options, recreate } => {
             let telemetry = Telemetry::init(options.environment);
             migrate(&options.db, recreate).await;
             telemetry.shutdown();
@@ -25,10 +27,10 @@ async fn main() {
     }
 }
 
-/// `irisqo migrate`: creates the schema (dropping it first with `--recreate`) and runs the migrations.
+/// `irisqo migrations run`: creates the schema (dropping it first with `--recreate`) and runs the migrations.
 async fn migrate(db: &DbOptions, recreate: bool) {
     let schema = db.schema.as_str();
-    let pool = setup::connect(db, "irisqo migrate").await;
+    let pool = setup::connect(db, "irisqo migrations run").await;
     if recreate {
         tracing::warn!(schema, "--recreate: dropping the schema with all its data");
         setup::drop_schema(&pool, schema).await;
