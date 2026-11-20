@@ -15,6 +15,7 @@ mod flows;
 mod limits;
 mod otel;
 mod reliability;
+mod roles;
 mod security;
 mod smoke;
 mod telemetry;

@@ -2,7 +2,7 @@
 //! (`Options::new(db_url)` and override what differs) or let the command line do it
 //! (`irisqo::cli`). The state keeps them as they are, `AppState::options`.
 
-use std::{fmt, time::Duration};
+use std::{collections::BTreeSet, fmt, str::FromStr, time::Duration};
 
 use super::{AllowTargets, ApiTokens, Environment, SigningKeys};
 
@@ -25,6 +25,13 @@ impl ConfigError {
     }
 }
 
+/// The command line reports its errors as text.
+impl From<ConfigError> for String {
+    fn from(error: ConfigError) -> Self {
+        error.0
+    }
+}
+
 /// Everything an instance is configured with. [`Options::validate`] checks the whole.
 #[derive(Debug, Clone)]
 pub struct Options {
@@ -43,6 +50,8 @@ pub struct Options {
     pub allow_targets: AllowTargets,
     /// Do not create the schema or run the migrations at the start: the deploy does it.
     pub no_migrate: bool,
+    /// What this process does; [`Options::effective_roles`] is what it really does.
+    pub roles: Roles,
     pub worker: WorkerOptions,
     pub scheduler: SchedulerOptions,
 }
@@ -60,6 +69,7 @@ impl Options {
             trace_url: None,
             allow_targets: AllowTargets::default(),
             no_migrate: false,
+            roles: Roles::default(),
             worker: WorkerOptions::default(),
             scheduler: SchedulerOptions::default(),
         }
@@ -72,8 +82,22 @@ impl Options {
         Duration::from_millis(u64::from(self.worker.max_timeout)) * 3 + LOCK_GRACE
     }
 
+    /// The roles this process really runs: `retention` needs `scheduler.retention_hours` above zero.
+    #[must_use]
+    pub fn effective_roles(&self) -> Roles {
+        self.roles
+            .iter()
+            .filter(|&role| role != Role::Retention || self.scheduler.retention_hours > 0)
+            .collect()
+    }
+
     /// The first setting that cannot work.
     pub fn validate(&self) -> Result<(), ConfigError> {
+        if self.effective_roles().is_empty() {
+            return Err(ConfigError::new(
+                "no role to run: roles is empty, or only retention while retention_hours is 0",
+            ));
+        }
         if self.db.url.is_empty() {
             return Err(ConfigError::new("the database URL is empty"));
         }
@@ -95,6 +119,117 @@ impl Options {
             return Err(ConfigError::new("trace_url must contain {trace_id}"));
         }
         Ok(())
+    }
+}
+
+/// What an instance does. A process runs the set of roles it is given ([`Roles`]); the probes
+/// (`/live`, `/ready`), the heartbeat and the shutdown are not roles: every instance has them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Role {
+    /// `/to/*` and `/api/v1/*`: queues the jobs and manages them.
+    Api,
+    /// `/ui/*`: the pages. They read the database themselves, so the role needs no `Api`.
+    Ui,
+    /// Runs the jobs: calls the targets, writes the results, retries, sends the callbacks.
+    Worker,
+    /// Moves the due jobs to the queue, releases the stuck locks and the jobs of dead instances,
+    /// records the metrics of the queue. At least one instance of the cluster must have it.
+    Scheduler,
+    /// Deletes what is older than `retention_hours`; with `0` it is not run.
+    Retention,
+}
+
+impl Role {
+    const ALL: [Role; 5] = [
+        Role::Api,
+        Role::Ui,
+        Role::Worker,
+        Role::Scheduler,
+        Role::Retention,
+    ];
+
+    /// The name in `--roles` and in `instances.roles`.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Role::Api => "api",
+            Role::Ui => "ui",
+            Role::Worker => "worker",
+            Role::Scheduler => "scheduler",
+            Role::Retention => "retention",
+        }
+    }
+}
+
+impl FromStr for Role {
+    type Err = String;
+
+    fn from_str(name: &str) -> Result<Self, Self::Err> {
+        let name = name.trim();
+        Role::ALL
+            .into_iter()
+            .find(|role| role.as_str().eq_ignore_ascii_case(name))
+            .ok_or_else(|| {
+                format!("unknown role {name:?}: api, ui, worker, scheduler or retention")
+            })
+    }
+}
+
+/// A set of [`Role`]s: all of them by default; `api,worker` on the command line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Roles(BTreeSet<Role>);
+
+impl Roles {
+    #[must_use]
+    pub fn contains(&self, role: Role) -> bool {
+        self.0.contains(&role)
+    }
+
+    /// Whether the instance answers clients, programs (the API) or people (the UI): the probes do not count.
+    #[must_use]
+    pub fn serves_clients(&self) -> bool {
+        self.contains(Role::Api) || self.contains(Role::Ui)
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = Role> + '_ {
+        self.0.iter().copied()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// The names, in the order of the roles: what the heartbeat writes.
+    #[must_use]
+    pub fn names(&self) -> Vec<&'static str> {
+        self.iter().map(Role::as_str).collect()
+    }
+}
+
+impl Default for Roles {
+    fn default() -> Self {
+        Role::ALL.into_iter().collect()
+    }
+}
+
+impl FromIterator<Role> for Roles {
+    fn from_iter<I: IntoIterator<Item = Role>>(roles: I) -> Self {
+        Roles(roles.into_iter().collect())
+    }
+}
+
+impl FromStr for Roles {
+    type Err = String;
+
+    /// `api,worker`: names separated by commas, in any case and order; at least one.
+    fn from_str(list: &str) -> Result<Self, Self::Err> {
+        list.split(',').map(str::parse::<Role>).collect()
+    }
+}
+
+impl fmt::Display for Roles {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.names().join(","))
     }
 }
 
@@ -264,4 +399,38 @@ fn a_setting_that_cannot_work_is_named() {
     assert!(bad(|o| o.worker.workers = 0).contains("worker.workers"));
     assert!(bad(|o| o.worker.timeout = o.worker.max_timeout + 1).contains("max_timeout"));
     assert!(bad(|o| o.trace_url = Some("http://t/".into())).contains("{trace_id}"));
+}
+
+#[test]
+fn roles_are_parsed_by_name() {
+    let roles: Roles = " Worker , api,worker".parse().expect("roles");
+    assert_eq!(
+        roles.names(),
+        ["api", "worker"],
+        "a set, in the order of the roles"
+    );
+    assert_eq!(roles.to_string(), "api,worker");
+    assert_eq!(
+        Roles::default().to_string(),
+        "api,ui,worker,scheduler,retention"
+    );
+    for name in Role::ALL {
+        assert_eq!(name.as_str().parse(), Ok(name));
+    }
+    for bad in ["", ",", "api,", "http", "relay", "api worker"] {
+        assert!(bad.parse::<Roles>().is_err(), "{bad:?}");
+    }
+}
+
+#[test]
+fn retention_runs_only_with_a_retention_time() {
+    let mut options = Options::new("postgres://localhost/irisqo");
+    assert!(options.effective_roles().contains(Role::Retention));
+    options.scheduler.retention_hours = 0;
+    assert!(!options.effective_roles().contains(Role::Retention));
+    options.validate().expect("the others still run");
+
+    options.roles = "retention".parse().expect("roles");
+    let err = options.validate().expect_err("nothing to run");
+    assert!(err.to_string().contains("no role"), "{err}");
 }

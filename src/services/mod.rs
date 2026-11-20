@@ -5,7 +5,7 @@ pub mod retentionservice;
 pub mod schedulerservice;
 pub mod workerservice;
 
-use crate::models::{AppState, Error};
+use crate::models::{AppState, Error, Role};
 use std::sync::Arc;
 use tracing::error;
 
@@ -41,6 +41,26 @@ where
         }
     }
     total
+}
+
+/// Runs the background roles of this instance (`Worker`, `Scheduler`, `Retention`) until shutdown;
+/// what is not among its roles does not start. The queue metrics go with the scheduler: they
+/// count the whole cluster, one instance is enough.
+pub async fn run(state: &Arc<AppState>) {
+    let roles = state.options.effective_roles();
+    // every role is spelled out: a new one cannot be forgotten here
+    let services = roles.iter().map(|role| async move {
+        match role {
+            Role::Worker => start_worker_service(state).await,
+            Role::Scheduler => {
+                tokio::join!(start_scheduler_service(state), queuestats::run(state));
+            }
+            Role::Retention => start_retention_service(state).await,
+            // served by the listener of the binary, not a service
+            Role::Api | Role::Ui => {}
+        }
+    });
+    futures::future::join_all(services).await;
 }
 
 pub async fn start_scheduler_service(state: &Arc<AppState>) {

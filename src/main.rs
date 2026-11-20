@@ -44,8 +44,12 @@ async fn serve(options: Options) {
     let telemetry = Telemetry::init(options.environment);
 
     let state = AppState::new(options).await;
-    tracing::info!(environment = %state.options.environment, "starting");
-    if state.options.api_tokens.is_none() && !state.options.environment.is_development() {
+    let roles = state.options.effective_roles();
+    tracing::info!(environment = %state.options.environment, %roles, "starting");
+    if roles.serves_clients()
+        && state.options.api_tokens.is_none()
+        && !state.options.environment.is_development()
+    {
         tracing::warn!(
             "no --api-token (IRISQO_API_TOKEN): the API is open to anyone who reaches it"
         );
@@ -59,11 +63,9 @@ async fn serve(options: Options) {
         async move { services::heartbeat::run(&state, stop).await }
     });
     tokio::join!(
-        start_http_server(&state),
-        services::start_scheduler_service(&state),
-        services::start_retention_service(&state),
-        services::queuestats::run(&state),
-        services::start_worker_service(&state),
+        listen(&state),
+        stop_on_signal(&state),
+        services::run(&state),
     );
     heartbeat_stop.cancel();
     _ = heartbeat
@@ -79,16 +81,23 @@ async fn serve(options: Options) {
     eprintln!("->> SHUTDOWN")
 }
 
-async fn start_http_server(state: &Arc<AppState>) {
+/// Serves what the roles of the instance serve (the probes always) until shutdown.
+async fn listen(state: &Arc<AppState>) {
     let addr: SocketAddr = SocketAddr::from(([0, 0, 0, 0], state.options.port));
     let app = irisqo::app(state);
 
     let listener = TcpListener::bind(addr).await.expect("Failed to bind");
     tracing::info!("listen {:?}", addr);
     axum::serve(listener, app.into_make_service())
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(state.shutdown_token.clone().cancelled_owned())
         .await
         .expect("Failed to run axum::serve");
+}
+
+/// The signal, not the end of the server, starts the shutdown: an instance without the
+/// API and the UI has nothing else to tell it.
+async fn stop_on_signal(state: &AppState) {
+    shutdown_signal().await;
     state.shutdown_token.cancel();
 }
 
