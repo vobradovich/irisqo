@@ -17,6 +17,7 @@ pub use job::deserialize_uri_of;
 pub use job::parse_method;
 pub use jobretry::JobRetry;
 pub use options::{ConfigError, DbOptions, Options, SchedulerOptions, WorkerOptions};
+pub(crate) use options::{DEFAULT_SCHEMA, check_schema};
 pub use problem::Problem;
 pub use signing::SigningKeys;
 pub use state::{AppState, new_instance_id, new_ulid};

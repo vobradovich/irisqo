@@ -815,6 +815,28 @@ async fn the_app_creates_and_uses_its_own_schema(pool: PgPool) -> anyhow::Result
     Ok(())
 }
 
+/// The script of `irisqo migrations sql` builds the schema on its own, like `irisqo migrate`.
+#[sqlx::test(migrations = false)]
+async fn the_printed_migrations_build_the_schema(pool: PgPool) -> anyhow::Result<()> {
+    let script = irisqo::db::setup::migrations_sql("printed");
+    sqlx::raw_sql(sqlx::AssertSqlSafe(script))
+        .execute(&pool)
+        .await?;
+
+    let tables: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'printed'",
+    )
+    .fetch_one(&pool)
+    .await?;
+    assert!(tables >= 10, "the tables are in the schema: {tables}");
+    // the functions find the tables of their schema
+    let id: i64 = sqlx::query_scalar("SELECT enqueue_v1('{\"url\": \"http://localhost/x\"}')")
+        .fetch_one(&pool)
+        .await?;
+    assert!(id > 0);
+    Ok(())
+}
+
 /// `claim_v1` takes a fresh snapshot of its own: a job enqueued while a claim runs can be
 /// claimed although the snapshot of the caller does not see its row in `jobs` yet.
 #[sqlx::test(migrations = "./sql/migrations")]

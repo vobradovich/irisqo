@@ -6,11 +6,11 @@ use std::{ffi::OsString, fmt::Display, str::FromStr, time::Duration};
 use dotenvy::dotenv;
 
 use crate::models::{
-    AllowTargets, ApiTokens, DbOptions, Environment, Options, SchedulerOptions, SigningKeys,
-    WorkerOptions,
+    AllowTargets, ApiTokens, DEFAULT_SCHEMA, DbOptions, Environment, Options, SchedulerOptions,
+    SigningKeys, WorkerOptions, check_schema,
 };
 
-// Generates `Irisqo` and its commands `Serve` and `Migrate`: the flags as given, all optional.
+// Generates `Irisqo` and its commands `Serve`, `Run` and `Sql`: the flags as given, all optional.
 xflags::xflags! {
     /// Queue of asynchronous HTTP requests with delays, retries and schedules.
     cmd irisqo {
@@ -62,36 +62,49 @@ xflags::xflags! {
         /// base64 of 24 to 64 bytes (better set by IRISQO_SIGNING_KEY: a flag shows in ps).
         /// Default: none, not signed
         optional --signing-key list: SigningKeys
-        /// Do not create the schema or run the migrations: apply them first with `irisqo migrate`.
+        /// Do not create the schema or run the migrations: apply them first with `irisqo migrations run`.
         optional --no-migrate
         }
-        /// Creates the schema and runs the migrations, then exits: a deploy step, run before the servers start.
-        cmd migrate {
-            /// Postgres connection URL, postgres://user:pass@host/db (better set by IRISQO_DB_URL: a flag
-            /// shows in ps). Required.
-            optional --db-url url: String
-            /// Max db connections. Default: 32
-            optional --db-connections n: u32
-            /// Postgres schema of the tables and functions, created when missing. Default: irisqo
-            optional --db-schema name: String
-            /// DROPS the schema with all its data (jobs, schedules, history) and creates it anew:
-            /// for development and tests. Refused when --env is production, which is the default:
-            /// pass --env development or staging.
-            optional --recreate
-            /// development, staging or production; only --recreate looks at it. Default: production
-            optional --env name: Environment
+        /// Runs the migrations, or prints them for another tool.
+        cmd migrations {
+            /// Creates the schema and runs the migrations, then exits: a deploy step, run before the servers start.
+            cmd run {
+                /// Postgres connection URL, postgres://user:pass@host/db (better set by IRISQO_DB_URL: a flag
+                /// shows in ps). Required.
+                optional --db-url url: String
+                /// Max db connections. Default: 32
+                optional --db-connections n: u32
+                /// Postgres schema of the tables and functions, created when missing. Default: irisqo
+                optional --db-schema name: String
+                /// DROPS the schema with all its data (jobs, schedules, history) and creates it anew:
+                /// for development and tests. Refused when --env is production, which is the default:
+                /// pass --env development or staging.
+                optional --recreate
+                /// development, staging or production; only --recreate looks at it. Default: production
+                optional --env name: Environment
+            }
+            /// Prints the SQL of the migrations to stdout, to run them with Flyway, Liquibase, EF or
+            /// psql instead of `irisqo migrations run` (then start the servers with --no-migrate).
+            cmd sql {
+                /// Postgres schema the script creates and uses. Default: irisqo
+                optional --db-schema name: String
+            }
         }
     }
 }
 
-/// A bare `irisqo` runs the server; `irisqo migrate` only applies the migrations.
+/// A bare `irisqo` runs the server; `irisqo migrations run` only applies the migrations.
 #[allow(clippy::large_enum_variant)] // built once at start, not moved around
 pub enum Command {
     Serve(Options),
     /// The options give the database and the environment; `recreate` drops the schema first.
-    Migrate {
+    MigrationsRun {
         options: Options,
         recreate: bool,
+    },
+    /// `irisqo migrations sql`: print the SQL of the migrations for `schema`.
+    MigrationsSql {
+        schema: String,
     },
 }
 
@@ -109,9 +122,12 @@ impl Command {
                 .fill_from(var)
                 .and_then(|()| serve.into_options())
                 .map(Command::Serve),
-            IrisqoCmd::Migrate(mut migrate) => {
-                migrate.fill_from(var).and_then(|()| migrate.into_command())
-            }
+            IrisqoCmd::Migrations(Migrations {
+                subcommand: MigrationsCmd::Run(mut run),
+            }) => run.fill_from(var).and_then(|()| run.into_command()),
+            IrisqoCmd::Migrations(Migrations {
+                subcommand: MigrationsCmd::Sql(sql),
+            }) => sql.into_command(var),
         };
         loaded.unwrap_or_else(|err| {
             eprintln!("error: {err}");
@@ -128,7 +144,7 @@ pub fn options_from_args(args: Vec<OsString>) -> Result<Options, String> {
         .subcommand
     {
         IrisqoCmd::Serve(serve) => serve.into_options(),
-        IrisqoCmd::Migrate(_) => Err("not the server command".to_owned()),
+        IrisqoCmd::Migrations(_) => Err("not the server command".to_owned()),
     }
 }
 
@@ -231,7 +247,7 @@ impl Serve {
     }
 }
 
-impl Migrate {
+impl Run {
     /// Fills the options not given on the command line from `var("IRISQO_<OPTION>")`.
     pub fn fill_from(&mut self, var: impl Fn(&str) -> Option<String>) -> Result<(), String> {
         take(&mut self.db_url, "IRISQO_DB_URL", &var)?;
@@ -263,10 +279,20 @@ impl Migrate {
                 return Err("--recreate does not drop the schema \"public\"".to_owned());
             }
         }
-        Ok(Command::Migrate {
+        Ok(Command::MigrationsRun {
             options,
             recreate: self.recreate,
         })
+    }
+}
+
+impl Sql {
+    /// The schema: the flag, `IRISQO_DB_SCHEMA`, then the default; checked, as it is quoted into SQL.
+    pub fn into_command(mut self, var: impl Fn(&str) -> Option<String>) -> Result<Command, String> {
+        take(&mut self.db_schema, "IRISQO_DB_SCHEMA", &var)?;
+        let schema = self.db_schema.unwrap_or_else(|| DEFAULT_SCHEMA.to_owned());
+        check_schema(&schema).map_err(|err| err.to_string())?;
+        Ok(Command::MigrationsSql { schema })
     }
 }
 
@@ -301,7 +327,7 @@ mod tests {
         let args = args.iter().map(Into::into).collect();
         match Irisqo::from_vec(args)?.subcommand {
             IrisqoCmd::Serve(serve) => Ok(serve),
-            IrisqoCmd::Migrate(_) => panic!("not the server command"),
+            IrisqoCmd::Migrations(_) => panic!("not the server command"),
         }
     }
 
@@ -397,14 +423,16 @@ mod tests {
 
     #[test]
     fn recreate_is_refused_in_production_and_for_public() {
-        // `irisqo migrate --db-url postgres://x <args>` with `IRISQO_ENV` = `env`
+        // `irisqo migrations run --db-url postgres://x <args>` with `IRISQO_ENV` = `env`
         let migrate = |args: &[&str], env: Option<&str>| {
-            let args = ["migrate", "--db-url", "postgres://x"]
+            let args = ["migrations", "run", "--db-url", "postgres://x"]
                 .iter()
                 .chain(args)
                 .map(Into::into)
                 .collect();
-            let IrisqoCmd::Migrate(mut migrate) = Irisqo::from_vec(args).expect("args").subcommand
+            let IrisqoCmd::Migrations(Migrations {
+                subcommand: MigrationsCmd::Run(mut migrate),
+            }) = Irisqo::from_vec(args).expect("args").subcommand
             else {
                 unreachable!()
             };
@@ -428,5 +456,39 @@ mod tests {
         let public = ["--recreate", "--env", "dev", "--db-schema", "public"];
         let err = migrate(&public, None).expect_err("public");
         assert!(err.contains("public"), "{err}");
+    }
+
+    #[test]
+    fn migrations_sql_needs_no_database_and_checks_the_schema() {
+        let sql = |args: &[&str], var: Option<&str>| {
+            let args = ["migrations", "sql"]
+                .iter()
+                .chain(args)
+                .map(Into::into)
+                .collect();
+            let IrisqoCmd::Migrations(Migrations {
+                subcommand: MigrationsCmd::Sql(sql),
+            }) = Irisqo::from_vec(args).expect("args").subcommand
+            else {
+                unreachable!()
+            };
+            sql.into_command(|name| {
+                (name == "IRISQO_DB_SCHEMA")
+                    .then_some(var)
+                    .flatten()
+                    .map(str::to_owned)
+            })
+            .map(|command| match command {
+                Command::MigrationsSql { schema } => schema,
+                Command::Serve(_) | Command::MigrationsRun { .. } => unreachable!(),
+            })
+        };
+        assert_eq!(sql(&[], None), Ok("irisqo".to_owned()));
+        assert_eq!(
+            sql(&["--db-schema", "mine"], Some("env")),
+            Ok("mine".to_owned())
+        );
+        assert_eq!(sql(&[], Some("env")), Ok("env".to_owned()));
+        assert!(sql(&["--db-schema", "Bad"], None).is_err());
     }
 }

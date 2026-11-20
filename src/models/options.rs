@@ -9,7 +9,7 @@ use super::{AllowTargets, ApiTokens, Environment, SigningKeys};
 /// Extra time on top of `3 * max_timeout` before a lock counts as stuck.
 const LOCK_GRACE: Duration = Duration::from_secs(60);
 const DEFAULT_DB_CONNECTIONS: u32 = 32;
-const DEFAULT_SCHEMA: &str = "irisqo";
+pub const DEFAULT_SCHEMA: &str = "irisqo";
 const DEFAULT_PORT: u16 = 8102;
 const DEFAULT_MAX_BODY_SIZE: usize = 64 * 1024;
 const DEFAULT_MAX_RESPONSE_SIZE: usize = 64 * 1024;
@@ -209,7 +209,7 @@ impl WorkerOptions {
 }
 
 /// A schema name that is safe to quote into SQL: lower case letters, digits and `_`.
-fn check_schema(name: &str) -> Result<(), ConfigError> {
+pub(crate) fn check_schema(name: &str) -> Result<(), ConfigError> {
     let mut chars = name.chars();
     let valid = name.len() <= 63
         && chars
