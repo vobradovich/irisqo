@@ -263,6 +263,35 @@ IRISQO_DB_URL=postgres://user:pass@localhost/irisqo cargo run --release -- --hel
 | `--allow-targets` | — | private addresses and networks a job may call anyway, see [Targets](#targets) |
 | `--env` | production | `development`, `staging` or `production`: development serves `/echo` and `/error`; also `deployment.environment.name` in the telemetry |
 | `--no-migrate` | — | do not create the schema or run the migrations: apply them first with `irisqo migrations run` |
+| `--roles` | all | what this process does: `api`, `ui`, `worker`, `scheduler`, `retention`, comma separated; see [Roles](#roles) |
+
+### Roles
+
+One process does everything by default. `--roles` (`IRISQO_ROLES`) says what a process does, so that the
+parts can be scaled apart:
+
+| Role | What it does |
+|---|---|
+| `api` | `/to/*` and `/api/v1/*`: queues the jobs and manages them (`/echo` and `/error` in development) |
+| `ui` | the pages under `/ui`; they read the database themselves, so `ui` needs no `api` |
+| `worker` | runs the jobs: calls the targets, writes the results, retries, sends the callbacks |
+| `scheduler` | moves due delayed jobs to the queue, releases stuck locks and the jobs of dead instances, records the queue metrics (`irisqo.queue.*`) |
+| `retention` | deletes what is older than `--retention-hours`; with `0` it does not run |
+
+Every process, whatever its roles, serves `/live` and `/ready` on `--port` and registers itself (the
+Instances page shows the roles it really runs).
+
+```bash
+irisqo                                   # all in one (the default)
+irisqo --roles api,ui                    # the API and the UI
+irisqo --roles worker -w 32              # workers
+irisqo --roles worker,ui                 # workers with the UI of the queue
+irisqo --roles scheduler,retention       # background, one or two replicas
+```
+
+At least one process of the cluster needs `scheduler`: without it delayed jobs never start, stuck locks are
+not released and the jobs of a dead instance stay with it. Several are safe. An empty or unknown role, or
+only `retention` with `--retention-hours 0`, is an error.
 
 ### Migrations
 

@@ -375,7 +375,7 @@ async fn ui_pages_and_actions(pool: PgPool) -> anyhow::Result<()> {
 async fn instances_page_shows_heartbeats_and_work(pool: PgPool) -> anyhow::Result<()> {
     let state = common::state(pool.clone());
     let addr = common::spawn_app(&state).await;
-    irisqo::features::instances::live(&pool, &state.instance_id, &["http", "worker"]).await?;
+    irisqo::features::instances::live(&pool, &state.instance_id, &["ui", "worker"]).await?;
     sqlx::query(
         "INSERT INTO instances(instance_id, roles, version, seen_at, stopped_at) VALUES
             ('quiet-host:01jc0000000000000000000000', '{worker}', '1', now() - interval '1 minute', NULL),

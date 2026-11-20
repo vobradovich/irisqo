@@ -6,8 +6,8 @@ use std::{ffi::OsString, fmt::Display, str::FromStr, time::Duration};
 use dotenvy::dotenv;
 
 use crate::models::{
-    AllowTargets, ApiTokens, DEFAULT_SCHEMA, DbOptions, Environment, Options, SchedulerOptions,
-    SigningKeys, WorkerOptions, check_schema,
+    AllowTargets, ApiTokens, DEFAULT_SCHEMA, DbOptions, Environment, Options, Roles,
+    SchedulerOptions, SigningKeys, WorkerOptions, check_schema,
 };
 
 // Generates `Irisqo` and its commands `Serve`, `Run` and `Sql`: the flags as given, all optional.
@@ -64,6 +64,10 @@ xflags::xflags! {
         optional --signing-key list: SigningKeys
         /// Do not create the schema or run the migrations: apply them first with `irisqo migrations run`.
         optional --no-migrate
+        /// What this process does, comma separated: api, ui, worker, scheduler, retention
+        /// (retention needs --retention-hours above 0). The probes are always served. At least one
+        /// process of the cluster needs the scheduler. Default: all of them
+        optional --roles list: Roles
         }
         /// Runs the migrations, or prints them for another tool.
         cmd migrations {
@@ -172,6 +176,7 @@ impl Serve {
             allow_targets,
             api_token,
             signing_key,
+            roles,
             // a flag only: it has no variable
             no_migrate: _,
         } = self;
@@ -194,6 +199,7 @@ impl Serve {
         take(allow_targets, "IRISQO_ALLOW_TARGETS", &var)?;
         take(api_token, "IRISQO_API_TOKEN", &var)?;
         take(signing_key, "IRISQO_SIGNING_KEY", &var)?;
+        take(roles, "IRISQO_ROLES", &var)?;
         Ok(())
     }
 
@@ -219,6 +225,7 @@ impl Serve {
             trace_url: self.trace_url.filter(|url| url.contains("{trace_id}")),
             allow_targets: self.allow_targets.unwrap_or(d.allow_targets),
             no_migrate: self.no_migrate,
+            roles: self.roles.unwrap_or(d.roles),
             worker: WorkerOptions {
                 workers: self.workers.unwrap_or(d.worker.workers).max(1),
                 poll_interval: self
@@ -242,7 +249,7 @@ impl Serve {
                 retention_hours: self.retention_hours.unwrap_or(d.scheduler.retention_hours),
             },
         };
-        options.validate().map_err(|err| err.to_string())?;
+        options.validate()?;
         Ok(options)
     }
 }
@@ -265,7 +272,7 @@ impl Run {
         options.db.connections = self.db_connections.unwrap_or(options.db.connections);
         options.db.schema = self.db_schema.unwrap_or(options.db.schema);
         options.environment = self.env.unwrap_or(options.environment);
-        options.validate().map_err(|err| err.to_string())?;
+        options.validate()?;
         if self.recreate {
             if options.environment == Environment::Production {
                 return Err(format!(
@@ -291,7 +298,7 @@ impl Sql {
     pub fn into_command(mut self, var: impl Fn(&str) -> Option<String>) -> Result<Command, String> {
         take(&mut self.db_schema, "IRISQO_DB_SCHEMA", &var)?;
         let schema = self.db_schema.unwrap_or_else(|| DEFAULT_SCHEMA.to_owned());
-        check_schema(&schema).map_err(|err| err.to_string())?;
+        check_schema(&schema)?;
         Ok(Command::MigrationsSql { schema })
     }
 }
@@ -414,6 +421,34 @@ mod tests {
         assert_eq!(options.trace_url, None);
         assert!(options.no_migrate);
 
+        let roles = |args: &[&str], var: Option<&str>| {
+            let args = [&["--db-url", "postgres://x"], args].concat();
+            serve(&args)
+                .map_err(|err| err.to_string())
+                .and_then(|mut serve| {
+                    serve
+                        .fill_from(|name| var.filter(|_| name == "IRISQO_ROLES").map(str::to_owned))
+                        .and_then(|()| serve.into_options())
+                })
+                .map(|options| options.roles.to_string())
+        };
+        assert_eq!(
+            roles(&[], None),
+            Ok("api,ui,worker,scheduler,retention".to_owned())
+        );
+        assert_eq!(
+            roles(&["--roles", "worker"], Some("api")),
+            Ok("worker".to_owned())
+        );
+        assert_eq!(roles(&[], Some("ui, worker")), Ok("ui,worker".to_owned()));
+        assert!(
+            roles(&["--roles", "http"], None).is_err(),
+            "http is two roles now"
+        );
+        let err =
+            roles(&["--roles", "retention", "--retention-hours", "0"], None).expect_err("none");
+        assert!(err.contains("no role"), "{err}");
+
         let err = serve(&["--db-url", "postgres://x", "--db-schema", "Bad"])
             .expect("flags")
             .into_options()
@@ -437,12 +472,7 @@ mod tests {
                 unreachable!()
             };
             migrate
-                .fill_from(|name| {
-                    (name == "IRISQO_ENV")
-                        .then_some(env)
-                        .flatten()
-                        .map(str::to_owned)
-                })
+                .fill_from(|name| env.filter(|_| name == "IRISQO_ENV").map(str::to_owned))
                 .and_then(|()| migrate.into_command())
                 .map(|_| ())
         };
@@ -473,9 +503,7 @@ mod tests {
                 unreachable!()
             };
             sql.into_command(|name| {
-                (name == "IRISQO_DB_SCHEMA")
-                    .then_some(var)
-                    .flatten()
+                var.filter(|_| name == "IRISQO_DB_SCHEMA")
                     .map(str::to_owned)
             })
             .map(|command| match command {

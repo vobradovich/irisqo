@@ -2,7 +2,7 @@ CREATE TABLE instances (
     instance_id text PRIMARY KEY,
     roles       text[] NOT NULL
                 CHECK (cardinality(roles) > 0
-                       AND roles <@ ARRAY['http', 'worker', 'scheduler', 'retention', 'relay']),
+                       AND roles <@ ARRAY['api', 'ui', 'worker', 'scheduler', 'retention']),
     version     text NOT NULL,
     started_at  timestamptz NOT NULL DEFAULT now(),
     seen_at     timestamptz NOT NULL DEFAULT now(),

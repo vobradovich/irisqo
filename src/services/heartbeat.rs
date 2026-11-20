@@ -11,15 +11,6 @@ pub const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 /// An instance without a heartbeat for this long is dead: its jobs are released.
 pub const INSTANCE_EXPIRE: Duration = Duration::from_secs(30);
 
-/// What this process runs: the server, the worker and the scheduler always, the retention when enabled.
-fn roles(app_state: &AppState) -> Vec<&'static str> {
-    let mut roles = vec!["http", "worker", "scheduler"];
-    if app_state.options.scheduler.retention_hours > 0 {
-        roles.push("retention");
-    }
-    roles
-}
-
 /// Keeps the instance alive until `stop` is cancelled.
 ///
 /// It has its own token (not `shutdown_token`): the heartbeat must go on while the
@@ -36,9 +27,13 @@ pub async fn run(app_state: &AppState, stop: CancellationToken) {
             () = stop.cancelled() => break,
             _ = interval.tick() => {},
         );
-        _ = features::instances::live(&app_state.pool, instance_id, &roles(app_state))
-            .await
-            .inspect_err(|err| error!({ instance_id }, "instances::live error {:?}", err));
+        _ = features::instances::live(
+            &app_state.pool,
+            instance_id,
+            &app_state.options.effective_roles().names(),
+        )
+        .await
+        .inspect_err(|err| error!({ instance_id }, "instances::live error {:?}", err));
     }
     info!({ instance_id }, "stop");
 }
