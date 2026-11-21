@@ -264,6 +264,8 @@ pub struct JobDetailView {
     pub retry_policy: String,
     pub timeout: String,
     pub key: String,
+    /// The flow the job names, if any.
+    pub flow_key: Option<String>,
     pub headers: Vec<(String, String)>,
     pub body: String,
     pub body_size: usize,
@@ -331,6 +333,7 @@ impl JobDetailView {
                 .timeout
                 .map_or_else(|| "default".into(), |ms| format!("{ms} ms")),
             key: view.key.clone().unwrap_or_else(|| "-".into()),
+            flow_key: view.meta.flow_key.as_ref().map(|k| k.as_str().to_owned()),
             // ours, for the target: only the open headers are shown, as in the API
             headers: sorted_headers(job.headers.as_ref(), shown_value),
             body: body_text(body),

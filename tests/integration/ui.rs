@@ -69,8 +69,12 @@ async fn pages_use_only_embedded_assets(pool: PgPool) -> anyhow::Result<()> {
         .expect("csp")
         .to_str()?;
     assert!(csp.contains("script-src 'self'") && csp.contains("style-src 'self'"));
+    // the only link out of the page is the version in the header, to the repository
+    let own = format!("href=\"{}\"", env!("CARGO_PKG_REPOSITORY"));
+    assert!(html.contains(&own), "the version links to the repository");
+    let outside = html.replace(&own, "");
     assert!(
-        !html.contains("src=\"http") && !html.contains("href=\"http"),
+        !outside.contains("src=\"http") && !outside.contains("href=\"http"),
         "no CDN"
     );
     assert!(!html.contains("style=\""), "no inline styles");

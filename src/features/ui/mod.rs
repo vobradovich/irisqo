@@ -10,6 +10,7 @@ mod instances;
 mod jobs;
 mod login;
 mod schedules;
+mod settings;
 pub mod views;
 
 use crate::{
@@ -36,11 +37,36 @@ use tracing::error;
 const CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; \
     connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'";
 
-/// The header of a page: the current section, and the logout when the UI asks for a token.
-#[derive(Debug, Clone, Copy)]
+/// The live switch of a page, shown in the header: the page refreshes itself every `every`
+/// seconds, or the updates are paused and `resume_href` starts them again.
+#[derive(Debug, Clone)]
+pub struct Live {
+    pub on: bool,
+    pub every: u32,
+    pub pause_href: String,
+    pub resume_href: String,
+}
+
+impl Live {
+    pub fn new(on: bool, every: u32, pause_href: &str, resume_href: &str) -> Self {
+        Live {
+            on,
+            every,
+            pause_href: pause_href.to_owned(),
+            resume_href: resume_href.to_owned(),
+        }
+    }
+}
+
+/// The header of a page: the current section, the version with the link to the repository, the
+/// live switch of the pages that refresh themselves, and the logout when the UI asks for a token.
+#[derive(Debug, Clone)]
 pub struct Nav {
     pub current: &'static str,
     pub logout: bool,
+    pub live: Option<Live>,
+    pub version: &'static str,
+    pub repository: &'static str,
 }
 
 impl Nav {
@@ -48,7 +74,16 @@ impl Nav {
         Nav {
             current,
             logout: state.options.api_tokens.is_some(),
+            live: None,
+            version: env!("CARGO_PKG_VERSION"),
+            repository: env!("CARGO_PKG_REPOSITORY"),
         }
+    }
+
+    /// A page that refreshes itself shows its switch in the header.
+    pub fn with_live(mut self, live: Live) -> Self {
+        self.live = Some(live);
+        self
     }
 }
 
@@ -89,10 +124,13 @@ pub fn routes(state: Arc<AppState>) -> Router {
             get(jobs::job_page).delete(jobs::job_delete),
         )
         .route("/ui/jobs/{id}/history", get(jobs::job_history))
+        .route("/ui/jobs/{id}/live", get(jobs::job_live))
         .route("/ui/jobs/{id}/retry", post(jobs::job_retry))
         .route("/ui/jobs/{id}/cancel", post(jobs::job_cancel))
         .route("/ui/jobs/{id}/delete", post(jobs::job_delete))
         .route("/ui/schedules", get(schedules::schedules_page))
+        .route("/ui/schedules/table", get(schedules::schedules_table))
+        .route("/ui/settings", get(settings::settings_page))
         .route("/ui/flows", get(flows::flows_page).post(flows::flow_create))
         .route("/ui/flows/table", get(flows::flows_table))
         .route("/ui/flows/new", get(flows::flow_new))
@@ -149,6 +187,13 @@ async fn security_headers(mut response: Response) -> Response {
 /// htmx asks for a partial, a plain browser request for a page or a redirect.
 fn is_htmx(headers: &HeaderMap) -> bool {
     headers.contains_key("hx-request")
+}
+
+/// The query of the page an htmx request comes from (`HX-Current-URL`): an action answers
+/// with the list as that page shows it (its filter, its page, paused or not).
+fn current_query(headers: &HeaderMap) -> Option<String> {
+    let url = url::Url::parse(headers.get("hx-current-url")?.to_str().ok()?).ok()?;
+    url.query().map(str::to_owned)
 }
 
 /// The details go to the log, not to the browser.

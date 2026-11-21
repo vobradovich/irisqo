@@ -121,7 +121,10 @@ async fn the_ui_manages_flows(pool: PgPool) -> anyhow::Result<()> {
 
     let (status, _, html) = send(&state, Method::GET, &base, false, "").await;
     assert_eq!(status, StatusCode::OK);
-    assert!(html.contains("No declared flows") && html.contains(r#"aria-current="page">Flows"#));
+    assert!(
+        html.contains("No declared flows")
+            && html.contains(r#"<a href="/ui/flows" aria-current="page">"#)
+    );
 
     // a wrong form is shown again with the reasons
     let (status, _, html) = send(

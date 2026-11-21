@@ -1,3 +1,4 @@
+{% import "ui/partials/copy.html" as c -%}
 <div id="job" class="job-page" hx-target:inherited="this" hx-swap:inherited="outerHTML">
   <nav aria-label="Breadcrumb" class="crumbs"><a href="/ui/jobs">Jobs</a> / <span class="mono">{{ job.row.id }}</span></nav>
 
@@ -6,9 +7,10 @@
     <span class="status {{ job.row.status }}"><span>{{ job.row.status.label() }}</span></span>
     <span class="muted" title="{{ job.row.due_title }}">attempt {{ job.row.attempt }}{% if !job.row.due.is_empty() %} · {{ job.row.due }}{% endif %}</span>
     <div class="actions push">
+      <button type="button" class="secondary" hx-get="/ui/jobs/{{ job.row.id }}/live"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"></path><path d="M21 3v5h-5"></path><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"></path><path d="M8 16H3v5"></path></svg>Refresh</button>
       {% if job.row.status.is_processed() %}
       <form method="post" action="/ui/jobs/{{ job.row.id }}/retry" hx-post="/ui/jobs/{{ job.row.id }}/retry">
-        <button type="submit">Retry now</button>
+        <button type="submit"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7"></path><path d="M3 4v5h5"></path></svg>Retry now</button>
       </form>
       {% endif %}
       {% if job.row.status.is_pending() %}
@@ -26,19 +28,20 @@
   <div class="alert {{ kind }}" role="status">{{ text }}</div>
   {% endif %}
   {% if job.row.status == JobStatus::Processing %}
-  <p class="hint">Running on <span class="mono" title="{{ job.row.instance_id|or_empty }}">{{ job.row.instance_id|short_instance }}</span>: it cannot be cancelled now.</p>
+  <p class="hint">Running on <span class="mono" title="{{ job.row.instance_id|or_empty }}">{{ job.row.instance_id|short_instance }}</span>{% if let Some(i) = job.row.instance_id %}{{ c::copy(i, "instance id") }}{% endif %}: it cannot be cancelled now.</p>
   {% endif %}
 
   <dl class="facts">
     <div><dt>Created</dt><dd>{{ job.created }}</dd></div>
     <div><dt>Retry policy</dt><dd>{{ job.retry_policy }}</dd></div>
     <div><dt>Timeout</dt><dd>{{ job.timeout }}</dd></div>
-    <div><dt>Key</dt><dd class="mono">{{ job.key }}</dd></div>
-    <div><dt>Schedule</dt><dd class="mono" title="{{ job.row.schedule_id|or_empty }}">{% if job.row.schedule_id.is_some() %}<a href="/ui/schedules">{{ job.row.schedule_id|short_id }}</a>{% else %}-{% endif %}</dd></div>
+    <div class="wide"><dt>Key</dt><dd class="copyable">{% if let Some(k) = job.row.key %}<span class="trunc mono" title="{{ k }}">{{ k }}</span>{{ c::copy(k, "key") }}{% else %}-{% endif %}</dd></div>
+    <div><dt>Schedule</dt><dd class="copyable mono">{% if let Some(s) = job.row.schedule_id %}<a href="/ui/schedules" title="{{ s }}">{{ s|short_id }}</a>{{ c::copy(s, "schedule id") }}{% else %}-{% endif %}</dd></div>
+    {% if let Some(f) = job.flow_key %}<div><dt>Flow</dt><dd class="copyable"><span class="trunc mono" title="{{ f }}">{{ f }}</span>{{ c::copy(f, "flow key") }}</dd></div>{% endif %}
     {% if let Some(parent) = job.row.parent_id %}<div><dt>Callback of</dt><dd class="mono"><a href="/ui/jobs/{{ parent }}">#{{ parent }}</a>{% if let Some(callback) = job.callback_of %} · {{ callback }}{% endif %}</dd></div>{% else %}{% if let Some(callback) = job.callback_of %}<div><dt>Callback of</dt><dd class="muted">a deleted job · {{ callback }}</dd></div>{% endif %}{% endif %}
-    <div><dt>Trace</dt><dd class="mono">
+    <div><dt>Trace</dt><dd class="copyable mono">
       {%- if let Some(href) = job.trace_href %}<a href="{{ href }}" rel="noreferrer" target="_blank">open ↗</a>
-      {%- else if let Some(r) = job.result %}{% if let Some(t) = r.trace_id %}{{ t }}{% else %}-{% endif %}
+      {%- else if let Some(r) = job.result %}{% if let Some(t) = r.trace_id %}<span class="trunc" title="{{ t }}">{{ t }}</span>{{ c::copy(t, "trace id") }}{% else %}-{% endif %}
       {%- else %}-{% endif %}</dd></div>
   </dl>
 
@@ -52,7 +55,7 @@
         {% for (name, value) in job.headers %}<dt>{{ name }}</dt><dd>{{ value }}</dd>{% endfor %}
       </dl>
       {% endif %}
-      <h3>Body · {{ job.body_size }} B</h3>
+      <h3 class="with-copy">Body · {{ job.body_size }} B{% if job.body_size > 0 %}{{ c::copy_next("body") }}{% endif %}</h3>
       {% if job.body_size > 0 %}<pre class="body">{{ job.body }}</pre>{% else %}<p class="muted">empty</p>{% endif %}
     </article>
 
@@ -66,7 +69,7 @@
         {% for (name, value) in r.headers %}<dt>{{ name }}</dt><dd>{{ value }}</dd>{% endfor %}
       </dl>
       {% endif %}
-      <h3>Body · {{ r.body_size }} B</h3>
+      <h3 class="with-copy">Body · {{ r.body_size }} B{% if r.body_size > 0 %}{{ c::copy_next("body") }}{% endif %}</h3>
       {% if r.body_size > 0 %}<pre class="body">{{ r.body }}</pre>{% else %}<p class="muted">empty</p>{% endif %}
       {% else %}
       <p class="muted">No result yet: the job is {{ job.row.status }}. The response of a retried attempt is not kept, only the final one.</p>
@@ -102,12 +105,13 @@
   <article class="card">
     <h2>History</h2>
     <ol class="timeline">
+      <li class="timeline-head" aria-hidden="true"><span>Time</span><span>Status</span><span>Attempt</span><span>Instance</span><span>Message</span></li>
       {% for h in job.history %}
       <li>
         <span class="mono muted" title="{{ h.at|utc }}">{{ h.at.format("%H:%M:%S") }}</span>
         <span class="status {{ h.kind }}"><span>{{ h.kind.label() }}</span></span>
         <span class="mono muted">attempt {{ h.attempt }}</span>
-        <span class="mono muted" title="{{ h.instance_id }}">{{ h.instance_id|short_instance }}</span>
+        <span class="cell-copy"><span class="trunc mono muted" title="{{ h.instance_id }}">{{ h.instance_id|short_instance }}</span>{{ c::copy(h.instance_id, "instance id") }}</span>
         <span>{{ h.message|or_empty }}</span>
       </li>
       {% endfor %}

@@ -11,6 +11,12 @@ pub struct ApiTokens(Vec<String>);
 pub const MIN_TOKEN_LEN: usize = 16;
 
 impl ApiTokens {
+    /// How many tokens are set: the only thing about them a page may show.
+    #[must_use]
+    pub fn count(&self) -> usize {
+        self.0.len()
+    }
+
     /// One of the tokens, compared in constant time (no early exit on the first byte that
     /// differs, which would tell an attacker how much of a guess is right).
     #[must_use = "an unchecked token lets every request in"]

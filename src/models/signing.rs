@@ -13,6 +13,12 @@ const PREFIX: &str = "whsec_";
 pub struct SigningKeys(Vec<Vec<u8>>);
 
 impl SigningKeys {
+    /// How many keys are set: the only thing about them a page may show.
+    #[must_use]
+    pub fn count(&self) -> usize {
+        self.0.len()
+    }
+
     /// The value of the signature header for a delivery: `v1,<base64>` for every key, separated
     /// by a space. The signed text is `{key}.{timestamp}.{body}`: the key of the callback job,
     /// the time as it is in the header, the body as it is sent.

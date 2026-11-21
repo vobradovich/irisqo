@@ -1,3 +1,4 @@
+{% import "ui/partials/copy.html" as c -%}
 <div id="jobs-live"{% if list.live %} hx-get="{{ list.live_href }}" hx-trigger="every 2s" hx-swap="outerMorph"{% endif %}>
   <p class="sr-only" role="status">{{ list.summary }}</p>
   <section id="stats" class="stats" aria-label="Queue">
@@ -24,11 +25,11 @@
             <span class="request"><span class="method mono">{{ job.method }}</span><span class="url mono">{{ job.url }}</span></span>
             <span class="mono">{{ job.attempt }}</span>
             <span class="muted" title="{{ job.due_title }}">{{ job.due }}</span>
-            <span class="mono muted key" title="{{ job.key|or_empty }}">{{ job.key|or_empty }}</span>
+            <span class="cell-copy"><span class="mono muted key" title="{{ job.key|or_empty }}">{{ job.key|or_empty }}</span>{% if let Some(k) = job.key %}{{ c::copy(k, "key") }}{% endif %}</span>
             {%- if let Some(parent) = job.parent_id %}
             <span class="mono muted" title="callback of #{{ parent }}"><a href="/ui/jobs/{{ parent }}">↳ #{{ parent }}</a></span>
             {%- else %}
-            <span class="mono muted" title="{{ job.schedule_id|or_empty }}">{{ job.schedule_id|short_id }}</span>
+            <span class="cell-copy"><span class="mono muted" title="{{ job.schedule_id|or_empty }}">{{ job.schedule_id|short_id }}</span>{% if let Some(s) = job.schedule_id %}{{ c::copy(s, "schedule id") }}{% endif %}</span>
             {%- endif %}
           </summary>
           <div class="history" hx-morph-skip-children><small class="hint">Loading the history…</small></div>
@@ -41,7 +42,7 @@
     {% endif %}
   </section>
 
-  <nav class="pager" aria-label="Pages">
+  <nav class="pager" aria-label="Pages" hx-boost:inherited="true" hx-target:inherited="main" hx-select:inherited="main" hx-select-oob:inherited="#header-live" hx-swap:inherited="outerMorph show:top" hx-sync:inherited="#jobs-live:replace">
     {% if let Some(href) = list.newest_href %}<a href="{{ href }}" role="button" class="secondary">Newest</a>{% endif %}
     {% if let Some(href) = list.older_href %}<a href="{{ href }}" role="button" class="secondary">Older</a>{% endif %}
   </nav>

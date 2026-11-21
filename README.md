@@ -1,9 +1,34 @@
-# irisqo
+<div align="center">
 
-Self-hosted **HTTP job queue** on Postgres.
+<p align="center"><img src="assets/logo.svg" alt="irisqo" width="160"></p>
 
-A job is an **HTTP request** (method, URL, headers, body). Services enqueue calls to their own endpoints or to others.
-Retries, delays, cron, and concurrency live in **irisqo**, not in an in-process job SDK.
+<h1>irisqo: a self-hosted HTTP job queue on Postgres</h1>
+
+<p>A job is an <strong>HTTP request</strong>. Retries, delays, cron and concurrency live in irisqo,
+not in an in-process job SDK. Like QStash or Zeplo, but on <strong>your</strong> Postgres,
+calling <strong>your</strong> services.</p>
+
+<p align="center">
+  <a href="https://github.com/vobradovich/irisqo/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/vobradovich/irisqo/ci.yml?style=for-the-badge"></a>
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue?style=for-the-badge"></a>
+  <img alt="Postgres" src="https://img.shields.io/badge/Postgres-16%2B-336791?style=for-the-badge&logo=postgresql&logoColor=white">
+  <img alt="Rust" src="https://img.shields.io/badge/Rust-2024-orange?style=for-the-badge&logo=rust&logoColor=white">
+</p>
+
+<p align="center"><strong>
+  <a href="#quick-start">Quick start</a> ·
+  <a href="#features">Features</a> ·
+  <a href="#api">API</a> ·
+  <a href="#ui">UI</a> ·
+  <a href="#running">Running</a> ·
+  <a href="docs/sql.md">SQL enqueue</a>
+</strong></p>
+
+<p align="center"><a href="docs/screenshots/jobs.png"><img src="docs/screenshots/jobs.png" alt="irisqo UI: the queue stats and the jobs by state" width="900"></a></p>
+
+</div>
+
+---
 
 ```http
 POST https://irisqo/to/https://orders.internal/api/sync
@@ -11,10 +36,37 @@ Authorization: Bearer …
 Irisqo-Forward-Authorization: Bearer …
 ```
 
-Like QStash or Zeplo, but on **your** Postgres, calling **your** services.
-
 **Status:** early product (usable PoC). Core delivery works; items under Planned are in progress.  
 **License:** MIT.
+
+## Quick start
+
+```bash
+git clone https://github.com/vobradovich/irisqo && cd irisqo
+docker compose up -d          # Postgres and irisqo, built from this checkout
+```
+
+Queue a request: prefix its URL with `/to/`.
+
+```bash
+curl -i -X POST 'http://localhost:8102/to/https://postman-echo.com/post' \
+  -H 'content-type: application/json' -d '{"hello": "irisqo"}'
+# HTTP/1.1 201 Created
+# location: /api/v1/jobs/1
+```
+
+The job is sent in a moment; its result is at `http://localhost:8102/api/v1/jobs/1/result`, and the UI is at
+<http://localhost:8102/ui>. The API and the UI are open until you set `--api-token`
+(see [Authentication](#authentication)).
+
+With your own Postgres, build the image once and run it:
+
+```bash
+docker build -t irisqo .
+docker run -p 8102:8102 -e IRISQO_DB_URL=postgres://user:pass@host/irisqo irisqo
+```
+
+The first start creates the schema. On a small builder (a 2 GiB VM) add `--build-arg CARGO_BUILD_JOBS=2`.
 
 ### Design
 
@@ -211,12 +263,10 @@ there is nothing to fetch from a CDN, and the pages carry a strict `Content-Secu
 (no inline scripts or styles). The New job form builds the same `/to/` request as the API and goes
 through the same validation; its preview shows that request.
 The theme follows the system setting; the switch in the header picks light or dark instead, kept in
-the browser (`assets/theme.js`, the only script besides htmx).
+the browser (`assets/theme.js`; with `assets/copy.js`, the copy buttons, the only scripts besides htmx).
 A request of the UI that changes something (a form, cancel, delete, pause) must come from the UI
 itself: the browser's `Sec-Fetch-Site`, or else its `Origin` against the host (`X-Forwarded-Host`
 behind a proxy). A page of another site cannot make a user's browser post to it (`403`).
-
-[![Jobs: the queue stats and the jobs by state](docs/screenshots/jobs.png)](docs/screenshots/jobs.png)
 
 <table>
   <tr>
@@ -225,19 +275,25 @@ behind a proxy). A page of another site cannot make a user's browser post to it 
   </tr>
   <tr>
     <td width="50%"><a href="docs/screenshots/schedules.png"><img src="docs/screenshots/schedules.png" alt="Schedules: rule, next and last run"></a><br><sub>Schedules</sub></td>
-    <td width="50%"><a href="docs/screenshots/instances.png"><img src="docs/screenshots/instances.png" alt="Instances: the processes on the queue"></a><br><sub>Instances</sub></td>
+    <td width="50%"><a href="docs/screenshots/flows.png"><img src="docs/screenshots/flows.png" alt="Flows: limits, waiting and running jobs"></a><br><sub>Flows</sub></td>
+  </tr>
+  <tr>
+    <td colspan="2"><a href="docs/screenshots/instances.png"><img src="docs/screenshots/instances.png" alt="Instances: the processes on the queue"></a><br><sub>Instances</sub></td>
   </tr>
 </table>
 
-- **Jobs**: the queue stats and the jobs by state (scheduled, retrying, enqueued, processing,
-  completed, failed, cancelled), searchable by id, key or URL, refreshed every 2 s; a row
-  opens its history in place.
-- **Job**: the request, the result, the history; retry, cancel, delete. With `--trace-url`
-  (e.g. `http://localhost:5080/web/traces?trace_id={trace_id}`) the result links to its trace.
+- **Jobs** (the screenshot at the top): the queue stats and the jobs by state (scheduled, retrying, enqueued, processing,
+  completed, failed, cancelled), searchable by id, key or URL; a row opens its history in place.
+  The Live badge in the header refreshes the lists every 2 s (5 s on Instances) and pauses them.
+- **Job**: the request, the result, the history; retry, cancel, delete; copy buttons for the key,
+  flow, trace and bodies. With `--trace-url` (e.g. `http://localhost:5080/web/traces?trace_id={trace_id}`)
+  the trace links to it.
+- **New job**: the form; its preview is the same request with the API.
 - **Schedules**: rule, next and last run; pause, resume, delete.
-- **Instances**: the irisqo processes on this queue: state, last heartbeat, start, the jobs
-  each holds and its results of the last 24 hours, refreshed every 5 s.
-- **New job**: the form.
+- **Flows**: declared flows with their limits, waiting and running jobs; create, edit, pause, delete.
+- **Instances**: the irisqo processes on this queue: roles, state, last heartbeat, start, the jobs
+  each holds and its results of the last 24 hours.
+- **Settings**: the options of this instance, read-only; secrets are never shown.
 
 ## Running
 

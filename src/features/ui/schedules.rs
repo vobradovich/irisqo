@@ -5,14 +5,15 @@ use std::sync::Arc;
 use askama::Template;
 use askama_web::WebTemplate;
 use axum::{
-    extract::{Path, State},
+    extract::{Path, RawQuery, State},
     http::HeaderMap,
     response::{IntoResponse, Redirect, Response},
 };
 use chrono::{DateTime, Utc};
+use url::form_urlencoded;
 
 use super::{
-    Nav, is_htmx, server_error,
+    Live, Nav, current_query, is_htmx, server_error,
     views::{filters, relative, utc},
 };
 use crate::{
@@ -99,12 +100,16 @@ impl ScheduleRowView {
 pub struct SchedulesPage {
     nav: Nav,
     rows: Vec<ScheduleRowView>,
+    /// Refreshed every 2 s unless the updates are paused (`?live=0`).
+    live: bool,
 }
 
 #[derive(Template, WebTemplate)]
 #[template(path = "ui/partials/schedules_table.html")]
 pub struct SchedulesPartial {
     rows: Vec<ScheduleRowView>,
+    /// Refreshes itself every 2 s unless the updates are paused (`?live=0`).
+    live: bool,
 }
 
 async fn load(state: &AppState) -> Result<Vec<ScheduleRowView>, Error> {
@@ -116,13 +121,37 @@ async fn load(state: &AppState) -> Result<Vec<ScheduleRowView>, Error> {
         .collect())
 }
 
-pub async fn schedules_page(State(state): State<Arc<AppState>>) -> Response {
+/// `?live=0` pauses the updates of the page.
+fn live_param(query: Option<&str>) -> bool {
+    !form_urlencoded::parse(query.unwrap_or_default().as_bytes())
+        .any(|(key, value)| key == "live" && value == "0")
+}
+
+pub async fn schedules_page(
+    State(state): State<Arc<AppState>>,
+    RawQuery(query): RawQuery,
+) -> Response {
+    let live = live_param(query.as_deref());
     match load(&state).await {
         Ok(rows) => SchedulesPage {
-            nav: Nav::new(&state, "schedules"),
+            nav: Nav::new(&state, "schedules").with_live(Live::new(
+                live,
+                2,
+                "/ui/schedules?live=0",
+                "/ui/schedules",
+            )),
             rows,
+            live,
         }
         .into_response(),
+        Err(err) => server_error(&err),
+    }
+}
+
+/// The table alone, polled by the page (morphed in place).
+pub async fn schedules_table(State(state): State<Arc<AppState>>) -> Response {
+    match load(&state).await {
+        Ok(rows) => SchedulesPartial { rows, live: true }.into_response(),
         Err(err) => server_error(&err),
     }
 }
@@ -150,8 +179,9 @@ async fn act(state: &AppState, id: &str, headers: &HeaderMap, action: Action) ->
     if !is_htmx(headers) {
         return Redirect::to("/ui/schedules").into_response();
     }
+    let live = live_param(current_query(headers).as_deref());
     match load(state).await {
-        Ok(rows) => SchedulesPartial { rows }.into_response(),
+        Ok(rows) => SchedulesPartial { rows, live }.into_response(),
         Err(err) => server_error(&err),
     }
 }

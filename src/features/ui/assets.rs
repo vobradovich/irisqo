@@ -40,6 +40,12 @@ const ASSETS: &[Asset] = &[
         immutable: false,
     },
     Asset {
+        name: "copy.js",
+        content_type: "text/javascript; charset=utf-8",
+        bytes: include_bytes!("../../../assets/copy.js"),
+        immutable: false,
+    },
+    Asset {
         name: "tz.js",
         content_type: "text/javascript; charset=utf-8",
         bytes: include_bytes!("../../../assets/tz.js"),

@@ -1,3 +1,4 @@
+{% import "ui/partials/copy.html" as c -%}
 <div id="flows" class="table-wrap"{% if list.live %} hx-get="{{ list.table_href }}" hx-trigger="every 2s" hx-swap="outerMorph"{% endif %} hx-target:inherited="this" hx-swap:inherited="outerMorph">
   {% if list.rows.is_empty() %}
   <p class="empty">{{ list.empty }}</p>
@@ -9,7 +10,7 @@
     <tbody>
       {% for r in list.rows %}
       <tr>
-        <td class="mono" title="{{ r.id }}">{{ r.id }}</td>
+        <td class="mono"><span class="cell-copy"><span class="trunc" title="{{ r.id }}">{{ r.id }}</span>{{ c::copy(r.id, "flow key") }}</span></td>
         <td><span class="status {{ r.state }}"><span>{{ r.state_label }}</span></span>{% if let Some(until) = r.limited_until %}<br><span class="status limited"><span>Rate limited until {{ until }}</span></span>{% endif %}</td>
         <td>{{ r.concurrency }} at once{% if !r.rate.is_empty() %}<br><small class="muted">{{ r.rate }}</small>{% endif %}</td>
         <td class="num mono">{{ r.waiting }}</td>
@@ -34,7 +35,7 @@
     </tbody>
   </table>
   {% endif %}
-  <nav class="pager" aria-label="Pages">
+  <nav class="pager" aria-label="Pages" hx-boost:inherited="true" hx-target:inherited="main" hx-select:inherited="main" hx-select-oob:inherited="#header-live" hx-swap:inherited="outerMorph show:top" hx-sync:inherited="#flows:replace">
     {% if let Some(href) = list.first_href %}<a href="{{ href }}" role="button" class="secondary">First</a>{% endif %}
     {% if let Some(href) = list.next_href %}<a href="{{ href }}" role="button" class="secondary">Next</a>{% endif %}
   </nav>

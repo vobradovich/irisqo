@@ -13,7 +13,7 @@ use chrono::Utc;
 use url::form_urlencoded;
 
 use super::{
-    Nav, is_htmx, server_error,
+    Live, Nav, is_htmx, server_error,
     views::{JobDetailView, JobRowView, filters, relative},
 };
 use crate::{
@@ -264,7 +264,12 @@ pub async fn jobs_page(State(state): State<Arc<AppState>>, RawQuery(query): RawQ
     let params = ListParams::parse(query.as_deref());
     match load_list(&state, &params).await {
         Ok(list) => JobsPage {
-            nav: Nav::new(&state, "jobs"),
+            nav: Nav::new(&state, "jobs").with_live(Live::new(
+                list.live,
+                2,
+                &list.pause_href,
+                &list.resume_href,
+            )),
             list,
         }
         .into_response(),
@@ -319,6 +324,16 @@ pub async fn job_page(State(state): State<Arc<AppState>>, Path(id): Path<i64>) -
         }
         .into_response(),
         Ok(None) => not_found(&state, format!("Job {id}")),
+        Err(err) => server_error(&err),
+    }
+}
+
+/// The job alone, for the Refresh button of its page.
+pub async fn job_live(State(state): State<Arc<AppState>>, Path(id): Path<i64>) -> Response {
+    match load_job(&state, id).await {
+        Ok(Some(job)) => JobDetailPartial { job }.into_response(),
+        // deleted meanwhile: the whole page says so, not a page inside the page
+        Ok(None) => [("hx-redirect", format!("/ui/jobs/{id}"))].into_response(),
         Err(err) => server_error(&err),
     }
 }

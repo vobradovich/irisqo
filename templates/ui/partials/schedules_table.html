@@ -1,4 +1,5 @@
-<div id="schedules" class="table-wrap" hx-target:inherited="this" hx-swap:inherited="outerHTML">
+{% import "ui/partials/copy.html" as c -%}
+<div id="schedules" class="table-wrap"{% if live %} hx-get="/ui/schedules/table" hx-trigger="every 2s" hx-swap="outerMorph"{% endif %} hx-target:inherited="this" hx-swap:inherited="outerHTML">
   {% if rows.is_empty() %}
   <p class="empty">No schedules. Create one from <a href="/ui/jobs/new">New job</a> with Repeat.</p>
   {% else %}
@@ -9,7 +10,7 @@
     <tbody>
       {% for r in rows %}
       <tr>
-        <td class="mono" title="{{ r.id }}">{{ r.id|short_id }}</td>
+        <td class="mono"><span class="cell-copy"><span title="{{ r.id }}">{{ r.id|short_id }}</span>{{ c::copy(r.id, "schedule id") }}</span></td>
         <td class="request-cell"><span class="request"><span class="method mono">{{ r.method }}</span> <span class="url mono" title="{{ r.url }}">{{ r.url }}</span></span></td>
         <td><span class="mono">{{ r.rule }}</span><br><small class="muted">{{ r.rule_hint }}</small></td>
         <td title="{{ r.next_title }}">{{ r.next }}</td>
