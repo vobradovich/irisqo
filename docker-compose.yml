@@ -1,0 +1,30 @@
+# Postgres and irisqo, built from this checkout:
+#
+#   docker compose up -d
+#   open http://localhost:8102/ui
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_PASSWORD: irisqo
+      POSTGRES_DB: irisqo
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d irisqo"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  irisqo:
+    build: .
+    environment:
+      IRISQO_DB_URL: postgres://postgres:irisqo@postgres/irisqo
+    ports:
+      - "8102:8102"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pgdata:

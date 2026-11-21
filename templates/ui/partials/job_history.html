@@ -1,10 +1,12 @@
+{% import "ui/partials/copy.html" as c -%}
 <ol class="timeline">
+  <li class="timeline-head" aria-hidden="true"><span>Time</span><span>Status</span><span>Attempt</span><span>Instance</span><span>Result</span></li>
   {% for h in history %}
   <li>
     <span class="mono muted" title="{{ h.at|utc }}">{{ h.at.format("%H:%M:%S") }}</span>
     <span class="status {{ h.kind }}"><span>{{ h.kind.label() }}</span></span>
     <span class="mono muted">attempt {{ h.attempt }}</span>
-    <span class="mono muted" title="{{ h.instance_id }}">{{ h.instance_id|short_instance }}</span>
+    <span class="cell-copy"><span class="trunc mono muted" title="{{ h.instance_id }}">{{ h.instance_id|short_instance }}</span>{{ c::copy(h.instance_id, "instance id") }}</span>
     <span>{{ h.message|or_empty }}</span>
   </li>
   {% endfor %}

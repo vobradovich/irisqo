@@ -1,11 +1,11 @@
 {% extends "ui/layout.html" %}
 {% block title %}Instances{% endblock %}
 {% block content %}
-<hgroup>
+<div class="page-head">
   <h1>Instances</h1>
-  <p>The irisqo processes sharing this queue. Each sends a heartbeat every {{ heartbeat_secs }} s; one silent for {{ expire_secs }} s is stopped and its jobs go back to the queue.</p>
-</hgroup>
-<div class="filters">
+</div>
+<p class="muted">The irisqo processes sharing this queue. Each sends a heartbeat every {{ heartbeat_secs }} s; one silent for {{ expire_secs }} s is stopped and its jobs go back to the queue.</p>
+<div class="filters" hx-boost:inherited="true" hx-target:inherited="main" hx-select:inherited="main" hx-select-oob:inherited="#header-live" hx-swap:inherited="outerMorph show:none" hx-sync:inherited="#instances:replace">
   <nav class="segmented" aria-label="Show">
     <ul>
       {% for f in filters %}

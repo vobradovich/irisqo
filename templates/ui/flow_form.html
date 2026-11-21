@@ -1,10 +1,10 @@
 {% extends "ui/layout.html" %}
 {% block title %}{% if form.is_edit() %}Edit flow{% else %}New flow{% endif %}{% endblock %}
 {% block content %}
-<hgroup>
+<div class="page-head">
   <h1>{% if form.is_edit() %}Edit flow{% else %}New flow{% endif %}</h1>
-  <p>The limits apply to the jobs that name this flow. A change takes effect at once; the jobs running now finish.</p>
-</hgroup>
+</div>
+<p class="muted">The limits apply to the jobs that name this flow. A change takes effect at once; the jobs running now finish.</p>
 {% if let Some(editing) = form.editing %}
 <form method="post" action="/ui/flows/{{ editing|urlencode }}" novalidate>
 {% else %}

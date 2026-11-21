@@ -1,0 +1,8 @@
+target
+.git
+.github
+.env
+.ignored
+.DS_Store
+docs/screenshots
+tests

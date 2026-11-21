@@ -398,7 +398,7 @@ async fn instances_page_shows_heartbeats_and_work(pool: PgPool) -> anyhow::Resul
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert!(html.contains("aria-current=\"page\">Instances</a>"));
+    assert!(html.contains("<a href=\"/ui/instances\" aria-current=\"page\">"));
     let (host, _) = state.instance_id.rsplit_once(':').expect("host:ulid");
     assert!(html.contains(host) && html.contains("quiet-host"));
     assert!(!html.contains("old-host"), "Live hides the stopped ones");
@@ -483,5 +483,163 @@ async fn instances_are_listed_page_by_page(pool: PgPool) -> anyhow::Result<()> {
 
     let all = get("/ui/instances?show=all".into()).await;
     assert!(all.contains("aria-current=\"page\">All</a>"));
+    Ok(())
+}
+
+/// The live switch sits in the header of every page that refreshes itself; `?live=0` pauses
+/// the polling and the header offers to resume it.
+#[sqlx::test(migrations = "./sql/migrations")]
+async fn every_page_has_a_live_switch_in_the_header(pool: PgPool) -> anyhow::Result<()> {
+    let state = common::state(pool.clone());
+    let addr = common::spawn_app(&state).await;
+    let ui = |path: &str| format!("http://{addr}{path}");
+    let job = job_id(&state, addr, &format!("http://{addr}/echo?_delay=600")).await;
+    let job_path = format!("/ui/jobs/{job}");
+
+    // page and the poll it carries (then paused)
+    let pages: [(&str, &str); 4] = [
+        ("/ui/jobs", "every 2s"),
+        ("/ui/schedules", "every 2s"),
+        ("/ui/flows", "every 2s"),
+        ("/ui/instances", "every 5s"),
+    ];
+    for (path, every) in pages {
+        let (status, _, html) = send(&state, Method::GET, &ui(path), false).await;
+        assert_eq!(status, StatusCode::OK, "{path}");
+        assert!(html.contains("<span class=\"live\">"), "{path}: live badge");
+        assert!(html.contains("aria-label=\"Pause updates\""), "{path}");
+        assert!(html.contains(&format!("hx-trigger=\"{every}\"")), "{path}");
+
+        let (_, _, html) = send(&state, Method::GET, &ui(&format!("{path}?live=0")), false).await;
+        assert!(
+            html.contains("<span class=\"live paused\">"),
+            "{path}: paused"
+        );
+        assert!(html.contains("aria-label=\"Resume updates\""), "{path}");
+        assert!(!html.contains("hx-trigger=\"every"), "{path}: no polling");
+    }
+
+    // the filters and the pager of the jobs swap the page in place (htmx boost), and the badge
+    // of the header comes along, as its links carry the filters
+    let (_, _, html) = send(&state, Method::GET, &ui("/ui/jobs"), false).await;
+    assert!(html.contains("<li id=\"header-live\">"));
+    assert_eq!(
+        html.matches("hx-boost:inherited=\"true\"").count(),
+        2,
+        "the filters and the pager"
+    );
+    assert!(html.contains("hx-select-oob:inherited=\"#header-live\""));
+
+    // the same for the filters of the flows and of the instances
+    for path in ["/ui/flows", "/ui/instances"] {
+        let (_, _, html) = send(&state, Method::GET, &ui(path), false).await;
+        assert!(html.contains("<li id=\"header-live\">"), "{path}");
+        assert!(html.contains("hx-boost:inherited=\"true\""), "{path}");
+        assert!(
+            html.contains("hx-select-oob:inherited=\"#header-live\""),
+            "{path}"
+        );
+    }
+
+    // the polled table of the schedules
+    let (status, _, html) = send(&state, Method::GET, &ui("/ui/schedules/table"), true).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(html.starts_with("<div id=\"schedules\"") && html.contains("hx-trigger=\"every 2s\""));
+
+    // a job page does not refresh itself: a button does
+    let (_, _, html) = send(&state, Method::GET, &ui(&job_path), false).await;
+    assert!(!html.contains("class=\"live") && !html.contains("hx-trigger=\"every"));
+    let live = format!("hx-get=\"{job_path}/live\"");
+    assert!(html.contains(&live), "the Refresh button");
+    let (status, _, html) = send(&state, Method::GET, &ui(&format!("{job_path}/live")), true).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(html.starts_with("<div id=\"job\"") && html.contains(&live));
+
+    // the forms have no switch; the settings page exists
+    for path in ["/ui/jobs/new", "/ui/flows/new", "/ui/settings"] {
+        let (status, _, html) = send(&state, Method::GET, &ui(path), false).await;
+        assert_eq!(status, StatusCode::OK, "{path}");
+        assert!(!html.contains("class=\"live"), "{path}: no live switch");
+    }
+    let (_, _, html) = send(&state, Method::GET, &ui("/ui/settings"), false).await;
+    assert!(html.contains("<h1>Settings</h1>"));
+    // the options, read-only, and the database without its credentials
+    assert!(html.contains("<strong>8102</strong>") && html.contains("readonly"));
+    assert!(
+        html.contains("unused / unused"),
+        "the host and the name of the database"
+    );
+    assert!(!html.contains("postgres://"), "the URL itself is not shown");
+
+    // a deleted job: its Refresh opens the whole Not found page
+    send(&state, Method::DELETE, &ui(&job_path), true).await;
+    let (_, headers, _) = send(&state, Method::GET, &ui(&format!("{job_path}/live")), true).await;
+    assert_eq!(
+        headers.get("hx-redirect").and_then(|v| v.to_str().ok()),
+        Some(job_path.as_str())
+    );
+    Ok(())
+}
+
+/// An htmx post from the page at `current`, as a row button sends it.
+async fn post_from(state: &irisqo::AppState, uri: &str, current: &str) -> String {
+    use http_body_util::{BodyExt, Full};
+    let req = hyper::Request::builder()
+        .method(Method::POST)
+        .uri(uri)
+        .header("hx-request", "true")
+        .header("hx-current-url", current)
+        .body(Full::default())
+        .expect("request");
+    let response = state.client.request(req).await.expect("response");
+    assert_eq!(response.status(), StatusCode::OK, "{uri}");
+    let bytes = response
+        .into_body()
+        .collect()
+        .await
+        .expect("body")
+        .to_bytes();
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+/// A row action answers with the table as its page shows it: a paused page stays paused, and
+/// the flows keep their filter.
+#[sqlx::test(migrations = "./sql/migrations")]
+async fn row_actions_keep_the_page_as_it_is(pool: PgPool) -> anyhow::Result<()> {
+    let state = common::state(pool.clone());
+    let addr = common::spawn_app(&state).await;
+    let ui = |path: &str| format!("http://{addr}{path}");
+    let response = common::create(&state, addr, &format!("http://{addr}/echo?_interval=60")).await;
+    let schedule = common::header(&response, "irisqo-schedule-id").expect("schedule-id");
+    let pause = ui(&format!("/ui/schedules/{schedule}/pause"));
+    let resume = ui(&format!("/ui/schedules/{schedule}/resume"));
+
+    let html = post_from(&state, &pause, &ui("/ui/schedules?live=0")).await;
+    assert!(
+        html.contains("Resume") && !html.contains("hx-trigger=\"every"),
+        "stays paused"
+    );
+    let html = post_from(&state, &resume, &ui("/ui/schedules")).await;
+    assert!(html.contains("hx-trigger=\"every 2s\""), "stays live");
+
+    let (status, _, _) = crate::ui::send(
+        &state,
+        Method::POST,
+        &ui("/ui/flows"),
+        false,
+        "flow_key=reports&concurrency=4",
+    )
+    .await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    let html = post_from(
+        &state,
+        &ui("/ui/flows/reports/pause"),
+        &ui("/ui/flows?live=0"),
+    )
+    .await;
+    assert!(
+        html.contains("Resume") && !html.contains("hx-trigger=\"every"),
+        "stays paused"
+    );
     Ok(())
 }

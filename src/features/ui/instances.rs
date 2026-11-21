@@ -12,7 +12,7 @@ use chrono::{DateTime, Utc};
 use url::form_urlencoded;
 
 use super::{
-    Nav,
+    Live, Nav,
     jobs::FilterLink,
     server_error,
     views::{filters, relative},
@@ -85,11 +85,23 @@ impl InstanceRowView {
 
 const PAGE_SIZE: i64 = 50;
 
-/// What the request asks for: Live | All, and the page (`before`: the last instance of the previous one).
-#[derive(Debug, Default)]
+/// What the request asks for: Live | All, the page (`before`: the last instance of the previous
+/// one) and whether the page refreshes itself (`live=0` pauses it).
+#[derive(Debug)]
 struct ListParams {
     filter: InstanceFilter,
     before: Option<String>,
+    live: bool,
+}
+
+impl Default for ListParams {
+    fn default() -> Self {
+        ListParams {
+            filter: InstanceFilter::default(),
+            before: None,
+            live: true,
+        }
+    }
 }
 
 impl ListParams {
@@ -99,17 +111,21 @@ impl ListParams {
             match key.as_ref() {
                 "show" => params.filter = InstanceFilter::parse(&value),
                 "before" if !value.is_empty() => params.before = Some(value.into_owned()),
+                "live" => params.live = value != "0",
                 _ => {}
             }
         }
         params
     }
 
-    fn query(filter: InstanceFilter, before: Option<&str>) -> String {
+    fn query(filter: InstanceFilter, before: Option<&str>, live: bool) -> String {
         let mut out = form_urlencoded::Serializer::new(String::new());
         out.append_pair("show", filter.as_str());
         if let Some(before) = before {
             out.append_pair("before", before);
+        }
+        if !live {
+            out.append_pair("live", "0");
         }
         out.finish()
     }
@@ -118,6 +134,9 @@ impl ListParams {
 /// The table with its pager: refreshed every 5 s by the page (the same page of the list).
 pub struct InstancesList {
     rows: Vec<InstanceRowView>,
+    live: bool,
+    pause_href: String,
+    resume_href: String,
     table_href: String,
     empty: &'static str,
     newest_href: Option<String>,
@@ -153,20 +172,26 @@ async fn load(state: &AppState, params: &ListParams) -> Result<InstancesList, Er
         .iter()
         .map(|view| InstanceRowView::new(view, now, &state.instance_id))
         .collect();
-    let href = |path: &str, before: Option<&str>| {
-        format!("{path}?{}", ListParams::query(params.filter, before))
+    let href = |path: &str, before: Option<&str>, live: bool| {
+        format!("{path}?{}", ListParams::query(params.filter, before, live))
     };
     let older_href = (i64::try_from(rows.len()) == Ok(PAGE_SIZE))
         .then(|| rows.last())
         .flatten()
-        .map(|last| href("/ui/instances", Some(&last.id)));
+        .map(|last| href("/ui/instances", Some(&last.id), params.live));
     Ok(InstancesList {
-        table_href: href("/ui/instances/table", params.before.as_deref()),
+        live: params.live,
+        pause_href: href("/ui/instances", params.before.as_deref(), false),
+        resume_href: href("/ui/instances", params.before.as_deref(), true),
+        table_href: href("/ui/instances/table", params.before.as_deref(), true),
         empty: match params.filter {
             InstanceFilter::Live => "No live instances.",
             InstanceFilter::All => "No instances yet.",
         },
-        newest_href: params.before.as_ref().map(|_| href("/ui/instances", None)),
+        newest_href: params
+            .before
+            .as_ref()
+            .map(|_| href("/ui/instances", None, params.live)),
         older_href,
         rows,
     })
@@ -179,14 +204,22 @@ pub async fn instances_page(
     let params = ListParams::parse(query.as_deref());
     match load(&state, &params).await {
         Ok(list) => InstancesPage {
-            nav: Nav::new(&state, "instances"),
+            nav: Nav::new(&state, "instances").with_live(Live::new(
+                list.live,
+                5,
+                &list.pause_href,
+                &list.resume_href,
+            )),
             heartbeat_secs: HEARTBEAT_INTERVAL.as_secs(),
             expire_secs: INSTANCE_EXPIRE.as_secs(),
             filters: InstanceFilter::ALL
                 .into_iter()
                 .map(|filter| FilterLink {
                     label: filter.label(),
-                    href: format!("/ui/instances?{}", ListParams::query(filter, None)),
+                    href: format!(
+                        "/ui/instances?{}",
+                        ListParams::query(filter, None, params.live)
+                    ),
                     current: filter == params.filter,
                 })
                 .collect(),

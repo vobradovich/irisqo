@@ -14,25 +14,38 @@
   <link rel="stylesheet" href="/ui/assets/app.css">
   <script src="/ui/assets/htmx-4.0.1.min.js" defer></script>
   <script src="/ui/assets/tz.js" defer></script>
+  <script src="/ui/assets/copy.js" defer></script>
 </head>
 <body>
   <header>
     <nav aria-label="Main">
-      <ul>
-        <li>
-          <a href="/ui" class="brand" aria-label="irisqo">
-            <img src="/ui/assets/logo.svg" width="32" height="32" alt="">
-            <span class="brand-name">irisqo</span>
-          </a>
+      <ul class="head-brand">
+        <li class="brand-box">
+          <a href="/ui" class="brand-logo" aria-hidden="true" tabindex="-1"><img src="/ui/assets/logo.svg" width="32" height="32" alt=""></a>
+          <span class="brand-text">
+            <a href="/ui" class="brand">irisqo</a>
+            <a href="{{ nav.repository }}" class="version" title="irisqo on GitHub" target="_blank" rel="noopener noreferrer">v{{ nav.version }}</a>
+          </span>
         </li>
-        {% if nav.current != "login" %}
-        <li><a href="/ui/jobs"{% if nav.current == "jobs" %} aria-current="page"{% endif %}>Jobs</a></li>
-        <li><a href="/ui/schedules"{% if nav.current == "schedules" %} aria-current="page"{% endif %}>Schedules</a></li>
-        <li><a href="/ui/flows"{% if nav.current == "flows" %} aria-current="page"{% endif %}>Flows</a></li>
-        <li><a href="/ui/instances"{% if nav.current == "instances" %} aria-current="page"{% endif %}>Instances</a></li>
-        {% endif %}
       </ul>
-      <ul>
+      {% if nav.current != "login" %}
+      <ul class="head-links">
+        <li><a href="/ui/jobs"{% if nav.current == "jobs" %} aria-current="page"{% endif %}><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m3 17 2 2 4-4"></path><path d="m3 7 2 2 4-4"></path><path d="M13 6h8"></path><path d="M13 12h8"></path><path d="M13 18h8"></path></svg><span class="nl">Jobs</span></a></li>
+        <li><a href="/ui/schedules"{% if nav.current == "schedules" %} aria-current="page"{% endif %}><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 14v2.2l1.6 1"></path><path d="M16 2v4"></path><path d="M21 7.5V6a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h3.5"></path><path d="M3 10h5"></path><path d="M8 2v4"></path><circle cx="16" cy="16" r="6"></circle></svg><span class="nl">Schedules</span></a></li>
+        <li><a href="/ui/flows"{% if nav.current == "flows" %} aria-current="page"{% endif %}><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 6c.6.5 1.2 1 2.5 1C7 7 7 5 9.5 5c2.6 0 2.4 2 5 2 2.5 0 2.5-2 5-2 1.3 0 1.9.5 2.5 1"></path><path d="M2 12c.6.5 1.2 1 2.5 1 2.5 0 2.5-2 5-2 2.6 0 2.4 2 5 2 2.5 0 2.5-2 5-2 1.3 0 1.9.5 2.5 1"></path><path d="M2 18c.6.5 1.2 1 2.5 1 2.5 0 2.5-2 5-2 2.6 0 2.4 2 5 2 2.5 0 2.5-2 5-2 1.3 0 1.9.5 2.5 1"></path></svg><span class="nl">Flows</span></a></li>
+        <li><a href="/ui/instances"{% if nav.current == "instances" %} aria-current="page"{% endif %}><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="8" x="2" y="2" rx="2" ry="2"></rect><rect width="20" height="8" x="2" y="14" rx="2" ry="2"></rect><line x1="6" x2="6.01" y1="6" y2="6"></line><line x1="6" x2="6.01" y1="18" y2="18"></line></svg><span class="nl">Instances</span></a></li>
+      </ul>
+      {% endif %}
+      <ul class="head-tools">
+        {% if let Some(live) = nav.live %}
+        <li id="header-live">
+          {% if live.on %}
+          <span class="live"><span class="dot" aria-hidden="true"></span><span class="live-text">Live · {{ live.every }} s</span><a href="{{ live.pause_href }}" class="live-toggle" title="Pause updates" aria-label="Pause updates"><svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" aria-hidden="true"><rect x="3" y="2" width="3.5" height="12" rx="1"/><rect x="9.5" y="2" width="3.5" height="12" rx="1"/></svg></a></span>
+          {% else %}
+          <span class="live paused"><span class="dot" aria-hidden="true"></span><span class="live-text">Updates paused</span><a href="{{ live.resume_href }}" class="live-toggle" title="Resume updates" aria-label="Resume updates"><svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" aria-hidden="true"><path d="M4 2.5v11a.5.5 0 0 0 .77.42l8.5-5.5a.5.5 0 0 0 0-.84l-8.5-5.5A.5.5 0 0 0 4 2.5z"/></svg></a></span>
+          {% endif %}
+        </li>
+        {% endif %}
         <li>
           <button type="button" id="theme-toggle" class="header-icon theme-toggle" hidden>
             <svg class="i-auto" aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"></circle><path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor"></path></svg>
@@ -40,6 +53,13 @@
             <svg class="i-dark" aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"></path></svg>
           </button>
         </li>
+        {% if nav.current != "login" %}
+        <li>
+          <a href="/ui/settings" class="header-icon" aria-label="Settings" title="Settings"{% if nav.current == "settings" %} aria-current="page"{% endif %}>
+            <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"></path><circle cx="12" cy="12" r="3"></circle></svg>
+          </a>
+        </li>
+        {% endif %}
         {% if nav.logout %}
         <li>
           <form method="post" action="/ui/logout" class="logout">
@@ -48,9 +68,6 @@
             </button>
           </form>
         </li>
-        {% endif %}
-        {% if nav.current != "login" %}
-        <li><a href="/ui/jobs/new" class="cta"{% if nav.current == "new" %} aria-current="page"{% endif %}>New<span class="cta-more"> job</span></a></li>
         {% endif %}
       </ul>
     </nav>

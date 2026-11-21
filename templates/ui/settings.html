@@ -1,0 +1,55 @@
+{% extends "ui/layout.html" %}
+{% macro fields(list) %}
+<div class="fields">
+  {% for f in list %}
+  <label{% if f.wide %} class="wide"{% endif %}>{{ f.label }}
+    {% if f.secret %}
+    <span class="ro-field"><input class="ro secret{% if f.mono %} mono{% endif %}" readonly aria-readonly="true" value="{{ f.value }}"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg></span>
+    {% else %}
+    <input class="ro{% if f.mono %} mono{% endif %}" readonly aria-readonly="true" value="{{ f.value }}">
+    {% endif %}
+    {% if !f.hint.is_empty() %}<small class="hint">{{ f.hint }}</small>{% endif %}
+  </label>
+  {% endfor %}
+</div>
+{% endmacro %}
+{% block title %}Settings{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>Settings</h1>
+</div>
+<p class="muted">This instance as it runs now. The instance cards are fixed; the limits below will become editable, the rest is for the rare day.</p>
+
+<section class="stats" aria-label="Instance">
+  <article class="stat"><span class="stat-label">Port</span><strong>{{ view.port }}</strong></article>
+  <article class="stat"><span class="stat-label">Environment</span><strong>{{ view.environment }}</strong></article>
+  <article class="stat"><span class="stat-label">Roles</span><span class="tags">{% for role in view.roles %}<span class="tag">{{ role }}</span>{% endfor %}</span></article>
+  <article class="stat wide">
+    <span class="stat-label">Database</span>
+    <strong class="mono">{{ view.database }}</strong>
+    <small class="with-icon"><svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="11" x="3" y="11" rx="2" ry="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg>{{ view.database_hint }}</small>
+  </article>
+</section>
+
+<article class="card" aria-labelledby="access-title">
+  <h2 id="access-title">Access</h2>
+  <small class="hint">Tokens and keys: only whether they are set.</small>
+  {{ fields(view.access) }}
+</article>
+
+<article class="card" aria-labelledby="limits-title">
+  <h2 id="limits-title">Limits and links</h2>
+  <small class="hint">Read-only for now: these are the options that can change without a new deploy.</small>
+  {{ fields(view.limits) }}
+</article>
+
+<details class="card advanced">
+  <summary><span class="adv-text"><span class="adv-title">Advanced</span><small class="hint">Workers, polling and network. Rarely needed.</small></span></summary>
+  <h3>Worker</h3>
+  {{ fields(view.worker) }}
+  <h3>Scheduler</h3>
+  {{ fields(view.scheduler) }}
+  <h3>Network and database</h3>
+  {{ fields(view.network) }}
+</details>
+{% endblock %}

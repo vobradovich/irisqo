@@ -1,4 +1,4 @@
-/* irisqo UI: the Caramel scheme on top of Pico (classless).
+/* irisqo UI: the Caramel scheme with a liquid-glass layer, on top of Pico (classless).
    Each token is light-dark(light, dark): the color-scheme Pico sets picks one, from
    <html data-theme="light|dark"> or, without it, from the system setting.
    No inline styles in the templates: the UI is served with style-src 'self'. */
@@ -6,22 +6,48 @@
 :root {
   --bg: light-dark(#f8f6f2, #151413);
   --surface: light-dark(#ffffff, #1e1c1a);
-  --surface-2: light-dark(#f1ede7, #282522);
+  --surface-2: light-dark(rgba(60, 40, 10, 0.06), rgba(255, 255, 255, 0.07));
   --border: light-dark(#e6e0d7, #3a3632);
   --field: light-dark(#cfc7bc, #4a4540);
   --text: light-dark(#1d1a16, #eee8e0);
   --muted: light-dark(#6a6157, #a9a097);
-  --accent: #e9a23b;
-  --accent-hover: light-dark(#d98f26, #f2bc6a);
+  /* honey: ten ambers from cream to dark toffee, on the three golds of the logo.
+     Amber is for the brand, the primary action and the selected state; the status
+     chips keep their own hues. On light grounds the text takes honey-700. */
+  --honey-50: #fff6e0;
+  --honey-100: #fce8bd;
+  --honey-200: #f8d28a;
+  --honey-300: #f2bc6a;
+  --honey-400: #e9a23b;
+  --honey-500: #d98f26;
+  --honey-600: #b8721c;
+  --honey-700: #94570c;
+  --honey-800: #6e400a;
+  --honey-900: #3e2506;
+  --accent: var(--honey-400);
+  --accent-hover: light-dark(var(--honey-500), var(--honey-300));
   --accent-ink: #1a1206;
-  --accent-soft: light-dark(#fbeedb, #382a17);
+  --accent-soft: light-dark(rgba(233, 162, 59, 0.26), rgba(233, 162, 59, 0.2));
+  --accent-wash: light-dark(rgba(233, 162, 59, 0.14), rgba(233, 162, 59, 0.09));
   --accent-ring: light-dark(rgba(233, 162, 59, 0.35), rgba(233, 162, 59, 0.28));
-  --link: light-dark(#94570c, #e9a23b);
-  --link-hover: light-dark(#7a4609, #f2bc6a);
+  --link: light-dark(var(--honey-700), var(--honey-400));
+  --link-hover: light-dark(var(--honey-800), var(--honey-300));
   --danger: light-dark(#b42318, #ff9e97);
-  --danger-bg: light-dark(#fdecea, #3e201e);
+  --danger-bg: light-dark(rgba(180, 35, 24, 0.09), rgba(255, 158, 151, 0.12));
   --success: light-dark(#17603a, #92d9a9);
-  --success-bg: light-dark(#daf3e1, #1b3125);
+  --success-bg: light-dark(rgba(23, 96, 58, 0.1), rgba(146, 217, 169, 0.12));
+  /* the glass layer: translucent surfaces over a ground with soft colored blobs */
+  --glass: light-dark(rgba(255, 250, 240, 0.62), rgba(40, 33, 25, 0.55));
+  --glass-strong: light-dark(rgba(255, 250, 240, 0.78), rgba(46, 38, 29, 0.72));
+  --glass-border: light-dark(rgba(255, 236, 200, 0.9), rgba(245, 184, 65, 0.13));
+  --hi: light-dark(rgba(255, 255, 255, 0.9), rgba(255, 255, 255, 0.07));
+  --shadow: light-dark(rgba(80, 55, 20, 0.1), rgba(0, 0, 0, 0.35));
+  --line: light-dark(rgba(60, 40, 10, 0.09), rgba(255, 255, 255, 0.07));
+  --field-bg: light-dark(rgba(255, 255, 255, 0.7), rgba(255, 255, 255, 0.04));
+  --pill: light-dark(rgba(60, 40, 10, 0.06), rgba(255, 255, 255, 0.05));
+  --active: light-dark(#ffffff, rgba(255, 255, 255, 0.11));
+  --hover: light-dark(rgba(60, 40, 10, 0.07), rgba(255, 255, 255, 0.07));
+  --inset: light-dark(rgba(255, 255, 255, 0.45), rgba(0, 0, 0, 0.22));
   --st-scheduled-fg: light-dark(#3e3290, #c4b8ff);
   --st-scheduled-bg: light-dark(#ece8ff, #2b2641);
   --st-enqueued-fg: light-dark(#4e473f, #d2cbc2);
@@ -77,8 +103,8 @@
   --pico-code-color: var(--text);
   --pico-card-background-color: var(--surface);
   --pico-card-sectioning-background-color: var(--surface);
-  --pico-form-element-background-color: var(--bg);
-  --pico-form-element-active-background-color: var(--bg);
+  --pico-form-element-background-color: var(--field-bg);
+  --pico-form-element-active-background-color: var(--field-bg);
   --pico-form-element-selected-background-color: var(--surface-2);
   --pico-form-element-border-color: var(--field);
   --pico-form-element-active-border-color: var(--accent);
@@ -90,7 +116,7 @@
   --pico-form-element-valid-border-color: var(--field);
   --pico-del-color: var(--danger);
   --pico-ins-color: var(--success);
-  --pico-table-border-color: var(--border);
+  --pico-table-border-color: var(--line);
   /* the icons in the fields (select, search, date and time): Pico's own, in a warm gray
      instead of its slate one; one color for both themes, 3.3:1 to 5.1:1 on their grounds */
   --pico-icon-chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='rgb(143, 134, 124)' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'%3E%3C/polyline%3E%3C/svg%3E");
@@ -99,13 +125,59 @@
   --pico-icon-search: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='rgb(143, 134, 124)' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='11' cy='11' r='8'%3E%3C/circle%3E%3Cline x1='21' y1='21' x2='16.65' y2='16.65'%3E%3C/line%3E%3C/svg%3E");
 }
 
+/* The ground: soft honey and amber blobs (a little violet at the right), so the glass has
+   something to blur; the glow at the top is the faintest */
+body {
+  min-height: 100vh;
+  background:
+    radial-gradient(68.75rem 23.75rem at 50% -5rem, light-dark(rgba(245, 184, 65, 0.11), rgba(245, 184, 65, 0.07)), transparent 70%),
+    radial-gradient(47.5rem 32.5rem at 8% 8%, light-dark(rgba(233, 162, 59, 0.28), rgba(233, 162, 59, 0.2)), transparent 70%),
+    radial-gradient(45rem 32.5rem at 94% 24%, light-dark(rgba(140, 120, 255, 0.08), rgba(124, 100, 255, 0.07)), transparent 70%),
+    radial-gradient(40rem 32.5rem at 86% 78%, light-dark(rgba(216, 143, 58, 0.18), rgba(216, 143, 58, 0.12)), transparent 70%),
+    radial-gradient(43.75rem 32.5rem at 40% 100%, light-dark(rgba(233, 162, 59, 0.18), rgba(233, 162, 59, 0.12)), transparent 70%),
+    var(--bg);
+  background-repeat: no-repeat;
+  background-attachment: fixed;
+}
+
+/* Glass: the cards, the tables, the segmented filters */
+.stat,
+.jobs,
+.table-wrap,
+fieldset.card,
+aside.card,
+article.card,
+details.card,
+.facts,
+.login,
+.live,
+nav.segmented ul,
+button.secondary,
+a[role="button"].secondary {
+  background: var(--glass);
+  border: 1px solid var(--glass-border);
+  box-shadow: inset 0 1px 0 var(--hi), 0 10px 30px var(--shadow);
+  -webkit-backdrop-filter: blur(22px) saturate(160%);
+  backdrop-filter: blur(22px) saturate(160%);
+}
+
+/* the sticky header covers the top of the window: scrolling to an element leaves room for it */
+html { scroll-padding-top: 4.5rem; }
+
 /* Page width: the header bar spans the window, its content and main share one column
-   (Pico would box the header like main) */
+   (Pico would box the header like main). The bar is glass and sticks to the top;
+   the brand, the sections (in a pill) and the tools sit in three columns. */
 body > header {
   max-width: none;
   padding: 0;
-  background: var(--surface);
-  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: var(--glass-strong);
+  -webkit-backdrop-filter: blur(22px) saturate(160%);
+  backdrop-filter: blur(22px) saturate(160%);
+  border-bottom: 1px solid var(--line);
+  box-shadow: inset 0 -1px 0 var(--hi);
 }
 body > header > nav,
 body > main {
@@ -113,62 +185,122 @@ body > main {
   margin-inline: auto;
   padding-inline: 1.5rem;
 }
-body > header > nav { min-height: 3.75rem; }
-body > header nav a {
-  font-weight: 600;
-  border-radius: var(--pico-border-radius);
+body > header > nav {
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  gap: 0.75rem 1.5rem;
+  padding-block: 0.5rem;
+  min-height: 0;
 }
-nav a.cta {
-  white-space: nowrap;
-  background: var(--accent);
-  color: var(--accent-ink);
+body > header nav ul { margin: 0; padding: 0; }
+body > header nav li { padding: 0; margin: 0; }
+.head-brand { grid-column: 1; }
+.head-links {
+  grid-column: 2;
+  gap: 2px;
+  padding: 4px;
+  border-radius: 999px;
+  background: var(--pill);
+  border: 1px solid var(--line);
 }
-nav a.cta:hover,
-nav a.cta[aria-current="page"] { background: var(--accent-hover); color: var(--accent-ink); }
-/* a flex box, not inline: on the text baseline the brand sat 3 px above the links */
-.brand {
-  display: flex;
+.head-tools { grid-column: 3; justify-self: end; align-items: center; gap: 2px; }
+.head-links a {
+  display: inline-flex;
   align-items: center;
   gap: 0.5rem;
+  box-sizing: border-box;
+  min-height: 2.75rem;
+  margin: 0;
+  padding: 0 1rem;
+  border-radius: 999px;
+  color: var(--muted);
+  font-weight: 500;
+  text-decoration: none;
+  transition: background-color 0.2s, color 0.2s;
+}
+.head-links a:hover { background: var(--hover); color: var(--text); }
+.head-links a[aria-current="page"] {
+  background: var(--active);
+  color: var(--text);
+  font-weight: 600;
+  box-shadow: inset 0 1px 0 var(--hi), 0 2px 8px var(--shadow);
+}
+.head-links a[aria-current="page"] svg { color: var(--accent); }
+/* the brand: the logo, the name, and the version under it (a link to the repository) */
+.brand-box { display: flex; align-items: center; gap: 0.625rem; }
+.brand-logo { display: block; margin: 0; padding: 0; line-height: 0; }
+.brand-logo img { display: block; }
+.brand-text { display: flex; flex-direction: column; gap: 1px; }
+.brand {
+  display: block;
+  margin: 0;
+  padding: 0;
   color: var(--text);
   font-weight: 700;
-  font-size: 1.15rem;
+  font-size: 1.125rem;
+  line-height: 1.1;
   text-decoration: none;
 }
-.brand img { display: block; }
-/* theme switch: the icon of the current choice (auto, light, dark) */
-/* icon buttons of the header: the theme switch, the logout */
-.header-icon {
-  display: flex;
-  width: auto;
+.version {
+  display: block;
   margin: 0;
-  padding: 0.5rem;
-  border: 0;
-  background: transparent;
+  padding: 0;
   color: var(--muted);
+  font-size: 0.6875rem;
+  line-height: 1.2;
+  text-decoration: none;
 }
-.header-icon:hover,
-.header-icon:focus-visible { background: var(--surface-2); color: var(--text); }
+.version:hover { color: var(--text); }
+/* icon buttons of the header: the theme switch, the settings, the logout */
+body > header .header-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  width: 2.75rem;
+  height: 2.75rem;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  box-shadow: none;
+  color: var(--muted);
+  transition: background-color 0.2s, color 0.2s;
+}
+body > header .header-icon:hover,
+body > header .header-icon:focus-visible,
+body > header .header-icon[aria-current="page"] { background: var(--hover); color: var(--text); }
 form.logout { margin: 0; }
 .theme-toggle svg { display: none; }
 [data-theme-choice="auto"] .theme-toggle .i-auto,
 [data-theme-choice="light"] .theme-toggle .i-light,
 [data-theme-choice="dark"] .theme-toggle .i-dark { display: block; }
-nav a[aria-current="page"] {
-  color: var(--text);
-  background: var(--surface-2);
+body > main { padding-top: 1.75rem; padding-bottom: 3rem; }
+/* The header narrows in three steps, each keeping one row for as long as it can:
+   1. below 63rem the names of the sections go (their icons stay), and the row still fits
+      with the logout, which comes with a token;
+   2. below 44rem the icons no longer fit beside the brand and the tools, and the sections go
+      to a row of their own;
+   3. below 36rem a 16px gutter and the brand without its name. */
+@media (max-width: 63rem) {
+  .head-links a { padding: 0 0.875rem; }
+  .head-links .nl { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
 }
-body > main { padding-top: 1.75rem; }
-/* phones: the icon alone for the brand, tighter links, a 16px gutter */
+@media (max-width: 44rem) {
+  body > header > nav { display: flex; flex-wrap: wrap; }
+  .head-brand { order: 1; }
+  .head-tools { order: 2; margin-left: auto; }
+  .head-links { order: 3; width: 100%; justify-content: center; }
+}
 @media (max-width: 36rem) {
   body > header > nav,
   body > main { padding-inline: 1rem; }
-  body > header > nav { flex-wrap: wrap; --pico-nav-element-spacing-horizontal: 0.375rem; }
-  .brand-name,
-  .cta-more { display: none; }
-  body > header > nav > ul:last-child { margin-left: auto; }
+  .brand-text { display: none; }
 }
-hgroup p { color: var(--muted); }
+}
 
 /* Layout */
 .split {
@@ -186,15 +318,13 @@ hgroup p { color: var(--muted); }
   align-items: flex-start;
 }
 .row > label { flex: 1 1 10rem; min-width: 0; }
-.row > .narrow { flex: 0 1 8rem; }
+.row > .narrow { flex: 0 1 10rem; }
 .row > .wide { flex: 3 1 18rem; }
 
 /* Cards: the form sections and the preview */
 fieldset.card,
 aside.card {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 0.75rem;
+  border-radius: 1.25rem;
   padding: 1rem 1.25rem 0.25rem;
   margin-bottom: 1rem;
 }
@@ -202,12 +332,12 @@ fieldset.card > legend {
   float: left;
   width: 100%;
   padding: 0 0 0.75rem;
-  font-size: 1.05rem;
+  font-size: 1rem;
   font-weight: 700;
 }
 fieldset.card > legend + * { clear: both; }
 aside.card { padding-bottom: 1rem; }
-aside.card h2 { font-size: 1.05rem; margin-bottom: 0.25rem; }
+aside.card h2 { font-size: 1rem; margin-bottom: 0.25rem; }
 
 /* Dependent fields: shown by the choice they belong to, with CSS only: no request,
    and what was typed stays when another choice is picked (the server reads only the
@@ -217,9 +347,9 @@ aside.card h2 { font-size: 1.05rem; margin-bottom: 0.25rem; }
 #job-form:has(#when-at:checked) .dep.when-at,
 #job-form:has(#repeat-interval:checked) .dep.repeat-interval,
 #job-form:has(#repeat-cron:checked) .dep.repeat-cron,
-#job-form:has(#retry option:not([value="none"]):checked) .dep.retry-any,
-#job-form:has(#retry option:is([value="fixed"], [value="fibonacci"], [value="exponential"]):checked) .dep.retry-delayed,
-#job-form:has(#retry option:is([value="fibonacci"], [value="exponential"]):checked) .dep.retry-backoff {
+#job-form:has(#retry-fixed:checked, #retry-fibonacci:checked, #retry-exponential:checked) .dep.retry-any,
+#job-form:has(#retry-fixed:checked, #retry-fibonacci:checked, #retry-exponential:checked) .dep.retry-delayed,
+#job-form:has(#retry-fibonacci:checked, #retry-exponential:checked) .dep.retry-backoff {
   display: block;
 }
 #job-form:has(#repeat-interval:checked, #repeat-cron:checked) .dep.repeat-any { display: flex; }
@@ -237,9 +367,9 @@ aside.card h2 { font-size: 1.05rem; margin-bottom: 0.25rem; }
   gap: 0.5rem;
   min-height: 2.75rem;
   margin: 0;
-  padding: 0 0.875rem;
+  padding: 0 1rem;
   border: 1px solid var(--field);
-  border-radius: var(--pico-border-radius);
+  border-radius: 999px;
   font-weight: 500;
   cursor: pointer;
 }
@@ -247,6 +377,10 @@ aside.card h2 { font-size: 1.05rem; margin-bottom: 0.25rem; }
   border-color: var(--accent);
   background: var(--accent-soft);
 }
+/* form fields */
+input:not([type="checkbox"], [type="radio"], [type="search"]),
+select,
+textarea { border-radius: 0.75rem; }
 .choices input[type="radio"] { margin: 0; }
 
 /* Forwarded headers */
@@ -285,7 +419,7 @@ small.error,
 .field-error { color: var(--danger); font-weight: 500; }
 .alert {
   padding: 0.75rem 1rem;
-  border-radius: 0.625rem;
+  border-radius: 0.875rem;
   margin-bottom: 1rem;
   font-weight: 500;
 }
@@ -297,29 +431,49 @@ small.error,
 pre.preview {
   margin: 0.75rem 0;
   padding: 0.75rem 0.875rem;
-  border-radius: 0.5rem;
+  border-radius: 0.75rem;
   background: var(--surface-2);
-  font-size: 0.8rem;
+  font-size: 0.8125rem;
   line-height: 1.6;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
-/* Pico classless has no .secondary: a quiet button */
+/* Buttons: pills of one height. The primary one is amber with a soft glow; Pico classless
+   has no .secondary, so the quiet one is a glass pill. */
+button,
+button[type],
+a[role="button"],
+input[type="submit"],
+input[type="button"],
+input[type="reset"] {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  box-sizing: border-box;
+  min-height: 2.75rem;
+  padding-block: 0;
+  border-radius: 999px;
+  font-weight: 600;
+  transition: background-color 0.2s, color 0.2s;
+}
+button[type="submit"]:not(.secondary):not(.header-icon),
+a[role="button"]:not(.secondary) {
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.4), 0 6px 18px rgba(233, 162, 59, 0.32);
+}
 button.secondary,
 a[role="button"].secondary {
-  --pico-background-color: var(--surface-2);
-  --pico-border-color: var(--border);
+  --pico-background-color: var(--glass);
+  --pico-border-color: var(--glass-border);
   --pico-color: var(--text);
-  background: var(--surface-2);
-  border: 1px solid var(--border);
   color: var(--text);
+  font-weight: 500;
 }
 button.secondary:hover,
-a[role="button"].secondary:hover {
-  background: var(--border);
-  border-color: var(--field);
-}
+a[role="button"].secondary:hover { background: var(--glass-strong); }
+a[role="button"] svg,
+button svg { flex: none; }
 
 .actions {
   display: flex;
@@ -337,7 +491,7 @@ a[role="button"].secondary:hover {
   min-height: 1.375rem;
   padding: 0 0.625rem;
   border-radius: 999px;
-  font-size: 0.75rem;
+  font-size: 0.6875rem;
   font-weight: 600;
 }
 /* Badge text trimmed to its capitals: centered by the flex box, not by the font's
@@ -354,6 +508,7 @@ a[role="button"].secondary:hover {
 .status.scheduled { color: var(--st-scheduled-fg); background: var(--st-scheduled-bg); }
 .status.enqueued { color: var(--st-enqueued-fg); background: var(--st-enqueued-bg); }
 .status.processing,
+.status.claimed,
 .status.assigned { color: var(--st-processing-fg); background: var(--st-processing-bg); }
 .status.retrying,
 .status.limited,
@@ -391,37 +546,57 @@ a[role="button"].secondary:hover {
   flex-wrap: wrap;
   align-items: center;
   gap: 0.75rem 1rem;
+  min-height: 2.75rem;
   margin-bottom: 1.25rem;
 }
-/* The title box trimmed to its capitals, so the badges center on the letters
-   rather than on the line box with its room for descenders */
-.page-head h1 { margin: 0; line-height: 1; text-box: trim-both cap alphabetic; }
-.page-head > a[role="button"] { margin-left: auto; }
+.page-head h1 { margin: 0; font-size: 1.625rem; line-height: 1.2; font-weight: 700; letter-spacing: -0.01em; }
+/* the text under the title of a page sits closer to it than the next block */
+.page-head + p { margin-top: -0.5rem; }
+/* the live switch, in the header: a dot, the label and the pause (or resume) button */
 .live {
   display: inline-flex;
   align-items: center;
   gap: 0.5rem;
-  min-height: 2.5rem;
-  padding: 0 0.3rem 0 1rem;
-  border: 1px solid var(--border);
+  box-sizing: border-box;
+  min-height: 2.75rem;
+  margin-right: 0.5rem;
+  padding: 0 0 0 0.875rem;
   border-radius: 999px;
   color: var(--muted);
-  font-size: 0.95rem;
+  font-size: 0.8125rem;
+  box-shadow: inset 0 1px 0 var(--hi);
 }
-.live.paused { padding-left: 1rem; }
 .live-toggle {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 1.9rem;
-  height: 1.9rem;
-  margin-left: 0.35rem;
-  border-radius: 50%;
-  background: var(--border);
+  width: 2.625rem;
+  height: 2.625rem;
+  /* Pico gives the links of a nav negative margins and padding: not for this button */
+  margin: 0 0 0 0.125rem;
+  padding: 0;
+  border-radius: 999px;
   color: inherit;
+  transition: background-color 0.2s, color 0.2s;
 }
-.live-toggle:hover { color: var(--pico-color, #fff); }
-.live .dot { width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--success); }
+.live-toggle:hover { background: var(--hover); color: var(--text); }
+.live .dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: var(--success);
+  box-shadow: 0 0 0 3px light-dark(rgba(31, 157, 85, 0.22), rgba(31, 157, 85, 0.22));
+}
+/* paused: a gray dot, no ring of green */
+.live.paused .dot { background: var(--muted); box-shadow: 0 0 0 3px light-dark(rgba(106, 97, 87, 0.2), rgba(169, 160, 151, 0.2)); }
+.live,
+.live-text { white-space: nowrap; }
+/* narrow windows: the dot and the button, the label for screen readers only. The label of a
+   paused page is the longer one, and the header must stay on one line down to 768px (below,
+   the sections wrap to a row of their own), so the label goes early */
+@media (max-width: 76rem) {
+  .live-text { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+}
 
 /* filters: the status tabs, then the schedule and the search, in one row
    (a <search> landmark, not role=search: Pico turns that into a pill-shaped input group) */
@@ -438,20 +613,18 @@ nav.segmented ul {
   gap: 0.25rem;
   margin: 0;
   padding: 0.25rem;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 0.625rem;
+  border-radius: 1.375rem;
 }
 nav.segmented li { padding: 0; }
 nav.segmented a {
   display: block;
   margin: 0;
-  padding: 0.4375rem 0.75rem;
-  border-radius: 0.45rem;
+  padding: 0 0.875rem;
+  border-radius: 999px;
   color: var(--muted);
   font-weight: 600;
-  font-size: 0.85rem;
-  line-height: 1.25rem;
+  font-size: 0.8125rem;
+  line-height: 2.125rem;
   text-decoration: none;
 }
 nav.segmented a[aria-current] { background: var(--accent-soft); color: var(--link); }
@@ -469,14 +642,14 @@ nav.segmented a[aria-current] { background: var(--accent-soft); color: var(--lin
   gap: 0.25rem;
   margin: 0;
   color: var(--muted);
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   font-weight: 600;
 }
 .filters label.grow { flex: 1 1 15rem; }
 .filters input,
 .filters select,
 .filters button {
-  --pico-border-radius: 0.5rem;
+  --pico-border-radius: 999px;
   --pico-form-element-spacing-vertical: 0.5rem;
   height: 2.75rem;
   margin: 0;
@@ -484,6 +657,18 @@ nav.segmented a[aria-current] { background: var(--accent-soft); color: var(--lin
 }
 .filters select { min-width: 10rem; }
 .filters button { width: auto; padding-block: 0; padding-inline: 1.25rem; }
+
+/* Jobs: the stats and the list are one block that the page polls (#jobs-live), and the
+   filters stay outside it so that typing in the search is never interrupted. The block
+   dissolves into the page (display: contents) and the order is set here: the stats come
+   right after the title, then the filters, then the list. */
+main:has(> #jobs-live) { display: flex; flex-direction: column; }
+#jobs-live { display: contents; }
+main:has(> #jobs-live) > .page-head { order: 0; }
+main:has(> #jobs-live) > #jobs-live > .stats { order: 1; }
+main:has(> #jobs-live) > .filters { order: 2; }
+main:has(> #jobs-live) > #jobs-live > .jobs { order: 3; }
+main:has(> #jobs-live) > #jobs-live > .pager { order: 4; }
 
 /* stats */
 .stats {
@@ -498,20 +683,15 @@ nav.segmented a[aria-current] { background: var(--accent-soft); color: var(--lin
   gap: 0.125rem;
   margin: 0;
   padding: 0.875rem 1rem;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 0.75rem;
-  box-shadow: none;
+  border-radius: 1.125rem;
 }
-.stat-label { color: var(--muted); font-size: 0.85rem; font-weight: 500; }
-.stat strong { font-size: 1.6rem; letter-spacing: -0.01em; }
+.stat-label { color: var(--muted); font-size: 0.8125rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; }
+.stat strong { font-size: 1.625rem; letter-spacing: -0.01em; }
 .stat small { color: var(--muted); }
 
 /* the jobs list: one grid for the head and every summary */
 .jobs {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 0.75rem;
+  border-radius: 1.25rem;
   overflow-x: auto;
   margin-bottom: 1rem;
 }
@@ -525,37 +705,46 @@ nav.segmented a[aria-current] { background: var(--accent-soft); color: var(--lin
 }
 .job-cols .key { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .jobs-head {
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--line);
   color: var(--muted);
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.02em;
 }
 .jobs-list { margin: 0; padding: 0; list-style: none; }
-.jobs-list > li { margin: 0; padding: 0; list-style: none; border-bottom: 1px solid var(--border); }
+.jobs-list > li { margin: 0; padding: 0; list-style: none; border-bottom: 1px solid var(--line); }
 .jobs-list details { margin: 0; border: 0; padding: 0; }
 .jobs-list summary {
   cursor: pointer;
-  font-size: 0.9rem;
+  font-size: 0.875rem;
   list-style: none;
 }
 .jobs-list summary::-webkit-details-marker { display: none; }
 .jobs-list summary::after { display: none; }
-.jobs-list details[open] > summary { background: var(--accent-soft); }
-.jobs-list summary:hover { background: var(--surface-2); }
+.jobs-list details[open] > summary { background: var(--accent-wash); }
+.jobs-list summary:hover { background: var(--hover); }
 .request { display: flex; align-items: center; gap: 0.5rem; min-width: 0; }
 .method {
   flex: none;
-  padding: 0.0625rem 0.375rem;
-  border-radius: 0.3rem;
+  padding: 0.0625rem 0.4375rem;
+  border-radius: 0.375rem;
   background: var(--surface-2);
-  font-size: 0.7rem;
+  font-size: 0.6875rem;
   font-weight: 600;
 }
-.url { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.85rem; }
-.url-full { overflow-wrap: anywhere; font-size: 0.85rem; }
-.history { padding: 0.75rem 1rem 1rem 7rem; background: var(--bg); }
+.url { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.8125rem; }
+.url-full { overflow-wrap: anywhere; font-size: 0.8125rem; }
+.history { padding: 0.75rem 1rem 1rem 7rem; background: var(--inset); }
+/* the history of a job in the list: a glass table of its own */
+.history .timeline {
+  background: var(--glass);
+  border: 1px solid var(--glass-border);
+  border-radius: 0.875rem;
+  overflow: hidden;
+}
+.history .timeline li { padding-inline: 0.875rem; }
+.history > p { margin: 0.625rem 0 0; }
 .empty { padding: 1.5rem 1rem; margin: 0; color: var(--muted); }
 .pager { display: flex; gap: 0.5rem; justify-content: flex-end; }
 
@@ -563,16 +752,24 @@ nav.segmented a[aria-current] { background: var(--accent-soft); color: var(--lin
 .timeline { margin: 0; padding: 0; list-style: none; }
 .timeline li {
   display: grid;
-  grid-template-columns: 5rem 7.5rem 4.5rem 9rem minmax(0, 1fr);
+  grid-template-columns: 5.25rem 7.5rem 5rem 15rem minmax(0, 1fr);
   gap: 0.75rem;
   align-items: center;
   margin: 0;
   padding: 0.375rem 0;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--line);
   list-style: none;
   font-size: 0.875rem;
 }
 .timeline li:last-child { border-bottom: 0; }
+.timeline li.timeline-head {
+  padding-block: 0.5rem;
+  color: var(--muted);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
 
 /* job page */
 nav.crumbs { display: block; margin-bottom: 0.5rem; color: var(--muted); font-size: 0.875rem; }
@@ -581,34 +778,29 @@ button.danger { color: var(--danger); }
 .facts {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
-  gap: 1px;
+  gap: 0.875rem 1.5rem;
   margin: 0 0 1.25rem;
-  background: var(--border);
-  border: 1px solid var(--border);
-  border-radius: 0.75rem;
-  overflow: hidden;
+  padding: 1rem 1.25rem;
+  border-radius: 1.25rem;
 }
-.facts > div { margin: 0; padding: 0.75rem 1rem; background: var(--surface); }
-.facts dt { color: var(--muted); font-size: 0.75rem; font-weight: 600; }
+.facts > div { margin: 0; padding: 0; background: none; }
+.facts dt { color: var(--muted); font-size: 0.8125rem; font-weight: 600; }
 .facts dd { margin: 0; overflow-wrap: anywhere; }
 .cards { display: flex; flex-wrap: wrap; gap: 1.25rem; }
 .cards > .card { flex: 1 1 24rem; min-width: 0; }
 article.card {
   margin: 0 0 1.25rem;
   padding: 1rem 1.25rem;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 0.75rem;
-  box-shadow: none;
+  border-radius: 1.25rem;
 }
-article.card h2 { font-size: 1.05rem; margin-bottom: 0.75rem; }
-article.card h3 { font-size: 0.8rem; color: var(--muted); margin: 0.75rem 0 0.375rem; }
+article.card h2 { font-size: 1rem; margin-bottom: 0.75rem; }
+article.card h3 { font-size: 0.8125rem; color: var(--muted); margin: 0.75rem 0 0.375rem; }
 dl.headers {
   display: grid;
   grid-template-columns: max-content minmax(0, 1fr);
   gap: 0.25rem 1rem;
   margin: 0;
-  font-size: 0.85rem;
+  font-size: 0.8125rem;
 }
 dl.headers dt { color: var(--muted); font-weight: 400; }
 dl.headers dd { margin: 0; overflow-wrap: anywhere; }
@@ -618,8 +810,9 @@ pre.body {
   max-height: 24rem;
   overflow: auto;
   background: var(--surface-2);
-  border-radius: 0.5rem;
-  font-size: 0.8rem;
+  border-radius: 0.75rem;
+  font-size: 0.8125rem;
+  line-height: 1.6;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -630,35 +823,41 @@ pre.body {
 .table-wrap {
   position: relative;
   overflow-x: auto;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 0.75rem;
+  border-radius: 1.25rem;
 }
-.table-wrap table { margin: 0; min-width: 62rem; font-size: 0.9rem; }
+/* Pico paints the cells with the page ground: the glass shows through instead */
+.table-wrap th,
+.table-wrap td { background: transparent; }
+.table-wrap table { margin: 0; min-width: 62rem; font-size: 0.875rem; }
 .table-wrap th {
+  white-space: nowrap;
   color: var(--muted);
-  font-size: 0.75rem;
+  font-size: 0.8125rem;
   font-weight: 600;
   text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.02em;
 }
 .table-wrap td.request-cell { max-width: 22rem; }
-.table-wrap .actions { display: flex; gap: 0.5rem; justify-content: flex-end; }
+.table-wrap .actions { display: flex; flex-wrap: nowrap; gap: 0.5rem; justify-content: flex-end; }
+.table-wrap td:last-child,
+.table-wrap .status { white-space: nowrap; }
 .table-wrap .actions button,
 .table-wrap .actions a[role="button"],
-.page-head > a.compact { width: auto; margin: 0; padding: 0.5rem 0.875rem; font-size: 1rem; line-height: 1.5; }
+.page-head > a[role="button"] { width: auto; margin: 0; padding: 0 1.125rem; font-size: 1rem; line-height: 1.5; }
+/* the main action of a page sits at the right end of its head */
+.page-head > a[role="button"] { margin-left: auto; }
 .state-active { color: var(--success); font-weight: 600; }
 .table-wrap .num { text-align: right; }
 .table-wrap .failed-count { color: var(--danger); }
 /* the tooltip of a column header: not in the small capitals of the header */
-.table-wrap th [data-tooltip]::before { text-transform: none; letter-spacing: normal; font-weight: 400; font-size: 0.8rem; }
+.table-wrap th [data-tooltip]::before { text-transform: none; letter-spacing: normal; font-weight: 400; font-size: 0.8125rem; }
 .tag {
   margin-left: 0.25rem;
   padding: 0.0625rem 0.5rem;
-  border: 1px solid var(--border);
+  border: 1px solid var(--line);
   border-radius: 999px;
   color: var(--muted);
-  font-size: 0.75rem;
+  font-size: 0.6875rem;
   white-space: nowrap;
 }
 
@@ -667,9 +866,163 @@ pre.body {
   max-width: 26rem;
   margin: 2rem auto;
   padding: 1.5rem 1.5rem 0.5rem;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 0.75rem;
+  border-radius: 1.25rem;
 }
-.login h1 { font-size: 1.5rem; margin-bottom: 0.5rem; }
+.login h1 { font-size: 1.625rem; margin-bottom: 0.5rem; }
 .login button { width: 100%; }
+
+/* Moving between pages: the bar stays, the page fades in (the same with the view
+   transitions of the browser, which fade the old page out first) */
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+body > main { animation: fade-in 0.25s ease-out both; }
+@view-transition { navigation: auto; }
+body > header { view-transition-name: site-header; }
+body > main { view-transition-name: page; }
+@keyframes fade-out { to { opacity: 0; } }
+::view-transition-old(page) { animation: fade-out 0.12s ease-in both; }
+::view-transition-new(page) { animation: none; }
+@media (prefers-reduced-motion: reduce) {
+  body > main { animation: none; }
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) { animation: none !important; }
+}
+
+/* Settings: the options of the instance, read-only. The fixed ones are cards, the ones that
+   may become editable are fields (the look of a field, no edit), the rest sits in Advanced. */
+.stat.wide { grid-column: span 2; }
+.stat .tags { display: flex; flex-wrap: wrap; gap: 0.375rem; margin-top: 0.25rem; }
+.stat .tags .tag { margin: 0; }
+.stat small.with-icon { display: inline-flex; align-items: center; gap: 0.375rem; }
+article.card > small.hint { display: block; margin-top: -0.5rem; margin-bottom: 0.875rem; }
+.fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(13.75rem, 1fr));
+  gap: 0.875rem 1rem;
+  margin-bottom: 0.25rem;
+}
+.fields label { margin: 0; font-size: 0.8125rem; font-weight: 600; }
+.fields label.wide { grid-column: 1 / -1; }
+.fields input.ro {
+  margin: 0.375rem 0 0.25rem;
+  background: var(--pill);
+  border-color: var(--line);
+  color: var(--text);
+  font-size: 0.875rem;
+  font-weight: 400;
+  cursor: default;
+}
+.fields input.ro.secret { padding-right: 2.625rem; }
+/* Pico pulls a small under an input up (margin-top: -0.75 spacing), meant for an input with
+   its own bottom margin: here the hint sits under the field, not over it */
+.fields input.ro + small.hint,
+.fields small.hint { display: block; margin: 0.125rem 0 0; font-weight: 400; }
+.ro-field { position: relative; display: block; }
+/* the lock is centered on the field: 0.375rem of the label gap above it, half of its 44px */
+.ro-field svg { position: absolute; right: 0.875rem; top: 1.75rem; transform: translateY(-50%); color: var(--muted); }
+details.advanced { margin: 0 0 1.25rem; padding: 1rem 1.25rem; border-radius: 1.25rem; }
+details.advanced > summary { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; margin: 0; cursor: pointer; }
+details.advanced > summary,
+details.advanced > summary:focus { color: var(--text); }
+details.advanced .adv-text { display: flex; flex-direction: column; gap: 0.125rem; }
+details.advanced > summary .adv-title { font-size: 1rem; font-weight: 700; }
+details.advanced[open] > summary { margin-bottom: 1rem; }
+details.advanced h3 {
+  margin: 1rem 0 0.5rem;
+  color: var(--muted);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+/* Form fields, the same on every form and on Settings: the label 13px bold, the field 14px,
+   the hint 13px six pixels under the field (Pico's small after an input is pulled up by 0.75
+   of its spacing, which left four) */
+fieldset.card label,
+.fields label { font-size: 0.8125rem; font-weight: 600; }
+fieldset.card .choices label { font-size: 0.875rem; font-weight: 500; }
+fieldset.card :is(input:not([type="radio"], [type="checkbox"]), select, textarea) { font-size: 0.875rem; }
+/* one height for the fields and the lists: 44px, as every button */
+fieldset.card :is(input:not([type="radio"], [type="checkbox"]), select),
+.fields input.ro { height: 2.75rem; padding-block: 0; }
+fieldset.card label > :is(input:not([type="radio"], [type="checkbox"]), select, textarea),
+.fields label > input,
+.fields label > .ro-field { margin-top: 0.375rem; }
+fieldset.card :is(input, select, textarea) + small { margin-top: -0.625rem; }
+.hint, small.hint { font-size: 0.8125rem; font-weight: 400; }
+
+/* Touch screens: 16px in a field, or the browser zooms the page when the field is focused */
+@media (pointer: coarse) {
+  fieldset.card :is(input:not([type="radio"], [type="checkbox"]), select, textarea),
+  .fields input.ro,
+  .filters input,
+  .filters select { font-size: 1rem; }
+}
+
+/* Copy buttons: a small quiet icon next to a key, an id, a name. In a table or a list it shows
+   on hover and on focus (always on touch screens); on the job page it is always there. */
+button.copy {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 1.75rem;
+  height: 1.75rem;
+  min-height: 0;
+  margin: 0 0 0 0.125rem;
+  padding: 0;
+  border: 0;
+  border-radius: 0.5rem;
+  background: transparent;
+  box-shadow: none;
+  color: var(--muted);
+  vertical-align: middle;
+  cursor: pointer;
+}
+button.copy:hover,
+button.copy:focus-visible { background: var(--hover); color: var(--text); }
+button.copy .i-done { display: none; }
+button.copy.done { color: var(--success); }
+button.copy.done .i-copy { display: none; }
+button.copy.done .i-done { display: block; }
+.jobs-list .copy,
+.table-wrap .copy,
+.timeline .copy { opacity: 0; transition: opacity 0.15s; }
+.jobs-list li:hover .copy,
+.table-wrap tr:hover .copy,
+.timeline li:hover .copy,
+.copy:focus-visible,
+.copy.done { opacity: 1; }
+@media (hover: none) {
+  .jobs-list .copy,
+  .table-wrap .copy,
+  .timeline .copy { opacity: 1; }
+}
+/* a value and its copy button in one cell; a long value is cut with an ellipsis */
+.cell-copy { display: flex; align-items: center; min-width: 0; }
+.trunc { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.facts dd.copyable { display: flex; align-items: center; min-width: 0; }
+.facts > div { min-width: 0; }
+.facts > div.wide { grid-column: span 2; }
+.facts { grid-template-columns: repeat(auto-fit, minmax(12.5rem, 1fr)); }
+.facts dd { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* The head of the job page stays on one line: the title and the actions keep their size, the
+   text between them (attempt, when) is cut with an ellipsis. On a phone it wraps. */
+.page-head > h1 { white-space: nowrap; }
+.page-head > span.muted { flex: 1 1 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.page-head > .actions { flex: none; flex-wrap: nowrap; }
+@media (max-width: 36rem) {
+  .page-head > span.muted { flex-basis: 100%; order: 3; }
+  .page-head > .actions { margin-left: 0; }
+}
+
+/* one size for every small note (Pico makes it 0.875em) */
+small { font-size: 0.8125rem; }
+
+/* a heading with a copy button at its end (the body of the request, of the result) */
+h3.with-copy { display: flex; align-items: center; gap: 0.25rem; }

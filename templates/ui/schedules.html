@@ -1,9 +1,10 @@
 {% extends "ui/layout.html" %}
 {% block title %}Schedules{% endblock %}
 {% block content %}
-<hgroup>
+<div class="page-head">
   <h1>Schedules</h1>
-  <p>Paused schedules run nothing; their pending run is cancelled. Resume schedules the next run.</p>
-</hgroup>
+  <a href="/ui/jobs/new" role="button"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M12 5v14M5 12h14"></path></svg>New job</a>
+</div>
+<p class="muted">Paused schedules run nothing; their pending run is cancelled. Resume schedules the next run.</p>
 {% include "ui/partials/schedules_table.html" %}
 {% endblock %}

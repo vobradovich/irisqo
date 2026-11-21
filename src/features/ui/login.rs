@@ -169,6 +169,9 @@ impl LoginPage {
             nav: Nav {
                 current: "login",
                 logout: false,
+                live: None,
+                version: env!("CARGO_PKG_VERSION"),
+                repository: env!("CARGO_PKG_REPOSITORY"),
             },
             next: next.to_owned(),
             error,

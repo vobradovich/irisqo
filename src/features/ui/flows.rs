@@ -14,7 +14,7 @@ use axum::{
 use chrono::Duration;
 use url::form_urlencoded;
 
-use super::{Nav, is_htmx, jobs::FilterLink, server_error};
+use super::{Live, Nav, current_query, is_htmx, jobs::FilterLink, server_error};
 use crate::{
     features::flows::{self, FlowCreate, FlowListRow, FlowRequest, FlowRow, UndeclaredFlowRow},
     models::{AppState, Error, ParamError},
@@ -458,7 +458,12 @@ pub async fn flows_page(State(state): State<Arc<AppState>>, RawQuery(query): Raw
     let params = ListParams::parse(query.as_deref());
     match load(&state, &params).await {
         Ok(list) => FlowsPage {
-            nav: Nav::new(&state, "flows"),
+            nav: Nav::new(&state, "flows").with_live(Live::new(
+                list.live,
+                2,
+                &list.pause_href,
+                &list.resume_href,
+            )),
             list,
         }
         .into_response(),
@@ -569,7 +574,8 @@ async fn act(state: &AppState, id: &str, headers: &HeaderMap, action: Action) ->
     if !is_htmx(headers) {
         return Redirect::to("/ui/flows").into_response();
     }
-    match load(state, &ListParams::parse(None)).await {
+    let params = ListParams::parse(current_query(headers).as_deref());
+    match load(state, &params).await {
         Ok(list) => FlowsPartial { list }.into_response(),
         Err(err) => server_error(&err),
     }

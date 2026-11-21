@@ -2,7 +2,16 @@
 name = "irisqo"
 version = "0.3.0"
 edition = "2024"
+rust-version = "1.94"
+authors = ["vobradovich"]
+description = "Self-hosted HTTP job queue on Postgres: retries, delays, cron schedules and flows"
 license = "MIT"
+repository = "https://github.com/vobradovich/irisqo"
+documentation = "https://github.com/vobradovich/irisqo#readme"
+readme = "README.md"
+keywords = ["job-queue", "postgres", "http", "scheduler", "cron"]
+categories = ["web-programming", "asynchronous"]
+publish = false
 
 [dependencies]
 # Runtime
