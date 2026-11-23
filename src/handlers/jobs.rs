@@ -159,6 +159,10 @@ pub(crate) async fn cancel(
     Path(id): Path<i64>,
 ) -> Result<StatusCode, Problem> {
     let outcome = db::jobqueue::cancel_job(&state.pool, id, &state.instance_id).await?;
+    // a callback of the cancel, a freed place of the flow
+    if outcome == ActionOutcome::Done {
+        state.wake_workers();
+    }
     Ok(action_status(outcome))
 }
 
@@ -180,5 +184,8 @@ pub(crate) async fn retry(
     Path(id): Path<i64>,
 ) -> Result<StatusCode, Problem> {
     let outcome = db::jobqueue::requeue_job(&state.pool, id, &state.instance_id).await?;
+    if outcome == ActionOutcome::Done {
+        state.wake_workers();
+    }
     Ok(action_status(outcome))
 }

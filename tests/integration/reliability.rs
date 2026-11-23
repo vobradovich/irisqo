@@ -306,6 +306,45 @@ async fn worker_service_processes_and_drains_on_shutdown(pool: PgPool) -> anyhow
     Ok(())
 }
 
+/// Starts a worker that polls an empty queue every 5 s, creates a job through the API while
+/// it sleeps: whether the job is done within 2 s.
+async fn job_done_before_next_poll(pool: PgPool, args: &[&str]) -> anyhow::Result<bool> {
+    let mut args = args.to_vec();
+    args.extend(["--interval", "5000", "--max-interval", "5000"]);
+    let state = common::state_with(pool.clone(), &args);
+    let addr = common::spawn_app(&state).await;
+    let worker = tokio::spawn({
+        let state = Arc::clone(&state);
+        async move { WorkerService::new(state).run().await }
+    });
+    // the first poll finds nothing: the worker sleeps
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    let response = common::create(&state, addr, &format!("http://{addr}/echo")).await;
+    assert!(response.status().is_success(), "{}", response.status());
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    let mut done = false;
+    while !done && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        done = common::count(&pool, "SELECT count(*) FROM processed").await > 0;
+    }
+    state.shutdown_token.cancel();
+    tokio::time::timeout(Duration::from_secs(10), worker).await??;
+    Ok(done)
+}
+
+#[sqlx::test(migrations = "./sql/migrations")]
+async fn a_job_created_by_the_api_wakes_the_worker(pool: PgPool) -> anyhow::Result<()> {
+    assert!(job_done_before_next_poll(pool, &[]).await?);
+    Ok(())
+}
+
+#[sqlx::test(migrations = "./sql/migrations")]
+async fn with_no_wake_a_job_waits_for_the_next_poll(pool: PgPool) -> anyhow::Result<()> {
+    assert!(!job_done_before_next_poll(pool, &["--no-wake"]).await?);
+    Ok(())
+}
+
 #[sqlx::test(migrations = "./sql/migrations")]
 async fn invalid_schedule_params_are_rejected(pool: PgPool) -> anyhow::Result<()> {
     let state = common::state(pool.clone());

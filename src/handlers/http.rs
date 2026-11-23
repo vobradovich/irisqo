@@ -174,10 +174,14 @@ pub async fn create_job(
     };
     db::jobqueue::create(&state.pool, job, &state.instance_id)
         .await
-        .inspect(|_| {
+        .inspect(|&(_, created)| {
             metrics()
                 .jobs_created
                 .add(1, &[KeyValue::new("job.type", job_type)]);
+            // a delayed job or a schedule goes to the queue by the scheduler
+            if created && job_type == "immediate" {
+                state.wake_workers();
+            }
         })
         .map(|(row, created)| {
             let status = if created {

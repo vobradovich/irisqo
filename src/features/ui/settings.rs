@@ -176,6 +176,8 @@ impl SettingsView {
                     .hint("Jobs a worker runs at once."),
                 Field::new("Poll interval", duration(worker.poll_interval)),
                 Field::new("Max poll interval", duration(worker.max_poll_interval)),
+                Field::new("Wake", if worker.wake { "on" } else { "off" })
+                    .hint("A job queued by the API, the UI or the scheduler wakes the worker."),
                 Field::new("Shutdown timeout", duration(worker.shutdown_timeout)),
                 Field::new("Lock lease", duration(options.lock_lease()))
                     .hint("3 × max timeout + 60 s."),

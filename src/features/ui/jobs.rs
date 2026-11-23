@@ -353,6 +353,10 @@ async fn act(state: &AppState, id: i64, headers: &HeaderMap, action: Action) -> 
         Ok(outcome) => outcome,
         Err(err) => return server_error(&err),
     };
+    // queued again, a callback of the cancel, a freed place of the flow
+    if outcome == ActionOutcome::Done {
+        state.wake_workers();
+    }
     if !is_htmx(headers) {
         return Redirect::to(&format!("/ui/jobs/{id}")).into_response();
     }

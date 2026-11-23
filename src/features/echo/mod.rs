@@ -78,6 +78,7 @@ async fn bench(
 
     // the jobs run as soon as they are in the queue
     let run = std::time::Instant::now();
+    state.wake_workers();
     let (mut done, mut failed) = (0_i64, 0_i64);
     while done < i64::from(n) && run.elapsed() < timeout {
         (done, failed) = sqlx::query_as(
