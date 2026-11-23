@@ -109,7 +109,7 @@ impl JobSchedule {
                 let nanos = i32::try_from(after.timestamp_subsec_nanos()).ok()?;
                 let after = Timestamp::new(after.timestamp(), nanos)
                     .ok()?
-                    .to_zoned(self.tz.clone());
+                    .to_zoned_datetime(self.tz.clone());
                 let next = Cron::from_str(cron)
                     .ok()?
                     .find_next_occurrence(&after, false)

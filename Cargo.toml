@@ -21,7 +21,7 @@ futures = "0.3.34"
 async-channel = "2.5"
 # JSON libs
 serde = "1"
-base64 = "0.22"
+base64 = "0.23"
 serde_json = { version = "1", features = ["raw_value"] }
 http-serde = "2.1"
 # Web libs
@@ -63,11 +63,11 @@ sqlx = { version = "0.9", features = ["runtime-tokio", "postgres", "macros", "mi
 # Types
 thiserror = "2"
 chrono = { version = "0.4", features = ["serde"] }
-jiff = "0.2"
+jiff = "1"
 whoami = { version = "2.0" }
 bytes = { version = "1", features = ["serde"] }
 ulid = { version = "3" }
-croner = { version = "4", default-features = false, features = ["jiff"] }
+croner = { version = "5", default-features = false, features = ["std", "jiff"] }
 fastrand = "2"
 utoipa = { version = "6", features = ["chrono"] }
 
