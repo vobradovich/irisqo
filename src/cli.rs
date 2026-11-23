@@ -36,6 +36,8 @@ xflags::xflags! {
         optional --interval n: u64
         /// Longest pause between polls of an empty queue, in milliseconds. Default: 1000
         optional --max-interval n: u64
+        /// A job queued by the API, the UI or the scheduler waits for the next poll of the worker.
+        optional --no-wake
         /// Jobs a worker holds and runs at once; in flight in all: workers x prefetch. Default: 4
         optional --prefetch n: u16
         /// Default job timeout in milliseconds. Default: 3000
@@ -182,8 +184,9 @@ impl Serve {
             api_token,
             signing_key,
             roles,
-            // a flag only: it has no variable
+            // flags only: they have no variable
             no_migrate: _,
+            no_wake: _,
         } = self;
         take(port, "IRISQO_PORT", &var)?;
         take(max_body_size, "IRISQO_MAX_BODY_SIZE", &var)?;
@@ -241,6 +244,7 @@ impl Serve {
                 max_poll_interval: self
                     .max_interval
                     .map_or(d.worker.max_poll_interval, Duration::from_millis),
+                wake: !self.no_wake,
                 prefetch: self.prefetch.unwrap_or(d.worker.prefetch),
                 timeout: self.timeout.unwrap_or(d.worker.timeout).min(max_timeout),
                 max_timeout,
@@ -419,6 +423,7 @@ mod tests {
             "--trace-url",
             "http://t/",
             "--no-migrate",
+            "--no-wake",
         ])
         .expect("flags")
         .into_options()
@@ -427,6 +432,7 @@ mod tests {
         assert_eq!(options.worker.workers, 1);
         assert_eq!(options.trace_url, None);
         assert!(options.no_migrate);
+        assert!(!options.worker.wake);
 
         let roles = |args: &[&str], var: Option<&str>| {
             let args = [&["--db-url", "postgres://x"], args].concat();

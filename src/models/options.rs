@@ -302,6 +302,8 @@ pub struct WorkerOptions {
     /// First pause before polling an empty queue again; it doubles up to `max_poll_interval`.
     pub poll_interval: Duration,
     pub max_poll_interval: Duration,
+    /// A job queued by the API, the UI or the scheduler wakes the worker; `false`: `--no-wake`.
+    pub wake: bool,
     /// Jobs a worker holds and runs at once (and claims in one fetch).
     pub prefetch: u16,
     /// The timeout of a job that sets none, in milliseconds; not above `max_timeout`.
@@ -322,6 +324,7 @@ impl Default for WorkerOptions {
             workers: 16,
             poll_interval: Duration::from_millis(200),
             max_poll_interval: Duration::from_millis(1000),
+            wake: true,
             prefetch: 4,
             timeout: 3000,
             max_timeout: 300_000,

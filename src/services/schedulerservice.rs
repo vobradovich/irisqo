@@ -51,6 +51,8 @@ impl SchedulerService {
                 if expired > 0 {
                     metrics().instances_expired.add(expired, &[]);
                     warn!({ instance_id, expired }, "expired instances killed");
+                    // their jobs are back in the queue
+                    self.app_state.wake_workers();
                 }
             })
             .inspect_err(|err| error!({ instance_id }, "kill_expired error {:?}", err));
@@ -60,6 +62,7 @@ impl SchedulerService {
                 if reaped > 0 {
                     metrics().locks_expired.add(reaped, &[]);
                     warn!({ instance_id, reaped }, "expired locks released");
+                    self.app_state.wake_workers();
                 }
             })
             .inspect_err(|err| error!({ instance_id }, "reap_expired_locks error {:?}", err));
@@ -70,9 +73,22 @@ impl SchedulerService {
     async fn enqueue_due(&self) {
         let state = &self.app_state;
         let limit = i32::from(state.options.scheduler.prefetch.max(1));
-        let total = drain_batches(state, "enqueue_scheduled", limit, usize::MAX, || {
-            db::jobqueue::enqueue_scheduled(&state.pool, &state.instance_id, limit)
-        })
+        let total = drain_batches(
+            state,
+            "enqueue_scheduled",
+            limit,
+            usize::MAX,
+            || async move {
+                // each batch is committed on its own: its jobs are claimable before the next one
+                db::jobqueue::enqueue_scheduled(&state.pool, &state.instance_id, limit)
+                    .await
+                    .inspect(|&queued| {
+                        if queued > 0 {
+                            state.wake_workers();
+                        }
+                    })
+            },
+        )
         .await;
         if total > 0 {
             debug!({ instance_id = state.instance_id, total }, "enqueued scheduled jobs");

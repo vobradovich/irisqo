@@ -4,6 +4,7 @@ use hyper_util::client::legacy::{Client, connect::HttpConnector};
 use hyper_util::rt::TokioExecutor;
 use sqlx::{Pool, Postgres};
 use std::sync::Arc;
+use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
 use super::{Options, TargetPolicy, targets::GuardedResolver};
@@ -79,6 +80,8 @@ pub struct AppState {
     /// the resolver of `client` holds the same policy.
     pub targets: Arc<TargetPolicy>,
     pub shutdown_token: CancellationToken,
+    /// Ends the pause of the worker loader of this process: see [`AppState::wake_workers`].
+    pub wake: Notify,
 }
 
 impl AppState {
@@ -123,7 +126,16 @@ impl AppState {
             client: Client::builder(TokioExecutor::new()).build::<_, Full<Bytes>>(https),
             targets,
             shutdown_token: CancellationToken::new(),
+            wake: Notify::new(),
         })
+    }
+
+    /// A job was queued by the API, the UI or the scheduler: the worker of this process polls
+    /// at once (off with `--no-wake`). The worker itself notifies `wake` directly.
+    pub fn wake_workers(&self) {
+        if self.options.worker.wake {
+            self.wake.notify_one();
+        }
     }
 }
 

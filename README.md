@@ -310,6 +310,7 @@ IRISQO_DB_URL=postgres://user:pass@localhost/irisqo cargo run --release -- --hel
 | `--db-schema` | irisqo | Postgres schema of the tables and functions, created when missing; `IRISQO_DB_SCHEMA` |
 | `--interval` | 200 | ms before the first re-poll of an empty queue; the pause doubles with each empty poll and starts over when a claim finds jobs |
 | `--max-interval` | 1000 | ms, longest pause between polls of an empty queue |
+| `--no-wake` | — | a job queued by the API, the UI or the scheduler of this process does not wake its worker: it waits for the next poll (fewer, larger claims, a delay up to `--max-interval`) |
 | `--prefetch` | 4 | jobs a worker holds and runs at once; in flight in all: `workers x prefetch` (64 by default), one fetch takes that many |
 | `--timeout` / `--max-timeout` | 3000 / 300000 | default and max request timeout, ms |
 | `--retention-hours` | 168 | processed jobs older than this are deleted, `0` keeps them |
