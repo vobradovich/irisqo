@@ -43,23 +43,47 @@ pub struct Completion {
     pub wakes: bool,
 }
 
-/// Runs a job and writes its result right away.
-pub async fn job_run(app_state: &AppState, job_with_attempt: JobWithAttempt) {
-    if let Some(completion) = job_execute(app_state, job_with_attempt).await {
-        complete(app_state, vec![completion]).await;
+/// Another attempt of a job, to be written back to the queue.
+#[derive(Debug)]
+pub struct Retry {
+    pub entry: JobEntry,
+    /// `None`: at once (`enqueued`), otherwise `scheduled` at this time.
+    pub at: Option<DateTime<Utc>>,
+    pub message: String,
+    /// Writing it frees a place of the job's flow.
+    pub wakes: bool,
+}
+
+/// How a job attempt ends; [`complete`] writes it.
+#[derive(Debug)]
+pub enum Outcome {
+    Done(Box<Completion>),
+    Retry(Retry),
+}
+
+impl Outcome {
+    #[must_use]
+    pub fn wakes(&self) -> bool {
+        match self {
+            Self::Done(completion) => completion.wakes,
+            Self::Retry(retry) => retry.wakes,
+        }
     }
 }
 
-/// Runs a job attempt. A retry is scheduled right here; a final result is returned
-/// as a [`Completion`] for [`complete`] (so that the results can be written in batches).
+/// Runs a job and writes its outcome right away.
+pub async fn job_run(app_state: &AppState, job_with_attempt: JobWithAttempt) {
+    let outcome = job_execute(app_state, job_with_attempt).await;
+    complete(app_state, vec![outcome]).await;
+}
+
+/// Runs a job attempt and returns its outcome, a final result or a retry, for [`complete`]
+/// (so that the outcomes are written in batches, by one writer).
 ///
 /// The attempt is a `job.run` span, a child of the request that created the job
 /// (`meta.traceparent`), so retries are siblings. A schedule run instead starts its
 /// own trace with a link to that request: a schedule would grow one trace forever.
-pub async fn job_execute(
-    app_state: &AppState,
-    job_with_attempt: JobWithAttempt,
-) -> Option<Completion> {
+pub async fn job_execute(app_state: &AppState, job_with_attempt: JobWithAttempt) -> Outcome {
     let meta = &job_with_attempt.job.meta;
     let span = tracing::info_span!(
         target: otel::TRACING_TARGET,
@@ -89,31 +113,28 @@ pub async fn job_execute(
     let metrics = metrics();
     metrics.jobs_in_flight.add(1, &[]);
     let start = Instant::now();
-    let completion = job_attempt(app_state, job_with_attempt)
+    let outcome = job_attempt(app_state, job_with_attempt)
         .instrument(span.clone())
         .await;
     metrics.jobs_in_flight.add(-1, &[]);
-    let outcome = completion
-        .as_ref()
-        .map_or("retry", |c| c.result.processed_status());
+    let status = match &outcome {
+        Outcome::Done(completion) => completion.result.processed_status(),
+        Outcome::Retry(_) => "retry",
+    };
     metrics.job_attempt_duration.record(
         start.elapsed().as_secs_f64(),
-        &[KeyValue::new("job.outcome", outcome)],
+        &[KeyValue::new("job.outcome", status)],
     );
-    span.record("job.outcome", outcome);
+    span.record("job.outcome", status);
     span.record(
         "otel.status_code",
-        if outcome == "completed" {
-            "OK"
-        } else {
-            "ERROR"
-        },
+        if status == "completed" { "OK" } else { "ERROR" },
     );
-    completion
+    outcome
 }
 
 /// Runs inside the span of the attempt: its trace and span are kept in the result.
-async fn job_attempt(app_state: &AppState, job_with_attempt: JobWithAttempt) -> Option<Completion> {
+async fn job_attempt(app_state: &AppState, job_with_attempt: JobWithAttempt) -> Outcome {
     let instance_id = &app_state.instance_id;
     let JobWithAttempt { mut job, attempt } = job_with_attempt;
     let entry = JobEntry {
@@ -129,11 +150,20 @@ async fn job_attempt(app_state: &AppState, job_with_attempt: JobWithAttempt) -> 
     };
     let mut result = match job_result {
         Ok(result) => result,
-        Err(err) => {
-            let result = on_error(app_state, entry, job_retry, err).await?;
-            warn!({ instance_id, job_id }, "====> job failed={:?}", &result.meta);
-            result
-        }
+        Err(err) => match on_error(instance_id, entry, job_retry, err) {
+            Failed::Final(result) => {
+                warn!({ instance_id, job_id }, "====> job failed={:?}", &result.meta);
+                result
+            }
+            Failed::Again { at, message } => {
+                return Outcome::Retry(Retry {
+                    entry,
+                    at,
+                    message,
+                    wakes: job.meta.flow_key.is_some(),
+                });
+            }
+        },
     };
     let span = tracing::Span::current();
     result.traced(otel::span_ids(&span));
@@ -142,13 +172,13 @@ async fn job_attempt(app_state: &AppState, job_with_attempt: JobWithAttempt) -> 
         let trace = otel::span_traceparent(&span);
         JobOutcome::of(&job, attempt, &result, trace).callback()
     });
-    Some(Completion {
+    Outcome::Done(Box::new(Completion {
         entry,
         wakes: job.meta.flow_key.is_some() || callback.is_some(),
         schedule_id: job.schedule_id,
         result,
         callback,
-    })
+    }))
 }
 
 /// Pauses between repeats of a failed write: 250 ms doubling, 30 s in all (under the job lease).
@@ -177,10 +207,27 @@ where
     write().await
 }
 
-/// Writes final results: one statement for all plain jobs, a transaction per scheduled
-/// job (its result and the next run are written atomically).
-pub async fn complete(app_state: &AppState, completions: Vec<Completion>) {
+/// Writes the outcomes: a statement per retry, one statement for the final results of all
+/// plain jobs, a transaction per scheduled job (its result and the next run are written atomically).
+pub async fn complete(app_state: &AppState, outcomes: Vec<Outcome>) {
     let instance_id = &app_state.instance_id;
+    let mut completions = Vec::with_capacity(outcomes.len());
+    for outcome in outcomes {
+        match outcome {
+            Outcome::Done(completion) => completions.push(*completion),
+            Outcome::Retry(retry) => {
+                let job_id = retry.entry.id;
+                _ = write_with_retry(write_pauses(), || write_retry(app_state, &retry))
+                    .await
+                    .inspect(|&affected| {
+                        if affected == 0 {
+                            warn!({ instance_id, job_id }, "job is not locked by this attempt, skip retry");
+                        }
+                    })
+                    .inspect_err(|err| error!({ instance_id, job_id }, "retry error {:?}", err));
+            }
+        }
+    }
     let (scheduled, plain): (Vec<_>, Vec<_>) = completions
         .into_iter()
         .partition(|c| c.schedule_id.is_some());
@@ -211,6 +258,15 @@ pub async fn complete(app_state: &AppState, completions: Vec<Completion>) {
         })
         .await
         .inspect_err(|err| error!({ instance_id, job_id }, "processed error {:?}", err));
+    }
+}
+
+/// Puts the job back: to `enqueued` at once, or to `scheduled` at its time.
+async fn write_retry(app_state: &AppState, retry: &Retry) -> Result<u64, Error> {
+    let (pool, instance_id) = (&app_state.pool, app_state.instance_id.as_str());
+    match retry.at {
+        None => db::jobqueue::unlock(pool, retry.entry, instance_id, &retry.message).await,
+        Some(at) => db::jobqueue::retry(pool, retry.entry, at, instance_id, &retry.message).await,
     }
 }
 
@@ -540,14 +596,19 @@ async fn schedule_next_at(
     Ok(schedule.next(after))
 }
 
-/// Schedules a retry when the error is worth one; returns the final result otherwise.
-async fn on_error(
-    app_state: &AppState,
-    entry: JobEntry,
-    job_retry: Option<JobRetry>,
-    err: Error,
-) -> Option<JobResult> {
-    let instance_id = &app_state.instance_id;
+/// How a failed attempt goes on.
+enum Failed {
+    /// No more attempts: the final result.
+    Final(JobResult),
+    /// Another attempt, at once (`None`) or at `at`.
+    Again {
+        at: Option<DateTime<Utc>>,
+        message: String,
+    },
+}
+
+/// Decides on another attempt when the error is worth one; the final result otherwise.
+fn on_error(instance_id: &str, entry: JobEntry, job_retry: Option<JobRetry>, err: Error) -> Failed {
     let job_id = entry.id;
     let (retryable, retry_after) = match &err {
         Error::HyperError(_) | Error::HyperClientError(_) | Error::Timeout(_) => (true, None),
@@ -573,24 +634,14 @@ async fn on_error(
         }
     };
     if !retryable {
-        return Some(err.into());
+        return Failed::Final(err.into());
     }
-    match retry_or_fail(
-        app_state,
-        entry,
-        job_retry,
-        retry_after,
-        &error_message(&err),
-    )
-    .await
-    {
-        Ok(()) => None,
-        Err(Error::RetriesExceeded) => Some(err.into()),
-        Err(retry_err) => {
-            // Not the job's fault: keep it locked, the lock reaper releases it.
-            error!({ instance_id, job_id }, "====> retry error {:?}, job error {:?}", retry_err, err);
-            None
-        }
+    match retry_delay(entry, job_retry, retry_after) {
+        Some(delay) => Failed::Again {
+            at: (delay > 0).then(|| Utc::now() + chrono::Duration::seconds(i64::from(delay))),
+            message: error_message(&err),
+        },
+        None => Failed::Final(err.into()),
     }
 }
 
@@ -615,38 +666,18 @@ fn error_message(err: &Error) -> String {
     .unwrap_or_else(|| err.to_string())
 }
 
-/// Backoff with jitter, but never sooner than the `Retry-After` of the response.
-async fn retry_or_fail(
-    app_state: &AppState,
+/// Seconds until the next attempt: backoff with jitter, but never sooner than the
+/// `Retry-After` of the response. `None` when the retries are exhausted.
+fn retry_delay(
     entry: JobEntry,
     job_retry: Option<JobRetry>,
     retry_after: Option<u32>,
-    message: &str,
-) -> Result<(), Error> {
-    let instance_id = &app_state.instance_id;
-    let JobEntry {
-        id: job_id,
-        attempt,
-    } = entry;
-    let attempt: u16 = attempt.try_into().unwrap_or(u16::MAX);
-    let job_retry = job_retry.ok_or(Error::RetriesExceeded)?;
-    let delay = job_retry
-        .jittered_delay(attempt)
-        .ok_or(Error::RetriesExceeded)?;
-    // never sooner than the Retry-After of the response, up to the longest delay of the policy
-    let delay = delay.max(retry_after.unwrap_or(0).min(job_retry.max_delay()));
-    let affected = if delay == 0 {
-        debug!({ instance_id, job_id, attempt }, "==> unlock");
-        db::jobqueue::unlock(&app_state.pool, entry, instance_id, message).await?
-    } else {
-        let at = Utc::now() + chrono::Duration::seconds(i64::from(delay));
-        debug!({ instance_id, job_id, attempt, delay }, "==> retry");
-        db::jobqueue::retry(&app_state.pool, entry, at, instance_id, message).await?
-    };
-    if affected == 0 {
-        warn!({ instance_id, job_id }, "job is not locked by this attempt, skip retry");
-    }
-    Ok(())
+) -> Option<u32> {
+    let attempt: u16 = entry.attempt.try_into().unwrap_or(u16::MAX);
+    let job_retry = job_retry?;
+    let delay = job_retry.jittered_delay(attempt)?;
+    // up to the longest delay of the policy
+    Some(delay.max(retry_after.unwrap_or(0).min(job_retry.max_delay())))
 }
 
 #[cfg(test)]
