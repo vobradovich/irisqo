@@ -82,14 +82,14 @@ CREATE TABLE claimed (
     flow_key    text NULL,
     priority    int NOT NULL DEFAULT 0,
     instance_id text NOT NULL,
-    at          timestamptz NOT NULL DEFAULT now()
+    at          timestamptz NOT NULL DEFAULT now(),
+    until       timestamptz NOT NULL
 ) WITH (
     autovacuum_vacuum_scale_factor = 0, autovacuum_vacuum_threshold = 1000,
     autovacuum_analyze_scale_factor = 0, autovacuum_analyze_threshold = 1000
 );
 CREATE INDEX ix_claimed_flow        ON claimed (flow_key) WHERE flow_key IS NOT NULL;
 CREATE INDEX ix_claimed_instance_id ON claimed (instance_id, id);
-CREATE INDEX ix_claimed_at          ON claimed (at);
 
 CREATE TABLE processed (
     id          bigint PRIMARY KEY REFERENCES jobs ON DELETE CASCADE,
@@ -348,7 +348,7 @@ BEGIN
     RETURN new_id;
 END $$;
 
-CREATE FUNCTION claim_plain_v1(p_instance_id text, p_limit int)
+CREATE FUNCTION claim_plain_v1(p_instance_id text, p_limit int, p_lease interval)
 RETURNS TABLE (
     id          bigint,
     meta        jsonb,
@@ -372,8 +372,8 @@ LANGUAGE sql SET search_path FROM CURRENT AS $$
         INSERT INTO history (id, attempt, kind, instance_id)
         SELECT b.id, b.attempt, 'claimed', p_instance_id FROM b
     ), c AS (
-        INSERT INTO claimed (id, attempt, priority, instance_id)
-        SELECT b.id, b.attempt, b.priority, p_instance_id FROM b
+        INSERT INTO claimed (id, attempt, priority, instance_id, until)
+        SELECT b.id, b.attempt, b.priority, p_instance_id, now() + p_lease FROM b
         RETURNING claimed.id, claimed.attempt, claimed.priority
     )
     SELECT j.id, j.meta, j.headers, j.body, j.schedule_id, j.key, c.attempt
@@ -392,7 +392,7 @@ LANGUAGE sql STABLE PARALLEL SAFE AS $$
     END
 $$;
 
-CREATE FUNCTION claim_flow_v1(p_instance_id text, p_limit int)
+CREATE FUNCTION claim_flow_v1(p_instance_id text, p_limit int, p_lease interval)
 RETURNS TABLE (
     id          bigint,
     meta        jsonb,
@@ -458,8 +458,8 @@ BEGIN
         FROM (SELECT b.flow_key, count(*) AS n FROM b GROUP BY b.flow_key) y
         WHERE f.flow_id = y.flow_key AND f.rate IS NOT NULL
     ), c AS (
-        INSERT INTO claimed (id, attempt, flow_key, priority, instance_id)
-        SELECT b.id, b.attempt, b.flow_key, b.priority, p_instance_id FROM b
+        INSERT INTO claimed (id, attempt, flow_key, priority, instance_id, until)
+        SELECT b.id, b.attempt, b.flow_key, b.priority, p_instance_id, now() + p_lease FROM b
         RETURNING claimed.id, claimed.attempt, claimed.priority
     )
     SELECT j.id, j.meta, j.headers, j.body, j.schedule_id, j.key, c.attempt
@@ -468,7 +468,7 @@ BEGIN
     ORDER BY c.priority DESC, c.attempt, c.id;
 END $$;
 
-CREATE FUNCTION claim_v1(p_instance_id text, p_limit int)
+CREATE FUNCTION claim_v1(p_instance_id text, p_limit int, p_lease interval)
 RETURNS TABLE (
     id          bigint,
     meta        jsonb,
@@ -482,9 +482,9 @@ LANGUAGE plpgsql SET search_path FROM CURRENT SET jit = off AS $$
 DECLARE
     v_plain bigint;
 BEGIN
-    RETURN QUERY SELECT * FROM claim_plain_v1(p_instance_id, p_limit);
+    RETURN QUERY SELECT * FROM claim_plain_v1(p_instance_id, p_limit, p_lease);
     GET DIAGNOSTICS v_plain = ROW_COUNT;
     IF v_plain < p_limit THEN
-        RETURN QUERY SELECT * FROM claim_flow_v1(p_instance_id, p_limit - v_plain::int);
+        RETURN QUERY SELECT * FROM claim_flow_v1(p_instance_id, p_limit - v_plain::int, p_lease);
     END IF;
 END $$;

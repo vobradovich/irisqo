@@ -3,6 +3,7 @@ pub use environment::Environment;
 pub use error::{Error, INVALID_PARAMS_TYPE, MILLISECONDS_RULE, PRIORITY_RULE, ParamError, Params};
 
 pub use callback::{CallbackMode, CallbackType, JobCallback};
+pub use held::Held;
 pub use job::FlowKey;
 pub use job::HttpMeta;
 pub use job::JobCreate;
@@ -16,7 +17,10 @@ pub use job::deserialize_method_of;
 pub use job::deserialize_uri_of;
 pub use job::parse_method;
 pub use jobretry::JobRetry;
-pub use options::{ConfigError, DbOptions, Options, Role, Roles, SchedulerOptions, WorkerOptions};
+pub use options::{
+    CLAIM_LEASE, ConfigError, DbOptions, HEARTBEAT_INTERVAL, INSTANCE_EXPIRE, Options, Role, Roles,
+    SchedulerOptions, WorkerOptions,
+};
 pub(crate) use options::{DEFAULT_SCHEMA, check_schema};
 pub use problem::Problem;
 pub use signing::SigningKeys;
@@ -28,6 +32,7 @@ mod callback;
 mod environment;
 mod error;
 pub mod headers;
+mod held;
 mod job;
 mod jobretry;
 mod options;

@@ -179,8 +179,8 @@ impl SettingsView {
                 Field::new("Wake", if worker.wake { "on" } else { "off" })
                     .hint("A job queued by the API, the UI or the scheduler wakes the worker."),
                 Field::new("Shutdown timeout", duration(worker.shutdown_timeout)),
-                Field::new("Lock lease", duration(options.lock_lease()))
-                    .hint("3 × max timeout + 60 s."),
+                Field::new("Claim lease", duration(crate::models::CLAIM_LEASE))
+                    .hint("Renewed by the heartbeat while the worker holds the job."),
             ],
             scheduler: vec![
                 Field::new("Poll interval", duration(scheduler.poll_interval)),

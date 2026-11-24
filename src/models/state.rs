@@ -7,7 +7,7 @@ use std::sync::Arc;
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
-use super::{Options, TargetPolicy, targets::GuardedResolver};
+use super::{Held, Options, TargetPolicy, targets::GuardedResolver};
 use crate::db::setup;
 
 #[cfg(not(any(feature = "rustls", feature = "native-tls")))]
@@ -82,6 +82,8 @@ pub struct AppState {
     pub shutdown_token: CancellationToken,
     /// Ends the pause of the worker loader of this process: see [`AppState::wake_workers`].
     pub wake: Notify,
+    /// The claimed jobs the worker holds: the heartbeat renews their leases.
+    pub held: Held,
 }
 
 impl AppState {
@@ -127,6 +129,7 @@ impl AppState {
             targets,
             shutdown_token: CancellationToken::new(),
             wake: Notify::new(),
+            held: Held::default(),
         })
     }
 

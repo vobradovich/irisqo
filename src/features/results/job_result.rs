@@ -229,8 +229,7 @@ impl From<Error> for JobResult {
             | Error::HyperError(_)
             | Error::HyperClientError(_)
             | Error::InvalidParams(_)
-            | Error::BlockedTarget(_)
-            | Error::RetriesExceeded => JobResult::with_type(JobResultType::Error {
+            | Error::BlockedTarget(_) => JobResult::with_type(JobResultType::Error {
                 error: value.to_string(),
             }),
         }

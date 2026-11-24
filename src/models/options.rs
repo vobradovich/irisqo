@@ -6,8 +6,18 @@ use std::{collections::BTreeSet, fmt, str::FromStr, time::Duration};
 
 use super::{AllowTargets, ApiTokens, Environment, SigningKeys};
 
-/// Extra time on top of `3 * max_timeout` before a lock counts as stuck.
-const LOCK_GRACE: Duration = Duration::from_secs(60);
+/// How often an instance sends its heartbeat and renews the leases of the jobs it holds.
+pub const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
+/// An instance without a heartbeat for this long is dead: its jobs are released.
+pub const INSTANCE_EXPIRE: Duration = Duration::from_secs(30);
+/// The lease of a claim: the holder renews it every [`HEARTBEAT_INTERVAL`] while it holds the
+/// job, the lock reaper releases a job whose lease has ended.
+pub const CLAIM_LEASE: Duration = Duration::from_secs(30);
+
+// an instance and a lease outlive at least three missed heartbeats
+const _: () = assert!(HEARTBEAT_INTERVAL.as_secs() * 3 <= INSTANCE_EXPIRE.as_secs());
+const _: () = assert!(HEARTBEAT_INTERVAL.as_secs() * 3 <= CLAIM_LEASE.as_secs());
+
 const DEFAULT_DB_CONNECTIONS: u32 = 32;
 pub const DEFAULT_SCHEMA: &str = "irisqo";
 const DEFAULT_PORT: u16 = 8102;
@@ -77,13 +87,6 @@ impl Options {
             worker: WorkerOptions::default(),
             scheduler: SchedulerOptions::default(),
         }
-    }
-
-    /// A job locked for this long is released whatever instance holds it (the result write
-    /// failed, the worker hung): up to two runs ahead and its own, `3 * max_timeout` and a grace period.
-    #[must_use]
-    pub fn lock_lease(&self) -> Duration {
-        Duration::from_millis(u64::from(self.worker.max_timeout)) * 3 + LOCK_GRACE
     }
 
     /// The roles this process really runs: `retention` needs `scheduler.retention_hours` above zero.
@@ -390,7 +393,6 @@ fn the_defaults_are_valid_and_the_password_is_not_shown() {
     let options = Options::new("postgres://user:s3cr3t@localhost/irisqo");
     options.validate().expect("the defaults work");
     assert!(!format!("{options:?}").contains("s3cr3t"));
-    assert_eq!(options.lock_lease(), Duration::from_secs(3 * 300 + 60));
 }
 
 #[test]

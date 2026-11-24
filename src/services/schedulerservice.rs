@@ -3,10 +3,7 @@ use tokio::{select, time};
 use tracing::{debug, error, info, trace, warn};
 
 use crate::{
-    db,
-    models::AppState,
-    otel::metrics::metrics,
-    services::{drain_batches, heartbeat::INSTANCE_EXPIRE},
+    db, models::AppState, models::INSTANCE_EXPIRE, otel::metrics::metrics, services::drain_batches,
 };
 use std::sync::Arc;
 
@@ -43,7 +40,6 @@ impl SchedulerService {
     pub async fn tick(&self) {
         let instance_id = &self.app_state.instance_id;
         let pool = &self.app_state.pool;
-        let lock_lease = self.app_state.options.lock_lease();
         trace!({ instance_id }, "tick");
         _ = db::instances::kill_expired(pool, INSTANCE_EXPIRE, instance_id)
             .await
@@ -56,7 +52,7 @@ impl SchedulerService {
                 }
             })
             .inspect_err(|err| error!({ instance_id }, "kill_expired error {:?}", err));
-        _ = db::jobqueue::reap_expired_locks(pool, lock_lease, instance_id, REAP_LIMIT)
+        _ = db::jobqueue::reap_expired_locks(pool, instance_id, REAP_LIMIT)
             .await
             .inspect(|&reaped| {
                 if reaped > 0 {

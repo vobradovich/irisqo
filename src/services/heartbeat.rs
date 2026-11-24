@@ -1,17 +1,13 @@
-use std::time::Duration;
-
 use tokio::{select, time};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 
-use crate::{features, models::AppState};
+use crate::{
+    db, features,
+    models::{AppState, HEARTBEAT_INTERVAL},
+};
 
-/// Must stay well below [`INSTANCE_EXPIRE`].
-pub const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
-/// An instance without a heartbeat for this long is dead: its jobs are released.
-pub const INSTANCE_EXPIRE: Duration = Duration::from_secs(30);
-
-/// Keeps the instance alive until `stop` is cancelled.
+/// Keeps the instance alive and renews the leases of the jobs it holds until `stop` is cancelled.
 ///
 /// It has its own token (not `shutdown_token`): the heartbeat must go on while the
 /// workers finish their jobs after a shutdown signal, otherwise another instance
@@ -34,6 +30,12 @@ pub async fn run(app_state: &AppState, stop: CancellationToken) {
         )
         .await
         .inspect_err(|err| error!({ instance_id }, "instances::live error {:?}", err));
+        let (ids, attempts) = app_state.held.columns();
+        if !ids.is_empty() {
+            _ = db::jobqueue::renew_leases(&app_state.pool, instance_id, &ids, &attempts)
+                .await
+                .inspect_err(|err| error!({ instance_id }, "renew_leases error {:?}", err));
+        }
     }
     info!({ instance_id }, "stop");
 }
