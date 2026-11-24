@@ -49,8 +49,7 @@ impl WorkerService {
         let batch = concurrency;
         info!({ instance_id, workers_count, per_worker, batch }, "start");
 
-        // An empty queue is polled after `--interval`, then less often: 2x per empty poll up to
-        // `--max-interval`. A claim that finds jobs starts over.
+        // an empty queue backs off 2x per empty poll up to `--max-interval`; jobs reset it
         let interval = options.poll_interval;
         let max_interval = options.max_poll_interval.max(interval);
         let mut pause = interval;
@@ -97,8 +96,7 @@ impl WorkerService {
                 interval
             };
             for job in jobs {
-                // On shutdown the jobs not handed over yet stay assigned to this
-                // instance: `kill` releases them on exit.
+                // on shutdown the jobs not handed over stay assigned; `kill` releases them on exit
                 select!(
                     biased;
                     () = app_state.shutdown_token.cancelled() => break,
@@ -115,9 +113,7 @@ impl WorkerService {
                 );
             }
         }
-        // Drain: workers finish their jobs, then the completer writes the last results.
-        // Past `shutdown_timeout` the jobs still running are abandoned: they stay
-        // assigned to this instance and `kill` releases them on exit.
+        // drain: workers finish, then the completer; past `shutdown_timeout` `kill` frees the rest
         tx.close();
         let deadline = time::Instant::now() + options.shutdown_timeout;
         let drained = time::timeout_at(deadline, async {

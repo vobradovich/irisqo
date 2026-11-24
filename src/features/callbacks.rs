@@ -118,8 +118,7 @@ impl JobOutcome<'_> {
         if !callback.fires_on(kind) {
             return None;
         }
-        // the input refuses these, a job written by hand (`enqueue_v1`) may have them: it makes
-        // no callback, and the log says why
+        // the input refuses these; a job by hand (`enqueue_v1`) may have them: no callback, logged
         if let Some((name, why)) = callback
             .headers
             .iter()

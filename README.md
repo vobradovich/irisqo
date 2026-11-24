@@ -57,13 +57,14 @@ curl -i -X POST 'http://localhost:8102/to/https://postman-echo.com/post' \
 
 The job is sent in a moment; its result is at `http://localhost:8102/api/v1/jobs/1/result`, and the UI is at
 <http://localhost:8102/ui>. The API and the UI are open until you set `--api-token`
-(see [Authentication](#authentication)).
+(see [Authentication](#authentication)), so the port is bound to `127.0.0.1`: set `IRISQO_API_TOKEN` in
+`docker-compose.yml` before publishing it to other hosts.
 
 With your own Postgres, build the image once and run it:
 
 ```bash
 docker build -t irisqo .
-docker run -p 8102:8102 -e IRISQO_DB_URL=postgres://user:pass@host/irisqo irisqo
+docker run -p 127.0.0.1:8102:8102 -e IRISQO_DB_URL=postgres://user:pass@host/irisqo irisqo
 ```
 
 The first start creates the schema. On a small builder (a 2 GiB VM) add `--build-arg CARGO_BUILD_JOBS=2`.
@@ -186,7 +187,7 @@ GET    {{host}}/api/v1/jobs/{id}/history          its history
 POST   {{host}}/api/v1/jobs/{id}/cancel           a pending job ends as cancelled (409 when running or done)
 POST   {{host}}/api/v1/jobs/{id}/retry            a processed job runs once more (409 when pending or running)
 DELETE {{host}}/api/v1/jobs/{id}
-POST   {{host}}/api/v1/schedules/{id}/pause       no more runs, the pending one is cancelled
+POST   {{host}}/api/v1/schedules/{id}/pause       no more runs, the pending one is cancelled (kept for --retention-hours)
 POST   {{host}}/api/v1/schedules/{id}/resume      the next run is scheduled
 PUT    {{host}}/api/v1/schedules/{id}             declare a schedule (a new one, or replace its rule and job): the fields of a job and cron | interval, tz, until
 DELETE {{host}}/api/v1/schedules/{id}
@@ -313,7 +314,7 @@ IRISQO_DB_URL=postgres://user:pass@localhost/irisqo cargo run --release -- --hel
 | `--no-wake` | — | a job queued by the API, the UI or the scheduler of this process does not wake its worker: it waits for the next poll (fewer, larger claims, a delay up to `--max-interval`) |
 | `--prefetch` | 4 | jobs a worker holds and runs at once; in flight in all: `workers x prefetch` (64 by default), one fetch takes that many |
 | `--timeout` / `--max-timeout` | 3000 / 300000 | default and max request timeout, ms |
-| `--retention-hours` | 168 | processed jobs older than this are deleted, `0` keeps them |
+| `--retention-hours` | 168 | processed jobs older than this are deleted, `0` keeps them; a schedule paused for longer goes with its cancelled run and cannot be resumed |
 | `--trace-url` | — | UI link to a trace, `{trace_id}` is replaced |
 | `--shutdown-timeout` | 20 | s the running jobs get to finish on shutdown; keep it under the orchestrator grace period (30 s in Kubernetes) |
 | `--api-token` | — | bearer tokens of the API, comma separated, see [Authentication](#authentication) |

@@ -137,8 +137,7 @@ async fn job_attempt(app_state: &AppState, job_with_attempt: JobWithAttempt) -> 
     };
     let span = tracing::Span::current();
     result.traced(otel::span_ids(&span));
-    // the callback goes on the trace of the attempt, with the sampling flag the span has: it is
-    // built when the result is complete
+    // the callback goes on the attempt's trace and sampling flag, once the result is complete
     let callback = job.meta.callback.as_ref().and_then(|_| {
         let trace = otel::span_traceparent(&span);
         JobOutcome::of(&job, attempt, &result, trace).callback()
@@ -259,7 +258,9 @@ async fn job_run_http(
         otel.kind = ?SpanKind::Client,
         otel.status_code = Empty,
         http.request.method = %req.method(),
-        url.full = %req.uri(),
+        url.scheme = req.uri().scheme_str().unwrap_or_default(),
+        server.address = req.uri().host().unwrap_or_default(),
+        server.port = req.uri().port_u16(),
         http.response.status_code = Empty,
         http.response.body.size = Empty,
         exception.message = Empty,
@@ -270,8 +271,7 @@ async fn job_run_http(
     });
     // Call: the timeout covers the whole exchange, including reading the body
     let call = async {
-        // an IP address in the URL is not resolved: checked here (a name is checked when
-        // resolved, see models::targets)
+        // an IP in the URL is not resolved, so it is checked here (names: models::targets)
         if let Some(host) = req.uri().host()
             && let Err(detail) = app_state.targets.check_host(host)
         {
@@ -535,8 +535,7 @@ async fn schedule_next_at(
     }) else {
         return Ok(None);
     };
-    // after the current run's time too: a run done early (enqueued by hand) must not
-    // schedule the next one at its own time
+    // not before the current run's time: an early run must not schedule the next at its own time
     let after = row.next_at.map_or_else(Utc::now, |at| at.max(Utc::now()));
     Ok(schedule.next(after))
 }

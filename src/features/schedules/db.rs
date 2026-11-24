@@ -44,8 +44,7 @@ pub async fn upsert(
     job: JobCreate,
     instance_id: &str,
 ) -> Result<(JobCreateRow, bool), Error> {
-    // the row is created, or its rule is changed and it stays locked until the commit: two
-    // declarations of a schedule follow each other; it gives the run that is waiting
+    // created, or changed and locked until the commit: declarations of a schedule are serialized
     const SQL_SCHEDULE: &str = "
     INSERT INTO schedules(schedule_id, rule, tz, until, paused)
     VALUES ($1, $2, $3, $4::timestamptz, false)
@@ -304,12 +303,14 @@ pub async fn list_view(pool: &Pool<Postgres>, limit: i32) -> Result<Vec<Schedule
 /// Deletes the schedule with its pending (not yet enqueued) next run.
 /// Already processed runs stay, with `schedule_id` set to NULL.
 pub async fn delete(pool: &Pool<Postgres>, schedule_id: &str) -> Result<u64, Error> {
+    // the job goes only by the run removed here: one promoted meanwhile stays (docs/sql.md)
     const SQL_NEXT: &str = "
-    DELETE FROM jobs WHERE id IN (
-        SELECT sc.id FROM scheduled AS sc
-        INNER JOIN schedules AS s ON s.next_id = sc.id
-        WHERE s.schedule_id = $1
-    )";
+    WITH n AS (
+        DELETE FROM scheduled AS sc USING schedules AS s
+        WHERE s.schedule_id = $1 AND sc.id = s.next_id
+        RETURNING sc.id
+    )
+    DELETE FROM jobs WHERE id IN (SELECT id FROM n)";
     // the next statements see the run of a declaration or a clone that held the lock
     const SQL_LOCK: &str = "SELECT 1 FROM schedules WHERE schedule_id = $1 FOR UPDATE";
     const SQL: &str = "DELETE FROM schedules WHERE schedule_id = $1";

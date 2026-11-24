@@ -102,9 +102,7 @@ impl JobSchedule {
                     .ok()?
                     .checked_add_signed(interval)?
             }
-            // The clock of the zone, as cron follows it: a fixed time that exists twice runs
-            // at the first one, one that does not exist runs when the clock jumps over it;
-            // a frequent rule runs at the times the clock shows.
+            // zone clock as cron: a doubled time runs once, a skipped one when the clock jumps
             ScheduleRule::Cron(cron) => {
                 let nanos = i32::try_from(after.timestamp_subsec_nanos()).ok()?;
                 let after = Timestamp::new(after.timestamp(), nanos)
