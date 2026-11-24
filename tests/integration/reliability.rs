@@ -251,7 +251,7 @@ async fn results_are_written_in_one_batch(pool: PgPool) -> anyhow::Result<()> {
 
     let mut completions = Vec::new();
     for job in jobs {
-        completions.extend(jobrunner::job_execute(&state, job).await);
+        completions.push(jobrunner::job_execute(&state, job).await);
     }
     jobrunner::complete(&state, completions).await;
 
