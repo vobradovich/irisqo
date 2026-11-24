@@ -15,8 +15,7 @@ pub async fn create(
     instance_id: &str,
 ) -> Result<(JobCreateRow, bool), Error> {
     if job.schedule.is_some() {
-        // the same declaration as `PUT /schedules/{id}`: the key is the id of the schedule,
-        // a new unique one when there is none
+        // as `PUT /schedules/{id}`: the key is the schedule id, a new ULID when absent
         job.key.get_or_insert_with(crate::models::new_ulid);
         return features::schedules::db::upsert(pool, job, instance_id).await;
     }
@@ -299,8 +298,7 @@ pub async fn fetch_job_with_attempt(
                 let entry = JobEntry { id, attempt };
                 tracing::error!(job_id = id, "unreadable job: {err:?}");
                 let result = JobResult::from(Error::from(err));
-                // when this write fails too, the job stays claimed (the lock reaper releases it)
-                // but the rest of the batch must still run
+                // if this fails too, the job stays claimed (the reaper frees it); the batch goes on
                 _ = results::processed(pool, entry, instance_id, &result, None)
                     .await
                     .inspect_err(|err| {
@@ -403,13 +401,11 @@ pub async fn cancel(
         Some(_) => None,
     };
     let spawned = source.and_then(|source| {
-        // a meta that cannot be read (written by hand, or by another version) makes no
-        // callback: the job is cancelled all the same
+        // an unreadable meta (by hand, another version): no callback, the job is still cancelled
         let meta: JobMeta = serde_json::from_value(source.meta.0)
             .inspect_err(|err| tracing::warn!(job_id, "cancel: no callback, the meta: {err}"))
             .ok()?;
-        // SQL replaces the webhook's placeholder attempt with the one returned by DELETE; a
-        // cancelled job has no trace of an attempt: its own goes on.
+        // SQL puts the removed attempt into the webhook; a cancel has no trace of an attempt
         JobOutcome {
             id: job_id,
             key: source.key.as_deref(),

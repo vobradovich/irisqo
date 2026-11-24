@@ -270,6 +270,42 @@ async fn the_ui_filters_and_pages_the_flows(pool: PgPool) -> anyhow::Result<()> 
 }
 
 #[sqlx::test(migrations = "./sql/migrations")]
+async fn a_repeated_declaration_keeps_the_spent_rate(pool: PgPool) -> anyhow::Result<()> {
+    let state = common::state(pool.clone());
+    let addr = common::spawn_app(&state).await;
+    let url = format!("http://{addr}/api/v1/flows/q");
+    let two_per_hour = r#"{"concurrency": 10, "rate": 2, "rate_period": 3600}"#;
+    let (status, _) = json(&state, Method::PUT, &url, two_per_hour).await;
+    assert_eq!(status, StatusCode::CREATED);
+    for id in common::insert_enqueued(&pool, 3).await {
+        sqlx::query("UPDATE enqueued SET flow_key = 'q' WHERE id = $1")
+            .bind(id)
+            .execute(&pool)
+            .await?;
+    }
+    assert_eq!(common::fetch(&state, 10).await.len(), 2);
+
+    let (status, row) = json(&state, Method::PUT, &url, two_per_hour).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(!row["next_at"].is_null(), "{row}");
+    assert!(common::fetch(&state, 10).await.is_empty());
+    // a twice shorter period halves the debt: the bucket is still empty
+    let half_hour = r#"{"concurrency": 10, "rate": 2, "rate_period": 1800}"#;
+    json(&state, Method::PUT, &url, half_hour).await;
+    assert!(common::fetch(&state, 10).await.is_empty());
+    let debt: f64 = sqlx::query_scalar(
+        "SELECT extract(epoch FROM next_at - now())::float8 FROM flows WHERE flow_id = 'q'",
+    )
+    .fetch_one(&pool)
+    .await?;
+    assert!((1700.0..=1800.0).contains(&debt), "{debt}");
+    // without a rate there is no debt
+    json(&state, Method::PUT, &url, r#"{"concurrency": 10}"#).await;
+    assert_eq!(common::fetch(&state, 10).await.len(), 1);
+    Ok(())
+}
+
+#[sqlx::test(migrations = "./sql/migrations")]
 async fn the_jobs_of_a_flow_are_held_and_are_no_lag(pool: PgPool) -> anyhow::Result<()> {
     let ids = common::insert_enqueued(&pool, 3).await;
     // two jobs of a flow, one of them an hour old; one job without a flow

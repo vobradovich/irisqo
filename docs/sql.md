@@ -36,6 +36,9 @@ CREATE TABLE instances (
 
 A flow is the key of a job that limits concurrency and start rate; it promises no order. Only flows with settings
 have a row. A name without a row is undeclared and has the defaults: concurrency 1, not paused, no rate limit.
+A declaration, a pause, a resume and a removal take the advisory lock of the flow that `claim_flow_v1` takes
+(`pg_advisory_xact_lock`, until the commit): a change waits for a claim in flight, and a claim sees the limits either
+before or after it, never a mix (the jobs by the old rate and the debt by the new one).
 
 ```sql
 CREATE TABLE flows (
@@ -54,6 +57,10 @@ CREATE TABLE flows (
 ### Schedules
 
 `next_id` is the waiting job, which is the template of the next run. `rule`: digits only is an interval in seconds, otherwise cron. `miss_policy`: what to do with the runs missed in downtime: none | one | all.
+
+A removal deletes the waiting run from `scheduled` first and the job only by what that `DELETE` returned: it waits for
+a promotion in flight, and a run already moved to `enqueued` stays (a `DELETE FROM jobs` by a subquery would see the
+old snapshot and cascade over the promoted job).
 
 ```sql
 CREATE TABLE schedules (
@@ -108,6 +115,9 @@ CREATE TABLE scheduled (
 CREATE INDEX ix_scheduled_at ON scheduled (at, id);  -- the order of promote: ORDER BY at, id LIMIT n
 ```
 
+The scheduler moves the due jobs, oldest first, to `enqueued` in one statement (`enqueue_scheduled`). `at` is kept,
+so the queue lag counts from the moment the job was due.
+
 A retry with a delay goes back to `scheduled`, whatever its flow.
 
 ### 2. enqueued: its time has come, waits for a worker (queue lag = claim time - at)
@@ -157,6 +167,10 @@ CREATE INDEX ix_claimed_instance_id ON claimed (instance_id, id);  -- id: lookup
 CREATE INDEX ix_claimed_at          ON claimed (at);  -- the lock reaper
 ```
 
+`id` is in the key of `ix_claimed_instance_id`: the lookups by `id` and `instance_id` (retry, unlock, completion) must
+not read all the jobs of the instance (the planner picked this index over the primary key and filtered ~1000 rows a
+lookup).
+
 ### 4. processed: finished
 
 With the response of the target (`outcome` and `headers`; the body only with `--store-response`).
@@ -198,21 +212,15 @@ CREATE INDEX ix_history_id_seq ON history (id, seq);
 
 ### Stats
 
-Counters of the UI, counted by `refresh_stats_v1` instead of on every page request: rows per state, `lag_seconds` (age of the oldest due job), `processed_24h`, `failed_24h`, `instances`.
+Counters of the UI and the queue metrics, counted by the service on request (`db::stats::queue_stats`): rows per state,
+`lag_seconds` (age of the oldest due job), `processed_24h`, `failed_24h`, `instances`. A table of precomputed counters
+will come in a migration of its own.
 `enqueued` counts every row of `enqueued`; `held` is the part of them that belongs to a flow (they wait for the limits
 of their flow: concurrency, rate, pause, or for a worker), so `enqueued - held` wait for a worker. `lag_seconds`
 ignores the held jobs: a flow keeps its jobs back by design, so only a job without a flow that waits is a lack of
 workers. A job of a flow that has a free place and waits for a worker is counted as held too (a flow's jobs are not
 told apart by whether the flow is blocked). The same numbers go to `irisqo.queue.depth{state=enqueued}`,
 `irisqo.queue.held` and `irisqo.queue.lag`.
-
-```sql
-CREATE TABLE stats (
-    name  text PRIMARY KEY,
-    value bigint NOT NULL,
-    at    timestamptz NOT NULL  -- when it was counted
-) WITH (fillfactor = 50);         -- few rows rewritten all the time: room for HOT updates
-```
 
 ## Functions
 
@@ -254,18 +262,6 @@ Only the format is checked, not the target (no DNS, no private-address check). N
 - the job meta has the same shape as the one written by the service;
 - when the key already exists the call is an idempotent repeat and returns the existing job id.
 
-### promote_v1
-
-`promote_v1(p_instance_id text, p_limit int) RETURNS int`: moves up to `p_limit` due jobs, oldest first:
-`scheduled` -> `enqueued`. `at` is kept, so the queue lag counts from the moment the job was due. Returns the number
-of jobs moved.
-
-### refresh_stats_v1
-
-`refresh_stats_v1(p_max_age interval DEFAULT '2 seconds') RETURNS boolean`: recounts `stats` unless it is younger
-than `p_max_age`. One advisory lock lets one caller count while the others read the old numbers. Returns true when
-this call counted. After taking the lock the age is checked again: the previous holder may have counted just now.
-
 ### claim_v1
 
 `claim_v1(p_instance_id text, p_limit int) RETURNS TABLE (id, meta, headers, body, schedule_id, key, attempt)`: claims
@@ -300,7 +296,9 @@ The rate is a leaky bucket kept in one timestamp, `next_at`: the time by which t
 start adds `T = rate_period / rate` to it (`next_at = greatest(next_at, now()) + n * T`). The debt is
 `D = max(next_at - now(), 0)` and the bucket holds one period, so `remaining = floor((rate_period - D) * rate /
 rate_period)` starts are free right now: `rate` after an idle period, then one more every `T`. A flow is ready when
-`remaining >= 1` and takes at most `remaining` jobs. `NULL` `next_at` is an empty debt. `flow_rate_free_v1(rate,
+`remaining >= 1` and takes at most `remaining` jobs. `NULL` `next_at` is an empty debt. A new declaration keeps the
+spent share of the bucket: `next_at = now() + D * new_period / old_period` (`NULL` without a rate), so a repeated `PUT`
+changes nothing, a new rate refills at its own pace and a shorter period shortens the debt in proportion. `flow_rate_free_v1(rate,
 rate_period, next_at)` computes `remaining`: the starts a flow can make right now, `2147483647` without a rate (so an
 undeclared flow is not limited). The flow list reads the same function (`rate_left`, `null` without a rate), so the UI
 and the claim agree. It has no `SET search_path` on purpose: a SQL function with a `SET` clause is not inlined into the
@@ -313,7 +311,9 @@ finds the distinct waiting flows (index skip scan on `ix_enqueued_flow`, one pro
 that are not paused, have a free start (`remaining >= 1`) and are not full (`MATERIALIZED`, so the lock is taken after these checks).
 
 Step 2 takes the free places of the locked flows (`concurrency - running`, at most `remaining`) and the ids of that many
-jobs per flow (`priority DESC`, `attempt`, `id`), at most `p_limit` in all, deletes them from `enqueued`, writes `history`, inserts into `claimed`, moves `next_at` of a rate-limited flow and returns the jobs.
+jobs per flow (`priority DESC`, `attempt`, `id`), at most `p_limit` in all, deletes them from `enqueued`, writes `history`, inserts into `claimed`, moves `next_at` of a rate-limited flow and returns the jobs. It reads `concurrency` and the rate again with its own
+snapshot, taken after the locks; `paused` is not checked again on purpose: a pause that commits between the two steps
+may let this claim start jobs, the next claim sees it.
 
 ### Why the jobs are returned by the claim
 

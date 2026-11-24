@@ -88,8 +88,6 @@ CREATE TABLE claimed (
     autovacuum_analyze_scale_factor = 0, autovacuum_analyze_threshold = 1000
 );
 CREATE INDEX ix_claimed_flow        ON claimed (flow_key) WHERE flow_key IS NOT NULL;
--- `id` in the key: the lookups by `id` and `instance_id` (retry, unlock, completion) must not read all the jobs of the
--- instance (the planner picked this index over the primary key and filtered ~1000 rows a lookup)
 CREATE INDEX ix_claimed_instance_id ON claimed (instance_id, id);
 CREATE INDEX ix_claimed_at          ON claimed (at);
 
@@ -119,12 +117,6 @@ CREATE TABLE history (
     message     text NULL
 );
 CREATE INDEX ix_history_id_seq ON history (id, seq);
-
-CREATE TABLE stats (
-    name  text PRIMARY KEY,
-    value bigint NOT NULL,
-    at    timestamptz NOT NULL
-) WITH (fillfactor = 50);
 
 CREATE FUNCTION enqueue_v1(job jsonb) RETURNS bigint
 LANGUAGE plpgsql SET search_path FROM CURRENT AS $$
@@ -354,70 +346,6 @@ BEGIN
         INSERT INTO history (id, attempt, kind) VALUES (new_id, 0, 'scheduled');
     END IF;
     RETURN new_id;
-END $$;
-
-CREATE FUNCTION promote_v1(p_instance_id text, p_limit int) RETURNS int
-LANGUAGE plpgsql SET search_path FROM CURRENT AS $$
-DECLARE
-    n int;
-BEGIN
-    WITH d AS (
-        DELETE FROM scheduled
-        WHERE id = ANY(ARRAY(SELECT s.id
-                             FROM scheduled s
-                             WHERE s.at <= now()
-                             ORDER BY s.at, s.id
-                             LIMIT p_limit
-                             FOR UPDATE SKIP LOCKED))
-        RETURNING id, attempt, at, flow_key, priority
-    ), b AS (
-        INSERT INTO enqueued (id, attempt, at, flow_key, priority)
-        SELECT * FROM d
-        RETURNING id, attempt
-    ), hist AS (
-        INSERT INTO history (id, attempt, kind, instance_id)
-        SELECT b.id, b.attempt, 'enqueued', p_instance_id
-        FROM b
-    )
-    SELECT count(*) INTO n FROM b;
-    RETURN n;
-END $$;
-
-CREATE FUNCTION refresh_stats_v1(p_max_age interval DEFAULT interval '2 seconds') RETURNS boolean
-LANGUAGE plpgsql SET search_path FROM CURRENT AS $$
-BEGIN
-    IF NOT pg_try_advisory_xact_lock(hashtextextended(current_schema() || '#stats', 0)) THEN
-        RETURN false;
-    END IF;
-    IF EXISTS (SELECT 1 FROM stats WHERE name = 'enqueued' AND at > clock_timestamp() - p_max_age) THEN
-        RETURN false;
-    END IF;
-
-    INSERT INTO stats (name, value, at)
-    SELECT v.name, v.value, clock_timestamp()
-    FROM (SELECT count(*) AS n,
-                 count(*) FILTER (WHERE flow_key IS NOT NULL) AS held,
-                 min(at) FILTER (WHERE flow_key IS NULL) AS due
-          FROM enqueued) AS e,
-         (SELECT count(*) AS n, count(*) FILTER (WHERE status = 'failed') AS failed
-          FROM processed
-          WHERE at > now() - interval '24 hours') AS p,
-         LATERAL (VALUES
-            ('scheduled', (SELECT count(*) FROM scheduled)),
-            ('enqueued',  e.n),
-            ('held',      e.held),
-            ('claimed',   (SELECT count(*) FROM claimed)),
-            ('lag_seconds',
-                (SELECT coalesce(floor(extract(epoch FROM clock_timestamp() - min(d.at))), 0)::bigint
-                 FROM (SELECT e.due AS at
-                       UNION ALL
-                       SELECT min(s.at) FROM scheduled s WHERE s.at <= clock_timestamp()) d)),
-            ('processed_24h', p.n),
-            ('failed_24h', p.failed),
-            ('instances', (SELECT count(*) FROM instances i WHERE i.stopped_at IS NULL))
-         ) AS v(name, value)
-    ON CONFLICT (name) DO UPDATE SET value = EXCLUDED.value, at = EXCLUDED.at;
-    RETURN true;
 END $$;
 
 CREATE FUNCTION claim_plain_v1(p_instance_id text, p_limit int)

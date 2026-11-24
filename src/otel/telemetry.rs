@@ -122,8 +122,7 @@ impl Telemetry {
         opentelemetry::global::set_tracer_provider(telemetry.tracer_provider.clone());
         opentelemetry::global::set_meter_provider(telemetry.meter_provider.clone());
 
-        // RUST_LOG filters the logs (stdout and OTel); the exported spans are the
-        // `otel::tracing` ones whatever RUST_LOG says.
+        // RUST_LOG filters the logs only; the exported spans are the `otel::tracing` ones
         let rust_log = std::env::var("RUST_LOG")
             .unwrap_or_else(|_| "irisqo=debug,tower_http=debug,sqlx=info".into());
         let log_filter = EnvFilter::new(&rust_log);

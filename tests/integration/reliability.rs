@@ -867,7 +867,7 @@ async fn the_printed_migrations_build_the_schema(pool: PgPool) -> anyhow::Result
     )
     .fetch_one(&pool)
     .await?;
-    assert!(tables >= 10, "the tables are in the schema: {tables}");
+    assert!(tables >= 9, "the tables are in the schema: {tables}");
     // the functions find the tables of their schema
     let id: i64 = sqlx::query_scalar("SELECT enqueue_v1('{\"url\": \"http://localhost/x\"}')")
         .fetch_one(&pool)

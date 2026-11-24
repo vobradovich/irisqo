@@ -48,9 +48,7 @@ async fn job_create(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<impl IntoResponse, Problem> {
-    // The target as it came, still percent-encoded: decoded, `%20`, `%3F`, `%2F` would change it.
-    // A target encoded whole (`https%3A%2F%2F…`, as `encodeURIComponent` writes it) has no
-    // scheme of its own: it is the decoded one.
+    // the target still percent-encoded; a fully encoded one (no own scheme) is used decoded
     let raw = uri.path().strip_prefix("/to/").unwrap_or_default();
     let target = if has_scheme(raw) { raw } else { &decoded };
     let request = JobRequest::http(&method, forwarded_headers(&headers), body);

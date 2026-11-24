@@ -92,6 +92,12 @@ pub fn make_span_from_request<B>(request: &http::Request<B>) -> tracing::Span {
     let parent = extract_context(request.headers());
     let http_method = request.method().as_str();
     let route = http_route(request);
+    // a wildcard route (`/to/{*url}`) carries the target URL: only the route is recorded
+    let path = if route.contains("{*") {
+        route
+    } else {
+        request.uri().path()
+    };
     let span = tracing::info_span!(
         target: TRACING_TARGET,
         "HTTP request",
@@ -99,8 +105,7 @@ pub fn make_span_from_request<B>(request: &http::Request<B>) -> tracing::Span {
         http.route = route,
         network.protocol.version = %http_flavor(request.version()),
         http.response.status_code = Empty, // to set on response
-        url.path = request.uri().path(),
-        url.query = request.uri().query(),
+        url.path = path,
         url.scheme = ?url_scheme(request.uri()),
         otel.name = format!("{} {}", http_method, route),
         otel.kind = ?opentelemetry::trace::SpanKind::Server,

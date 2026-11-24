@@ -41,9 +41,7 @@ pub async fn drop_schema(pool: &Pool<Postgres>, schema: &str) {
 
 /// Creates the schema when missing, then runs the migrations in it.
 pub async fn migrate_schema(pool: &Pool<Postgres>, schema: &str) {
-    // the migrations and their table `_sqlx_migrations` go to the first schema of the path.
-    // `CREATE SCHEMA IF NOT EXISTS` fails on a concurrent create (unique violation of pg_namespace)
-    // when several instances start on a new database: an advisory lock serializes it
+    // a concurrent `CREATE SCHEMA IF NOT EXISTS` fails: an advisory lock serializes it
     let mut tx = pool.begin().await.expect("Unable to create the schema");
     sqlx::query("SELECT pg_advisory_xact_lock(hashtext('irisqo.create_schema'))")
         .execute(&mut *tx)

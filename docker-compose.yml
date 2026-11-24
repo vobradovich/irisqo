@@ -20,8 +20,9 @@ services:
     build: .
     environment:
       IRISQO_DB_URL: postgres://postgres:irisqo@postgres/irisqo
+      # IRISQO_API_TOKEN: change-me  # required before publishing the port beyond this host
     ports:
-      - "8102:8102"
+      - "127.0.0.1:8102:8102"
     depends_on:
       postgres:
         condition: service_healthy

@@ -116,6 +116,33 @@ async fn job_continues_the_request_trace(pool: PgPool) -> anyhow::Result<()> {
 }
 
 #[sqlx::test(migrations = "./sql/migrations")]
+async fn spans_carry_no_target_query(pool: PgPool) -> anyhow::Result<()> {
+    let state = common::state(pool.clone());
+    let addr = common::spawn_app(&state).await;
+    let trace_id = random_trace_id();
+    let target = format!("http://{addr}/echo?sig=dummy-secret");
+    create_traced(&state, addr, &target, &trace_id).await;
+    common::run_enqueued(&state).await;
+
+    let client = wait_spans(&trace_id, "POST", 1).await.remove(0);
+    wait_spans(&trace_id, "POST /to/{*url}", 1).await;
+    wait_spans(&trace_id, "POST /echo", 1).await;
+    assert_eq!(attr(&client, "server.address"), Some("127.0.0.1".into()));
+    for span in spans_of(&trace_id) {
+        for kv in &span.attributes {
+            assert!(
+                !kv.value.as_str().contains("dummy-secret"),
+                "{} {} = {}",
+                span.name,
+                kv.key,
+                kv.value
+            );
+        }
+    }
+    Ok(())
+}
+
+#[sqlx::test(migrations = "./sql/migrations")]
 async fn retries_are_sibling_spans(pool: PgPool) -> anyhow::Result<()> {
     let state = common::state(pool.clone());
     let addr = common::spawn_app(&state).await;

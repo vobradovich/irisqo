@@ -1,4 +1,4 @@
-use sqlx::{Pool, Postgres};
+use sqlx::{PgConnection, Pool, Postgres};
 
 use super::{FlowCreate, FlowListRow, FlowRow, UndeclaredFlowRow};
 use crate::models::Error;
@@ -87,8 +87,8 @@ pub async fn get_by_id(pool: &Pool<Postgres>, flow_id: &str) -> Result<Option<Fl
     Ok(row)
 }
 
-/// Declares a flow or replaces the limits of a declared one (the pause stays; the rate limit
-/// starts afresh, a new rate takes effect at once). Gives the flow and whether it is new.
+/// Declares a flow or replaces the limits of a declared one (the pause stays; the spent share of
+/// the rate limit stays, a new rate takes effect at once). Gives the flow and whether it is new.
 pub async fn upsert(pool: &Pool<Postgres>, flow: &FlowCreate) -> Result<(FlowRow, bool), Error> {
     #[derive(sqlx::FromRow)]
     struct Upserted {
@@ -101,16 +101,22 @@ pub async fn upsert(pool: &Pool<Postgres>, flow: &FlowCreate) -> Result<(FlowRow
     VALUES ($1, $2, $3, $4)
     ON CONFLICT (flow_id) DO UPDATE
         SET concurrency = EXCLUDED.concurrency,
-            rate = EXCLUDED.rate, rate_period = EXCLUDED.rate_period, next_at = NULL
+            rate = EXCLUDED.rate, rate_period = EXCLUDED.rate_period,
+            next_at = CASE WHEN EXCLUDED.rate IS NOT NULL AND flows.next_at > now() THEN
+                now() + (flows.next_at - now()) * (EXCLUDED.rate_period::float8 / flows.rate_period)
+            END
     RETURNING flow_id, concurrency, rate, rate_period, paused, next_at,
               (xmax = 0) AS created";
+    let mut tx = pool.begin().await?;
+    lock_flow(&mut tx, flow.flow_key.as_str()).await?;
     let done = sqlx::query_as::<_, Upserted>(SQL)
         .bind(flow.flow_key.as_str())
         .bind(flow.concurrency)
         .bind(flow.rate)
         .bind(flow.rate_period)
-        .fetch_one(pool)
+        .fetch_one(&mut *tx)
         .await?;
+    tx.commit().await?;
     Ok((done.row, done.created))
 }
 
@@ -125,19 +131,35 @@ pub async fn resume(pool: &Pool<Postgres>, flow_id: &str) -> Result<bool, Error>
 }
 
 async fn set_paused(pool: &Pool<Postgres>, flow_id: &str, paused: bool) -> Result<bool, Error> {
+    let mut tx = pool.begin().await?;
+    lock_flow(&mut tx, flow_id).await?;
     let done = sqlx::query("UPDATE flows SET paused = $2 WHERE flow_id = $1")
         .bind(flow_id)
         .bind(paused)
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
+    tx.commit().await?;
     Ok(done.rows_affected() > 0)
 }
 
 /// Removes the declaration: the jobs stay and the name goes back to one job at a time.
 pub async fn delete(pool: &Pool<Postgres>, flow_id: &str) -> Result<bool, Error> {
+    let mut tx = pool.begin().await?;
+    lock_flow(&mut tx, flow_id).await?;
     let done = sqlx::query("DELETE FROM flows WHERE flow_id = $1")
         .bind(flow_id)
-        .execute(pool)
+        .execute(&mut *tx)
         .await?;
+    tx.commit().await?;
     Ok(done.rows_affected() > 0)
+}
+
+/// Takes the lock `claim_flow_v1` takes on the flow, until the commit: a change of the settings
+/// waits for a claim in flight, and a claim sees the settings either before or after it.
+async fn lock_flow(conn: &mut PgConnection, flow_id: &str) -> Result<(), Error> {
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended(current_schema() || ':' || $1, 0))")
+        .bind(flow_id)
+        .execute(conn)
+        .await?;
+    Ok(())
 }
