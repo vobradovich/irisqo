@@ -5,7 +5,7 @@ use tracing::{error, info, warn};
 
 use crate::{
     db,
-    models::{AppState, JobWithAttempt},
+    models::{AppState, JobEntry, JobWithAttempt},
     services::jobrunner::{self, Outcome},
 };
 use std::{sync::Arc, time::Duration};
@@ -89,6 +89,11 @@ impl WorkerService {
                 );
             })
             .unwrap_or_default();
+            // held from the claim on: the heartbeat renews their leases until the completer is done
+            app_state.held.add(jobs.iter().map(|j| JobEntry {
+                id: j.job.id,
+                attempt: j.attempt,
+            }));
             let empty = jobs.is_empty();
             let wait = pause;
             pause = if empty {

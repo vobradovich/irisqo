@@ -19,18 +19,17 @@ async fn reaper_releases_stuck_lock_and_rejects_late_result(pool: PgPool) -> any
     let stuck = common::fetch(&state, 10).await;
     assert_eq!(stuck.len(), 1);
 
-    // fresh lock: kept
-    let lease = Duration::from_secs(60);
+    // a lease that has not ended: kept
     assert_eq!(
-        db::jobqueue::reap_expired_locks(&pool, lease, &state.instance_id, 100).await?,
+        db::jobqueue::reap_expired_locks(&pool, &state.instance_id, 100).await?,
         0
     );
-    // stuck for an hour: released with retry + 1
-    sqlx::query("UPDATE claimed SET at = now() - interval '1 hour'")
+    // the lease ended: released with retry + 1
+    sqlx::query("UPDATE claimed SET until = now() - interval '1 second'")
         .execute(&pool)
         .await?;
     assert_eq!(
-        db::jobqueue::reap_expired_locks(&pool, lease, &state.instance_id, 100).await?,
+        db::jobqueue::reap_expired_locks(&pool, &state.instance_id, 100).await?,
         1
     );
     let (attempt, locked): (i32, bool) = sqlx::query_as(
@@ -61,6 +60,49 @@ async fn reaper_releases_stuck_lock_and_rejects_late_result(pool: PgPool) -> any
 }
 
 #[sqlx::test(migrations = "./sql/migrations")]
+async fn a_held_job_keeps_its_lease_and_a_lost_one_is_released(pool: PgPool) -> anyhow::Result<()> {
+    let state = common::state(pool.clone());
+    common::insert_enqueued(&pool, 2).await;
+    let mut jobs = common::fetch(&state, 10).await;
+    assert_eq!(jobs.len(), 2);
+    // the worker holds one; the other is lost (its outcome not written, its claim not received)
+    let job = jobs.remove(0);
+    let held = irisqo::models::JobEntry {
+        id: job.job.id,
+        attempt: job.attempt,
+    };
+    state.held.add([held]);
+    sqlx::query("UPDATE claimed SET until = now() - interval '1 second'")
+        .execute(&pool)
+        .await?;
+
+    let (ids, attempts) = state.held.columns();
+    let renewed = db::jobqueue::renew_leases(&pool, &state.instance_id, &ids, &attempts).await?;
+    assert_eq!(renewed, 1);
+    // a stale attempt of the same job renews nothing
+    let stale =
+        db::jobqueue::renew_leases(&pool, &state.instance_id, &ids, &[held.attempt + 1]).await?;
+    assert_eq!(stale, 0);
+    assert_eq!(
+        db::jobqueue::reap_expired_locks(&pool, &state.instance_id, 100).await?,
+        1
+    );
+    let claimed: Vec<i64> = sqlx::query_scalar("SELECT id FROM claimed")
+        .fetch_all(&pool)
+        .await?;
+    assert_eq!(claimed, [held.id]);
+
+    // once its outcome is written the job is no longer held
+    jobrunner::job_run(&state, job).await;
+    assert!(state.held.columns().0.is_empty());
+    assert_eq!(
+        common::processed_status(&pool, held.id).await.as_deref(),
+        Some("completed")
+    );
+    Ok(())
+}
+
+#[sqlx::test(migrations = "./sql/migrations")]
 async fn expired_instance_is_killed_with_history(pool: PgPool) -> anyhow::Result<()> {
     let state = common::state(pool.clone());
     let id = common::insert_enqueued(&pool, 1).await[0];
@@ -69,7 +111,7 @@ async fn expired_instance_is_killed_with_history(pool: PgPool) -> anyhow::Result
     )
     .execute(&pool)
     .await?;
-    sqlx::query("WITH a AS (DELETE FROM enqueued RETURNING id, attempt) INSERT INTO claimed(id, attempt, instance_id) SELECT id, attempt, 'old' FROM a")
+    sqlx::query("WITH a AS (DELETE FROM enqueued RETURNING id, attempt) INSERT INTO claimed(id, attempt, instance_id, until) SELECT id, attempt, 'old', now() + interval '30 seconds' FROM a")
         .execute(&pool)
         .await?;
 
@@ -462,6 +504,20 @@ async fn running_job_of_deleted_schedule_is_not_cloned(pool: PgPool) -> anyhow::
     Ok(())
 }
 
+fn retries(
+    items: &[(
+        irisqo::models::JobEntry,
+        Option<chrono::DateTime<chrono::Utc>>,
+        &str,
+    )],
+) -> db::jobqueue::Retries {
+    let mut retries = db::jobqueue::Retries::default();
+    for &(entry, at, message) in items {
+        retries.push(entry, at, message.to_owned());
+    }
+    retries
+}
+
 async fn enqueue_in_flow(pool: &PgPool, flow_key: &str) -> i64 {
     sqlx::query_scalar(
         "SELECT enqueue_v1(jsonb_build_object('url', 'http://localhost/x', 'flow_key', $1::text))",
@@ -533,7 +589,12 @@ async fn a_delayed_retry_does_not_hold_its_flow(pool: PgPool) -> anyhow::Result<
 
     let entry = irisqo::models::JobEntry { id: a, attempt: 0 };
     let at = chrono::Utc::now() + chrono::Duration::seconds(60);
-    let moved = db::jobqueue::retry(&pool, entry, at, &state.instance_id, "again").await?;
+    let moved = db::jobqueue::retry_many(
+        &pool,
+        &state.instance_id,
+        &retries(&[(entry, Some(at), "again")]),
+    )
+    .await?;
     assert_eq!(moved, 1);
     assert_eq!(
         common::count(&pool, "SELECT count(*) FROM scheduled").await,
@@ -546,8 +607,57 @@ async fn a_delayed_retry_does_not_hold_its_flow(pool: PgPool) -> anyhow::Result<
         .collect();
     assert_eq!(next, [b], "the flow is free while the retry waits");
     // a late result of the same attempt moves nothing
-    let again = db::jobqueue::retry(&pool, entry, at, &state.instance_id, "again").await?;
+    let again = db::jobqueue::retry_many(
+        &pool,
+        &state.instance_id,
+        &retries(&[(entry, Some(at), "again")]),
+    )
+    .await?;
     assert_eq!(again, 0);
+    Ok(())
+}
+
+#[sqlx::test(migrations = "./sql/migrations")]
+async fn retries_are_written_in_one_batch(pool: PgPool) -> anyhow::Result<()> {
+    let state = common::state(pool.clone());
+    common::insert_enqueued(&pool, 3).await;
+    let jobs = common::fetch(&state, 10).await;
+    let entries: Vec<_> = jobs
+        .iter()
+        .map(|j| irisqo::models::JobEntry {
+            id: j.job.id,
+            attempt: j.attempt,
+        })
+        .collect();
+    let at = chrono::Utc::now() + chrono::Duration::seconds(60);
+    // at once, later, and a stale attempt that moves nothing
+    let stale = irisqo::models::JobEntry {
+        attempt: entries[2].attempt + 1,
+        ..entries[2]
+    };
+    let batch = retries(&[
+        (entries[0], None, "now"),
+        (entries[1], Some(at), "later"),
+        (stale, None, "stale"),
+    ]);
+    assert_eq!(
+        db::jobqueue::retry_many(&pool, &state.instance_id, &batch).await?,
+        2
+    );
+    let moved: Vec<(i64, i32, bool)> = sqlx::query_as(
+        "SELECT id, attempt, false FROM enqueued UNION ALL SELECT id, attempt, true FROM scheduled ORDER BY id",
+    )
+    .fetch_all(&pool)
+    .await?;
+    assert_eq!(moved, [(entries[0].id, 1, false), (entries[1].id, 1, true)]);
+    assert_eq!(
+        common::history(&pool, entries[1].id).await.pop(),
+        Some(("retried".into(), Some("later".into())))
+    );
+    assert_eq!(
+        common::count(&pool, "SELECT count(*) FROM claimed").await,
+        1
+    );
     Ok(())
 }
 
@@ -782,7 +892,10 @@ async fn a_released_or_requeued_job_keeps_its_priority_and_flow(
         id: urgent,
         attempt: jobs[0].attempt,
     };
-    assert_eq!(db::jobqueue::unlock(&pool, entry, id, "again").await?, 1);
+    assert_eq!(
+        db::jobqueue::retry_many(&pool, id, &retries(&[(entry, None, "again")])).await?,
+        1
+    );
     let rows = sqlx::query_as::<_, (i64, Option<String>, i32)>(sql)
         .fetch_all(&pool)
         .await?;

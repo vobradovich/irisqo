@@ -160,16 +160,24 @@ CREATE TABLE claimed (
     flow_key        text NULL,
     priority    int NOT NULL DEFAULT 0,
     instance_id text NOT NULL,
-    at          timestamptz NOT NULL DEFAULT now()  -- claim time
+    at          timestamptz NOT NULL DEFAULT now(),  -- claim time
+    until       timestamptz NOT NULL                 -- the lease: released after it
 );
 CREATE INDEX ix_claimed_flow        ON claimed (flow_key) WHERE flow_key IS NOT NULL;
 CREATE INDEX ix_claimed_instance_id ON claimed (instance_id, id);  -- id: lookups by id + instance
-CREATE INDEX ix_claimed_at          ON claimed (at);  -- the lock reaper
 ```
 
 `id` is in the key of `ix_claimed_instance_id`: the lookups by `id` and `instance_id` (retry, unlock, completion) must
 not read all the jobs of the instance (the planner picked this index over the primary key and filtered ~1000 rows a
 lookup).
+
+`until` is the lease of the claim. The claim sets it to `now() + p_lease` (30 s), and the heartbeat of the holder renews
+it every 5 s for the jobs the worker still holds: from the claim (in its channel or running) to the write of their
+outcome, by `(id, attempt)`. The lock reaper of the scheduler releases a job whose lease has ended (`attempt + 1`, so a
+late result is rejected); it knows no timeouts. A job is released ≤ 30 s after its holder stopped holding it: the
+process died, the write of the outcome failed, or the answer of the claim never came, so the worker never had it.
+A long job, or one waiting behind long jobs, is renewed for as long as it is held. `until` has no index: `claimed` is
+small and the reaper reads it whole, and the renewal is a HOT update.
 
 ### 4. processed: finished
 
@@ -264,12 +272,13 @@ Only the format is checked, not the target (no DNS, no private-address check). N
 
 ### claim_v1
 
-`claim_v1(p_instance_id text, p_limit int) RETURNS TABLE (id, meta, headers, body, schedule_id, key, attempt)`: claims
+`claim_v1(p_instance_id text, p_limit int, p_lease interval) RETURNS TABLE (id, meta, headers, body, schedule_id, key, attempt)`: claims
 up to `p_limit` jobs for a worker, `enqueued` -> `claimed`, and returns them with the columns of `jobs` that a worker
-needs: the jobs without a flow first, then the flows with what is left (one call, one transaction).
+needs: the jobs without a flow first, then the flows with what is left (one call, one transaction). Each claim has
+the lease `now() + p_lease` (`claimed.until`).
 
 ```sql
-SELECT * FROM claim_v1($1, $2)
+SELECT * FROM claim_v1($1, $2, interval '30 seconds')
 ```
 
 It calls `claim_plain_v1` and, when that gave less than `p_limit` rows, `claim_flow_v1` with the rest (`GET DIAGNOSTICS
@@ -281,13 +290,13 @@ Each of the two is one statement after its checks: it deletes the rows from `enq
 
 ### claim_plain_v1
 
-`claim_plain_v1(p_instance_id text, p_limit int) RETURNS TABLE (id, meta, headers, body, schedule_id, key, attempt)`:
+`claim_plain_v1(p_instance_id text, p_limit int, p_lease interval) RETURNS TABLE (id, meta, headers, body, schedule_id, key, attempt)`:
 the jobs without a flow. Claims up to `p_limit` jobs (`priority DESC`, `attempt`, `id`; `FOR UPDATE SKIP LOCKED`, the
 partial index `ix_enqueued_candidates`) in one statement: `enqueued` -> `claimed`, `history`, and the jobs are returned.
 
 ### claim_flow_v1
 
-`claim_flow_v1(p_instance_id text, p_limit int)` returns the same columns: the jobs of the flows. A flow runs at most
+`claim_flow_v1(p_instance_id text, p_limit int, p_lease interval)` returns the same columns: the jobs of the flows. A flow runs at most
 `concurrency` jobs at once (1 when it is not declared), starts nothing while it is paused, and limits the start rate by
 GCRA (below). No order is promised: a flow gives its jobs by `id`, but a retry or a released job goes back with its
 place lost.

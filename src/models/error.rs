@@ -157,9 +157,6 @@ pub enum Error {
     /// The target address is not allowed (SSRF): never retried.
     #[error("Blocked target: {0}")]
     BlockedTarget(String),
-
-    #[error("Retries Exceeded")]
-    RetriesExceeded,
 }
 
 impl Error {
@@ -192,8 +189,7 @@ impl Error {
             | Error::InvalidParams(_)
             | Error::ServerError(_)
             | Error::ClientError(_)
-            | Error::BlockedTarget(_)
-            | Error::RetriesExceeded => false,
+            | Error::BlockedTarget(_) => false,
         }
     }
 }
@@ -238,8 +234,7 @@ impl From<Error> for Problem {
             | Error::HyperClientError(_)
             | Error::ServerError(_)
             | Error::ClientError(_)
-            | Error::BlockedTarget(_)
-            | Error::RetriesExceeded => {
+            | Error::BlockedTarget(_) => {
                 let problem = Problem {
                     detail: Some(
                         "The request could not be processed, see the server logs.".to_owned(),

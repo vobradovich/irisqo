@@ -434,8 +434,9 @@ Logs go to stdout and to OTel, both filtered by `RUST_LOG`; a log written inside
 its `trace_id`/`span_id`. Exported spans do not depend on `RUST_LOG`.
 
 ### Delivery guarantees
-At least once. Every instance sends a heartbeat; jobs of an instance silent for 30 s are released,
-and so is any job locked for longer than 3 × `--max-timeout` + 60 s (a failed result write, a hung worker).
+At least once. Every instance sends a heartbeat; jobs of an instance silent for 30 s are released. Each claimed job has
+a 30 s lease that the heartbeat renews while the worker holds it, however long the job runs or waits: a job no longer
+held (a failed result write, a lost claim) is released when its lease ends.
 A late result of such an attempt is rejected: a job is completed only by its current attempt.
 On `SIGINT`/`SIGTERM` the instance stops taking jobs, finishes the ones in
 flight (up to `--shutdown-timeout`), writes their results and releases the rest: an abandoned

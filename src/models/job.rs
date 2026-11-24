@@ -31,7 +31,7 @@ pub struct JobRow {
     pub parent_id: Option<i64>,
 }
 
-#[derive(Debug, Clone, Copy, sqlx::FromRow)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, sqlx::FromRow)]
 pub struct JobEntry {
     pub id: i64,
     pub attempt: i32,

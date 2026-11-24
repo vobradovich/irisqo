@@ -384,7 +384,7 @@ async fn instances_page_shows_heartbeats_and_work(pool: PgPool) -> anyhow::Resul
     .execute(&pool)
     .await?;
     let ids = common::insert_enqueued(&pool, 2).await;
-    sqlx::query("WITH a AS (DELETE FROM enqueued WHERE id = ANY($2) RETURNING id, attempt) INSERT INTO claimed(id, attempt, instance_id) SELECT id, attempt, $1 FROM a")
+    sqlx::query("WITH a AS (DELETE FROM enqueued WHERE id = ANY($2) RETURNING id, attempt) INSERT INTO claimed(id, attempt, instance_id, until) SELECT id, attempt, $1, now() + interval '30 seconds' FROM a")
         .bind(&state.instance_id)
         .bind(&ids)
         .execute(&pool)

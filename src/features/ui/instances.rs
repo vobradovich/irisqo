@@ -20,7 +20,7 @@ use super::{
 use crate::{
     features::instances::{self, InstanceFilter, InstanceView},
     models::{AppState, Error},
-    services::heartbeat::{HEARTBEAT_INTERVAL, INSTANCE_EXPIRE},
+    models::{HEARTBEAT_INTERVAL, INSTANCE_EXPIRE},
 };
 
 pub struct InstanceRowView {

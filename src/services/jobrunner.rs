@@ -8,7 +8,8 @@ use crate::{
         schedules::JobSchedule,
     },
     models::{
-        AppState, Error, JobCreate, JobEntry, JobRetry, JobRow, JobSink, JobWithAttempt, targets,
+        AppState, Error, JobCreate, JobEntry, JobMeta, JobRetry, JobRow, JobSink, JobWithAttempt,
+        targets,
     },
     otel::{self, HeaderInjector, metrics::metrics},
 };
@@ -38,9 +39,16 @@ pub struct Completion {
     pub schedule_id: Option<String>,
     pub result: JobResult,
     /// The callback this outcome makes, built with the outcome and written with it.
-    pub callback: Option<JobCreate>,
+    pub callback: Option<Box<JobCreate>>,
     /// Writing it makes a job claimable: it frees a place of its flow or enqueues a callback.
     pub wakes: bool,
+}
+
+impl Completion {
+    /// What `processed_many` writes. A fn, not a closure: the completer's future stays `Send`.
+    fn row(&self) -> (JobEntry, &JobResult, Option<&JobCreate>) {
+        (self.entry, &self.result, self.callback.as_deref())
+    }
 }
 
 /// Another attempt of a job, to be written back to the queue.
@@ -57,7 +65,7 @@ pub struct Retry {
 /// How a job attempt ends; [`complete`] writes it.
 #[derive(Debug)]
 pub enum Outcome {
-    Done(Box<Completion>),
+    Done(Completion),
     Retry(Retry),
 }
 
@@ -143,25 +151,18 @@ async fn job_attempt(app_state: &AppState, job_with_attempt: JobWithAttempt) -> 
     };
     let job_id = job.id;
     debug!({ instance_id, job_id, attempt }, "==> run");
-    let job_retry = job.meta.retry;
     let job_result = match job.meta.sink {
         JobSink::Noop => Ok(JobResult::default()),
         JobSink::Http(_) => job_run_http(app_state, &mut job, attempt).await,
     };
     let mut result = match job_result {
         Ok(result) => result,
-        Err(err) => match on_error(instance_id, entry, job_retry, err) {
-            Failed::Final(result) => {
+        Err(err) => match retry_or_error(instance_id, entry, &job.meta, err) {
+            Ok(retry) => return Outcome::Retry(retry),
+            Err(err) => {
+                let result = JobResult::from(err);
                 warn!({ instance_id, job_id }, "====> job failed={:?}", &result.meta);
                 result
-            }
-            Failed::Again { at, message } => {
-                return Outcome::Retry(Retry {
-                    entry,
-                    at,
-                    message,
-                    wakes: job.meta.flow_key.is_some(),
-                });
             }
         },
     };
@@ -170,18 +171,21 @@ async fn job_attempt(app_state: &AppState, job_with_attempt: JobWithAttempt) -> 
     // the callback goes on the attempt's trace and sampling flag, once the result is complete
     let callback = job.meta.callback.as_ref().and_then(|_| {
         let trace = otel::span_traceparent(&span);
-        JobOutcome::of(&job, attempt, &result, trace).callback()
+        JobOutcome::of(&job, attempt, &result, trace)
+            .callback()
+            .map(Box::new)
     });
-    Outcome::Done(Box::new(Completion {
+    Outcome::Done(Completion {
         entry,
         wakes: job.meta.flow_key.is_some() || callback.is_some(),
         schedule_id: job.schedule_id,
         result,
         callback,
-    }))
+    })
 }
 
-/// Pauses between repeats of a failed write: 250 ms doubling, 30 s in all (under the job lease).
+/// Pauses between repeats of a failed write: 250 ms doubling, 30 s in all (the lease is renewed
+/// meanwhile).
 fn write_pauses() -> impl Iterator<Item = Duration> {
     (0..7).map(|i| Duration::from_millis(250 << i))
 }
@@ -207,38 +211,38 @@ where
     write().await
 }
 
-/// Writes the outcomes: a statement per retry, one statement for the final results of all
-/// plain jobs, a transaction per scheduled job (its result and the next run are written atomically).
+/// Writes the outcomes: one statement for all retries, one for the final results of all plain
+/// jobs, a transaction per scheduled job (its result and the next run are written atomically).
 pub async fn complete(app_state: &AppState, outcomes: Vec<Outcome>) {
     let instance_id = &app_state.instance_id;
-    let mut completions = Vec::with_capacity(outcomes.len());
+    let (mut plain, mut scheduled) = (Vec::with_capacity(outcomes.len()), Vec::new());
+    let mut retries = db::jobqueue::Retries::default();
     for outcome in outcomes {
         match outcome {
-            Outcome::Done(completion) => completions.push(*completion),
-            Outcome::Retry(retry) => {
-                let job_id = retry.entry.id;
-                _ = write_with_retry(write_pauses(), || write_retry(app_state, &retry))
-                    .await
-                    .inspect(|&affected| {
-                        if affected == 0 {
-                            warn!({ instance_id, job_id }, "job is not locked by this attempt, skip retry");
-                        }
-                    })
-                    .inspect_err(|err| error!({ instance_id, job_id }, "retry error {:?}", err));
+            Outcome::Done(completion) if completion.schedule_id.is_some() => {
+                scheduled.push(completion);
             }
+            Outcome::Done(completion) => plain.push(completion),
+            Outcome::Retry(retry) => retries.push(retry.entry, retry.at, retry.message),
         }
     }
-    let (scheduled, plain): (Vec<_>, Vec<_>) = completions
-        .into_iter()
-        .partition(|c| c.schedule_id.is_some());
-    if !plain.is_empty() {
-        let items: Vec<_> = plain
-            .iter()
-            .map(|c| (c.entry, &c.result, c.callback.as_ref()))
-            .collect();
-        let total = items.len() as u64;
+    if !retries.is_empty() {
+        let total = retries.len() as u64;
         _ = write_with_retry(write_pauses(), || {
-            results::processed_many(&app_state.pool, &items, instance_id)
+            db::jobqueue::retry_many(&app_state.pool, instance_id, &retries)
+        })
+        .await
+        .inspect(|&affected| {
+            if affected < total {
+                warn!({ instance_id, total, affected }, "some jobs are not locked by this attempt, skip retry");
+            }
+        })
+        .inspect_err(|err| error!({ instance_id, total }, "db::jobqueue::retry_many error {:?}", err));
+    }
+    if !plain.is_empty() {
+        let total = plain.len() as u64;
+        _ = write_with_retry(write_pauses(), || {
+            results::processed_many(&app_state.pool, plain.iter().map(Completion::row), instance_id)
         })
         .await
             .inspect(|&affected| {
@@ -251,23 +255,17 @@ pub async fn complete(app_state: &AppState, outcomes: Vec<Outcome>) {
                 error!({ instance_id, total }, "results::processed_many error {:?}", err);
             });
     }
-    for completion in scheduled {
+    for completion in &scheduled {
         let job_id = completion.entry.id;
         _ = write_with_retry(write_pauses(), || {
-            processed_scheduled(app_state, &completion)
+            processed_scheduled(app_state, completion)
         })
         .await
         .inspect_err(|err| error!({ instance_id, job_id }, "processed error {:?}", err));
     }
-}
-
-/// Puts the job back: to `enqueued` at once, or to `scheduled` at its time.
-async fn write_retry(app_state: &AppState, retry: &Retry) -> Result<u64, Error> {
-    let (pool, instance_id) = (&app_state.pool, app_state.instance_id.as_str());
-    match retry.at {
-        None => db::jobqueue::unlock(pool, retry.entry, instance_id, &retry.message).await,
-        Some(at) => db::jobqueue::retry(pool, retry.entry, at, instance_id, &retry.message).await,
-    }
+    // written or given up: a job still claimed is released when its lease ends
+    let done = plain.iter().chain(&scheduled).map(|c| c.entry);
+    app_state.held.remove(done.chain(retries.entries()));
 }
 
 /// Calls the target of the job. The body of the row is taken out: the one buffer is sent, and
@@ -531,8 +529,7 @@ fn error_type(err: &Error) -> &'static str {
         | Error::HttpError(_)
         | Error::InvalidParams(_)
         | Error::ServerError(_)
-        | Error::ClientError(_)
-        | Error::RetriesExceeded => "_OTHER",
+        | Error::ClientError(_) => "_OTHER",
     }
 }
 
@@ -551,7 +548,7 @@ async fn processed_scheduled(app_state: &AppState, completion: &Completion) -> R
     // Result and next schedule run are written atomically
     let mut tx = app_state.pool.begin().await?;
     let affected =
-        results::processed(&mut *tx, entry, instance_id, result, callback.as_ref()).await?;
+        results::processed(&mut *tx, entry, instance_id, result, callback.as_deref()).await?;
     if affected == 0 {
         // The lock was lost (lock expired, instance expired, job deleted): nothing to complete or reschedule
         warn!({ instance_id, job_id }, "job is not locked by this attempt, skip");
@@ -596,19 +593,14 @@ async fn schedule_next_at(
     Ok(schedule.next(after))
 }
 
-/// How a failed attempt goes on.
-enum Failed {
-    /// No more attempts: the final result.
-    Final(JobResult),
-    /// Another attempt, at once (`None`) or at `at`.
-    Again {
-        at: Option<DateTime<Utc>>,
-        message: String,
-    },
-}
-
-/// Decides on another attempt when the error is worth one; the final result otherwise.
-fn on_error(instance_id: &str, entry: JobEntry, job_retry: Option<JobRetry>, err: Error) -> Failed {
+/// Another attempt when the error is worth one and the policy of `meta` allows it;
+/// otherwise the error back, the final result of the job.
+fn retry_or_error(
+    instance_id: &str,
+    entry: JobEntry,
+    meta: &JobMeta,
+    err: Error,
+) -> Result<Retry, Error> {
     let job_id = entry.id;
     let (retryable, retry_after) = match &err {
         Error::HyperError(_) | Error::HyperClientError(_) | Error::Timeout(_) => (true, None),
@@ -623,8 +615,7 @@ fn on_error(instance_id: &str, entry: JobEntry, job_retry: Option<JobRetry>, err
         | Error::DbError(_)
         | Error::IoError(_)
         | Error::HttpError(_)
-        | Error::InvalidParams(_)
-        | Error::RetriesExceeded => {
+        | Error::InvalidParams(_) => {
             error!({ instance_id, job_id }, "====> error {:?}", err);
             (false, None)
         }
@@ -634,15 +625,17 @@ fn on_error(instance_id: &str, entry: JobEntry, job_retry: Option<JobRetry>, err
         }
     };
     if !retryable {
-        return Failed::Final(err.into());
+        return Err(err);
     }
-    match retry_delay(entry, job_retry, retry_after) {
-        Some(delay) => Failed::Again {
-            at: (delay > 0).then(|| Utc::now() + chrono::Duration::seconds(i64::from(delay))),
-            message: error_message(&err),
-        },
-        None => Failed::Final(err.into()),
-    }
+    let Some(delay) = retry_delay(entry.attempt, meta.retry, retry_after) else {
+        return Err(err);
+    };
+    Ok(Retry {
+        entry,
+        at: (delay > 0).then(|| Utc::now() + chrono::Duration::seconds(i64::from(delay))),
+        message: error_message(&err),
+        wakes: meta.flow_key.is_some(),
+    })
 }
 
 /// Why an attempt failed, for the history of the job.
@@ -660,20 +653,15 @@ fn error_message(err: &Error) -> String {
         | Error::HyperError(_)
         | Error::HyperClientError(_)
         | Error::InvalidParams(_)
-        | Error::BlockedTarget(_)
-        | Error::RetriesExceeded => None,
+        | Error::BlockedTarget(_) => None,
     }
     .unwrap_or_else(|| err.to_string())
 }
 
 /// Seconds until the next attempt: backoff with jitter, but never sooner than the
 /// `Retry-After` of the response. `None` when the retries are exhausted.
-fn retry_delay(
-    entry: JobEntry,
-    job_retry: Option<JobRetry>,
-    retry_after: Option<u32>,
-) -> Option<u32> {
-    let attempt: u16 = entry.attempt.try_into().unwrap_or(u16::MAX);
+fn retry_delay(attempt: i32, job_retry: Option<JobRetry>, retry_after: Option<u32>) -> Option<u32> {
+    let attempt: u16 = attempt.try_into().unwrap_or(u16::MAX);
     let job_retry = job_retry?;
     let delay = job_retry.jittered_delay(attempt)?;
     // up to the longest delay of the policy

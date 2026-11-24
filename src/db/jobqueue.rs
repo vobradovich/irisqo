@@ -1,9 +1,7 @@
-use std::time::Duration;
-
 use crate::features;
 use crate::features::callbacks::JobOutcome;
 use crate::features::results::{self, JobResult};
-use crate::models::{Error, JobCreateRow, JobEntry, JobMeta, JobWithAttempt};
+use crate::models::{CLAIM_LEASE, Error, JobCreateRow, JobEntry, JobMeta, JobWithAttempt};
 use crate::models::{JobCreate, JobRow};
 use chrono::{DateTime, Utc};
 use sqlx::{FromRow, Pool, Postgres, Row, types::Json};
@@ -187,79 +185,118 @@ pub async fn enqueue_scheduled(
     Ok(res.rows_affected())
 }
 
-/// Puts a job back to `enqueued` for an immediate retry.
-/// Only the current attempt (`instance_id` + `attempt`) may do it: returns 0 otherwise.
-pub async fn unlock(
-    pool: &Pool<Postgres>,
-    entry: JobEntry,
-    instance_id: &str,
-    message: &str,
-) -> Result<u64, Error> {
-    const SQL: &str = "
-    WITH a AS (
-        DELETE FROM claimed WHERE id = $1 AND instance_id = $2 AND attempt = $3 RETURNING id, attempt, flow_key, priority
-    ), b AS (
-        INSERT INTO enqueued(id, attempt, flow_key, priority) SELECT id, attempt + 1, flow_key, priority FROM a RETURNING id, attempt
-    )
-    INSERT INTO history(id, attempt, kind, instance_id, message) SELECT id, attempt, 'retried', $2, $4 FROM b";
-    let res = sqlx::query(SQL)
-        .bind(entry.id)
-        .bind(instance_id)
-        .bind(entry.attempt)
-        .bind(message)
-        .execute(pool)
-        .await?;
-    Ok(res.rows_affected())
+/// The retries of [`retry_many`] as columns, one entry per job.
+#[derive(Debug, Default)]
+pub struct Retries {
+    ids: Vec<i64>,
+    attempts: Vec<i32>,
+    /// `None`: at once, to `enqueued`.
+    ats: Vec<Option<DateTime<Utc>>>,
+    messages: Vec<String>,
 }
 
-/// Moves a job to `scheduled` for a retry at `at`.
-/// Only the current attempt (`instance_id` + `attempt`) may do it: returns 0 otherwise.
-pub async fn retry(
+impl Retries {
+    pub fn push(&mut self, entry: JobEntry, at: Option<DateTime<Utc>>, message: String) {
+        self.ids.push(entry.id);
+        self.attempts.push(entry.attempt);
+        self.ats.push(at);
+        self.messages.push(message);
+    }
+
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.ids.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.ids.is_empty()
+    }
+
+    pub fn entries(&self) -> impl Iterator<Item = JobEntry> + '_ {
+        let zipped = self.ids.iter().zip(&self.attempts);
+        zipped.map(|(&id, &attempt)| JobEntry { id, attempt })
+    }
+}
+
+/// Puts jobs back for another attempt (`attempt + 1`) in one statement: to `enqueued` at once
+/// (`at` is `None`) or to `scheduled` at `at`. Only the current attempt (`instance_id` +
+/// `attempt`) may do it: returns the number of jobs put back.
+pub async fn retry_many(
     pool: &Pool<Postgres>,
-    entry: JobEntry,
-    at: DateTime<Utc>,
     instance_id: &str,
-    message: &str,
+    retries: &Retries,
 ) -> Result<u64, Error> {
     const SQL: &str = "
-    WITH a AS (
-        DELETE FROM claimed WHERE id = $1 AND instance_id = $3 AND attempt = $4
-        RETURNING id, attempt + 1 AS attempt, flow_key, priority, instance_id
+    WITH input AS (
+        SELECT * FROM unnest($2::bigint[], $3::int[], $4::timestamptz[], $5::text[]) AS t(id, attempt, at, message)
+    ), a AS (
+        DELETE FROM claimed AS c
+        WHERE c.id = ANY($2::bigint[]) AND c.instance_id = $1
+          AND c.attempt = ($3::int[])[array_position($2::bigint[], c.id)]
+        RETURNING c.id, c.attempt + 1 AS attempt, c.flow_key, c.priority
+    ), e AS (
+        INSERT INTO enqueued(id, attempt, flow_key, priority)
+        SELECT a.id, a.attempt, a.flow_key, a.priority FROM a INNER JOIN input AS i ON i.id = a.id
+        WHERE i.at IS NULL
     ), s AS (
-        INSERT INTO scheduled(id, at, attempt, flow_key, priority) SELECT id, $2::timestamptz, attempt, flow_key, priority FROM a RETURNING id, attempt
+        INSERT INTO scheduled(id, at, attempt, flow_key, priority)
+        SELECT a.id, i.at, a.attempt, a.flow_key, a.priority FROM a INNER JOIN input AS i ON i.id = a.id
+        WHERE i.at IS NOT NULL
     )
-    INSERT INTO history(id, attempt, kind, instance_id, message) SELECT id, attempt, 'retried', $3, $5 FROM s";
+    INSERT INTO history(id, attempt, kind, instance_id, message)
+    SELECT a.id, a.attempt, 'retried', $1, i.message FROM a INNER JOIN input AS i ON i.id = a.id";
     let res = sqlx::query(SQL)
-        .bind(entry.id)
-        .bind(at)
         .bind(instance_id)
-        .bind(entry.attempt)
-        .bind(message)
+        .bind(&retries.ids)
+        .bind(&retries.attempts)
+        .bind(&retries.ats)
+        .bind(&retries.messages)
         .execute(pool)
         .await?;
     Ok(res.rows_affected())
 }
 
-/// Releases up to `limit` jobs locked for longer than `lease` (`attempt + 1`, so a late
-/// result of the stuck attempt is rejected), whatever instance holds them.
+/// Renews by [`CLAIM_LEASE`] the leases of the jobs this instance still holds: `ids` and
+/// `attempts` are the columns of [`crate::models::Held`].
+pub async fn renew_leases(
+    pool: &Pool<Postgres>,
+    instance_id: &str,
+    ids: &[i64],
+    attempts: &[i32],
+) -> Result<u64, Error> {
+    const SQL: &str = "
+    UPDATE claimed AS c SET until = now() + $4
+    FROM unnest($2::bigint[], $3::int[]) AS h(id, attempt)
+    WHERE c.id = h.id AND c.attempt = h.attempt AND c.instance_id = $1";
+    let res = sqlx::query(SQL)
+        .bind(instance_id)
+        .bind(ids)
+        .bind(attempts)
+        .bind(CLAIM_LEASE)
+        .execute(pool)
+        .await?;
+    Ok(res.rows_affected())
+}
+
+/// Releases up to `limit` jobs whose lease has ended (`attempt + 1`, so a late result of the
+/// stuck attempt is rejected), whatever instance holds them.
 pub async fn reap_expired_locks(
     pool: &Pool<Postgres>,
-    lease: Duration,
     instance_id: &str,
     limit: i32,
 ) -> Result<u64, Error> {
     const SQL: &str = "
     WITH a AS (
         DELETE FROM claimed
-        WHERE id = ANY(ARRAY(SELECT id FROM claimed WHERE at < now() - $1 ORDER BY at LIMIT $3 FOR UPDATE SKIP LOCKED))
+        WHERE id = ANY(ARRAY(SELECT id FROM claimed WHERE until < now() ORDER BY until LIMIT $2 FOR UPDATE SKIP LOCKED))
         RETURNING id, attempt, flow_key, priority, instance_id
     ), b AS (
         INSERT INTO enqueued(id, attempt, flow_key, priority) SELECT id, attempt + 1, flow_key, priority FROM a
     )
     INSERT INTO history(id, attempt, kind, instance_id, message)
-    SELECT id, attempt + 1, 'retried', $2, 'lock expired: ' || instance_id FROM a";
+    SELECT id, attempt + 1, 'retried', $1, 'lock expired: ' || instance_id FROM a";
     let res = sqlx::query(SQL)
-        .bind(lease)
         .bind(instance_id)
         .bind(limit)
         .execute(pool)
@@ -273,16 +310,17 @@ pub async fn reap_expired_locks(
 /// `claim_v1` reads the jobs in the statement that claims them: a join with `jobs` outside
 /// would use an older snapshot and miss a job enqueued meanwhile, which would stay claimed and
 /// never run. The claim is committed before any job runs: a worker completing a job never
-/// waits on the fetch itself.
+/// waits on the fetch itself. Each claim has a lease of [`CLAIM_LEASE`].
 pub async fn fetch_job_with_attempt(
     pool: &Pool<Postgres>,
     instance_id: &str,
     prefetch: i32,
 ) -> Result<Vec<JobWithAttempt>, Error> {
-    const SQL: &str = "SELECT * FROM claim_v1($2, $1)";
+    const SQL: &str = "SELECT * FROM claim_v1($2, $1, $3)";
     let rows = sqlx::query(SQL)
         .bind(prefetch)
         .bind(instance_id)
+        .bind(CLAIM_LEASE)
         .fetch_all(pool)
         .await?;
     let mut jobs = Vec::with_capacity(rows.len());

@@ -32,19 +32,26 @@ pub async fn processed<'e, E>(
 where
     E: sqlx::Executor<'e, Database = Postgres>,
 {
-    processed_many(executor, &[(entry, job_result, callback)], instance_id).await
+    processed_many(
+        executor,
+        std::iter::once((entry, job_result, callback)),
+        instance_id,
+    )
+    .await
 }
 
 /// Completes many jobs in one statement; jobs whose current attempt is not
 /// (`instance_id` + `attempt`) any more are skipped, and make no callback. Returns the number of
 /// completed jobs.
-pub async fn processed_many<'e, E>(
+pub async fn processed_many<'a, 'e, E, I>(
     executor: E,
-    items: &[(JobEntry, &JobResult, Option<&JobCreate>)],
+    items: I,
     instance_id: &str,
 ) -> Result<u64, Error>
 where
     E: sqlx::Executor<'e, Database = Postgres>,
+    I: IntoIterator<Item = (JobEntry, &'a JobResult, Option<&'a JobCreate>)>,
+    I::IntoIter: ExactSizeIterator,
 {
     const SQL: &str = "
     WITH input AS (
@@ -80,20 +87,22 @@ where
         SELECT cb.id, 0, 'enqueued', 'callback of #' || cb.parent_id FROM cb
     )
     SELECT count(*) FROM p";
-    if items.is_empty() {
+    let items = items.into_iter();
+    let n = items.len();
+    if n == 0 {
         return Ok(0);
     }
-    let mut ids = Vec::with_capacity(items.len());
-    let mut retries = Vec::with_capacity(items.len());
-    let mut statuses = Vec::with_capacity(items.len());
-    let mut metas = Vec::with_capacity(items.len());
-    let mut headers = Vec::with_capacity(items.len());
-    let mut bodies = Vec::with_capacity(items.len());
-    let mut messages = Vec::with_capacity(items.len());
-    let mut cb_metas = Vec::with_capacity(items.len());
-    let mut cb_headers = Vec::with_capacity(items.len());
-    let mut cb_bodies = Vec::with_capacity(items.len());
-    let mut cb_keys = Vec::with_capacity(items.len());
+    let mut ids = Vec::with_capacity(n);
+    let mut retries = Vec::with_capacity(n);
+    let mut statuses = Vec::with_capacity(n);
+    let mut metas = Vec::with_capacity(n);
+    let mut headers = Vec::with_capacity(n);
+    let mut bodies = Vec::with_capacity(n);
+    let mut messages = Vec::with_capacity(n);
+    let mut cb_metas = Vec::with_capacity(n);
+    let mut cb_headers = Vec::with_capacity(n);
+    let mut cb_bodies = Vec::with_capacity(n);
+    let mut cb_keys = Vec::with_capacity(n);
     for (entry, result, callback) in items {
         ids.push(entry.id);
         retries.push(entry.attempt);
