@@ -77,9 +77,9 @@ The callback is an object, `callback`, of the job. In `/to/` its fields are quer
   it to its target as `<name>`; its value is shown as `••••`, as any secret;
 - names are case-insensitive and cannot repeat.
 
-The API (`POST /api/v1/jobs`, `/to/`) refuses a request that breaks this with a 400.
-`enqueue_v1` does not check the names: a job that has such a header ends as it would, and
-**no callback is made** for it (the log of the worker says which header).
+The API (`POST /api/v1/jobs`, `/to/`) refuses a request that breaks this with a 400,
+`enqueue_v1` with an error. A job written to `jobs` by hand with such a header ends as it
+would, and **no callback is made** for it (the log of the worker says which header).
 
 ### JSON (`POST /api/v1/jobs`)
 

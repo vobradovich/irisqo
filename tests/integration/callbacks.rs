@@ -466,6 +466,18 @@ async fn callback_fields_are_checked(pool: PgPool) -> anyhow::Result<()> {
         r#"{"url":"noop://x","callback":{"url":"http://x.example","types":["completed"]}}"#,
         r#"{"url":"noop://x","callback":{"url":"http://x.example","types":[]}}"#,
         r#"{"url":"noop://x","callback":{"types":["irisqo.job.failed"]}}"#,
+        // the names irisqo sets, in any case, and ones that are not header names
+        r#"{"url":"noop://x","callback":{"url":"http://x.example","headers":{"Irisqo-Parent-Id":"999"}}}"#,
+        r#"{"url":"noop://x","callback":{"url":"http://x.example","headers":{"irisqo-event-type":"x"}}}"#,
+        r#"{"url":"noop://x","callback":{"url":"http://x.example","headers":{"Webhook-Id":"x"}}}"#,
+        r#"{"url":"noop://x","callback":{"url":"http://x.example","headers":{"host":"x"}}}"#,
+        r#"{"url":"noop://x","callback":{"url":"http://x.example","headers":{"irisqo-forward-host":"x"}}}"#,
+        r#"{"url":"noop://x","callback":{"url":"http://x.example","headers":{"irisqo-forward-irisqo-job-id":"x"}}}"#,
+        r#"{"url":"noop://x","callback":{"url":"http://x.example","headers":{"irisqo-forward-":"x"}}}"#,
+        r#"{"url":"noop://x","callback":{"url":"http://x.example","headers":{"":"x"}}}"#,
+        r#"{"url":"noop://x","callback":{"url":"http://x.example","headers":{"x y":"x"}}}"#,
+        r#"{"url":"noop://x","callback":{"url":"http://x.example","headers":{"x-own":"a\nb"}}}"#,
+        r#"{"url":"noop://x","callback":{"url":"http://x.example","headers":{"X-Own":"a","x-own":"b"}}}"#,
         // a policy has its kind, a backoff its delay
         r#"{"url":"noop://x","callback":{"url":"http://x.example","retry":{"count":3}}}"#,
         r#"{"url":"noop://x","callback":{"url":"http://x.example","retry":{"policy":"fibonacci","count":3}}}"#,
@@ -482,7 +494,7 @@ async fn callback_fields_are_checked(pool: PgPool) -> anyhow::Result<()> {
         assert!(res.is_err(), "{job}");
     }
     let id: i64 = sqlx::query_scalar(
-        r#"SELECT enqueue_v1('{"url":"noop://x","callback":{"url":"http://x.example","method":"put","types":["irisqo.job.failed"],"retry":{"policy":"fixed","count":3}}}'::jsonb)"#,
+        r#"SELECT enqueue_v1('{"url":"noop://x","callback":{"url":"http://x.example","method":"put","types":["irisqo.job.failed"],"retry":{"policy":"fixed","count":3},"headers":{"Irisqo-Forward-Authorization":"Bearer t","x-own":"a\tb"}}}'::jsonb)"#,
     )
     .fetch_one(&pool)
     .await?;
@@ -495,6 +507,7 @@ async fn callback_fields_are_checked(pool: PgPool) -> anyhow::Result<()> {
     assert_eq!(callback["method"], "PUT");
     assert_eq!(callback["types"], serde_json::json!(["irisqo.job.failed"]));
     assert_eq!(callback["retry"]["count"], 3);
+    assert_eq!(callback["headers"]["x-own"], "a\tb");
     Ok(())
 }
 
@@ -572,13 +585,22 @@ async fn callback_retry_none_is_not_the_default(pool: PgPool) -> anyhow::Result<
     Ok(())
 }
 
-/// `enqueue_v1` does not check the names of the callback headers: when the job ends, a callback
-/// with a header that cannot be sent (one irisqo sets itself, a bad name or value) is not made,
-/// and the job is done all the same.
+/// `enqueue_v1` refuses the callback headers that cannot be sent, but a row written to `jobs` by
+/// hand may have one (irisqo's own, a bad name or value): when the job ends, its callback is not
+/// made, and the job is done all the same.
 #[sqlx::test(migrations = "./sql/migrations")]
 async fn a_callback_with_a_forged_header_is_not_made(pool: PgPool) -> anyhow::Result<()> {
     let state = common::state(pool.clone());
     let headers = |name: &str, value: &str| serde_json::json!({ name: value });
+    let enqueue = |headers: serde_json::Value| {
+        let job = serde_json::json!({
+            "url":"noop://x",
+            "callback": {"url": "http://x.example", "mode": "relay", "headers": headers},
+        });
+        sqlx::query_scalar::<_, i64>("SELECT enqueue_v1($1::jsonb)")
+            .bind(job.to_string())
+            .fetch_one(&pool)
+    };
     let mut forged = Vec::new();
     for (name, value) in [
         ("Irisqo-Parent-Id", "999"),
@@ -588,27 +610,17 @@ async fn a_callback_with_a_forged_header_is_not_made(pool: PgPool) -> anyhow::Re
         ("bad name", "1"),
         ("x-own", "bad\u{1}value"),
     ] {
-        let job = serde_json::json!({
-            "url":"noop://x",
-            "callback": {"url": "http://x.example", "mode": "relay",
-                "headers": headers(name, value)},
-        });
-        forged.push(
-            sqlx::query_scalar::<_, i64>("SELECT enqueue_v1($1::jsonb)")
-                .bind(job.to_string())
-                .fetch_one(&pool)
-                .await?,
-        );
-    }
-    let job = serde_json::json!({
-        "url":"noop://x",
-        "callback": {"url": "http://x.example", "mode": "relay",
-            "headers": headers("x-own", "kept")},
-    });
-    let fine: i64 = sqlx::query_scalar("SELECT enqueue_v1($1::jsonb)")
-        .bind(job.to_string())
-        .fetch_one(&pool)
+        let id = enqueue(headers("x-own", "fine")).await?;
+        sqlx::query(
+            "UPDATE jobs SET meta = jsonb_set(meta, '{callback,headers}', $2) WHERE id = $1",
+        )
+        .bind(id)
+        .bind(headers(name, value))
+        .execute(&pool)
         .await?;
+        forged.push(id);
+    }
+    let fine = enqueue(headers("x-own", "kept")).await?;
 
     assert_eq!(common::run_enqueued(&state).await, 7);
     for id in forged {

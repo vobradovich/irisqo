@@ -150,6 +150,7 @@ DECLARE
     v_cb_retry jsonb := nullif(v_cb->'retry', 'null'::jsonb);
     v_cb_policy text := v_cb_retry->>'policy';
     v_cb_flow  text := nullif(v_cb->>'flow_key', '');
+    v_cb_headers jsonb := coalesce(nullif(v_cb->'headers', 'null'::jsonb), '{}');
     v_callback jsonb;
 BEGIN
     v_error := CASE
@@ -238,10 +239,22 @@ BEGIN
             THEN 'callback.types must list irisqo.job.completed, irisqo.job.failed or irisqo.job.cancelled'
         WHEN jsonb_typeof(v_cb->'headers') NOT IN ('object', 'null')
             THEN 'callback.headers must be an object'
-        WHEN EXISTS (SELECT 1
-                     FROM jsonb_each(coalesce(nullif(v_cb->'headers', 'null'::jsonb), '{}')) h
-                     WHERE jsonb_typeof(h.value) <> 'string')
+        WHEN EXISTS (SELECT 1 FROM jsonb_each(v_cb_headers) h WHERE jsonb_typeof(h.value) <> 'string')
             THEN 'callback.headers values must be strings'
+        WHEN EXISTS (SELECT 1
+                     FROM jsonb_object_keys(v_cb_headers) k,
+                          LATERAL (SELECT regexp_replace(lower(k), '^irisqo-forward-', '') AS n) x
+                     WHERE n !~ '^[!#$%&''*+.^_`|~0-9a-z-]+$'
+                        OR n IN ('host', 'content-length', 'transfer-encoding', 'connection',
+                                 'traceparent', 'tracestate')
+                        OR n LIKE 'irisqo-%'
+                        OR lower(k) LIKE 'webhook-%')
+            THEN 'callback.headers may not have a reserved name or one that is not a header name'
+        WHEN (SELECT count(DISTINCT lower(k)) <> count(*) FROM jsonb_object_keys(v_cb_headers) k)
+            THEN 'callback.headers names are case-insensitive and cannot repeat'
+        WHEN EXISTS (SELECT 1 FROM jsonb_each_text(v_cb_headers) h
+                     WHERE h.value ~ '[\x01-\x08\x0a-\x1f\x7f]')
+            THEN 'callback.headers values may not have control characters other than tab'
         WHEN v_cb_flow !~ c_flow
             THEN 'callback.flow_key must be 1 to 128 characters of a-z, 0-9, . _ : - and start with a letter or a digit'
         WHEN v_cb->>'priority' !~ '^-?[0-9]{1,10}$'

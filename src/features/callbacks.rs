@@ -118,7 +118,7 @@ impl JobOutcome<'_> {
         if !callback.fires_on(kind) {
             return None;
         }
-        // the input refuses these; a job by hand (`enqueue_v1`) may have them: no callback, logged
+        // the input and `enqueue_v1` refuse these; a row written by hand may have them: no callback, logged
         if let Some((name, why)) = callback
             .headers
             .iter()
@@ -331,8 +331,8 @@ mod tests {
         assert!(!headers.contains_key("irisqo-parent-status"));
     }
 
-    /// Input refuses these headers, but a job written by hand (`enqueue_v1`) may have them: it
-    /// makes no callback.
+    /// Input and `enqueue_v1` refuse these headers, but a row written to `jobs` by hand may have
+    /// them: it makes no callback.
     #[test]
     fn a_callback_with_a_header_that_cannot_be_sent_is_not_made() {
         let made = |name: &str, value: &str| {
