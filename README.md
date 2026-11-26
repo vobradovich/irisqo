@@ -419,6 +419,7 @@ Jobs continue the trace of the request that created them (W3C `traceparent`/`tra
 | `db.client.connection.max` | gauge | |
 | `irisqo.jobs.created` | counter | `job.type` (`immediate`, `delayed`, `scheduled`) |
 | `irisqo.job.attempt.duration` | histogram, s | `job.outcome` (`completed`, `failed`, `retry`) |
+| `irisqo.job.queue.duration` | histogram, s | `job.flow` (`none`, `declared`, `undeclared`): from due to claimed |
 | `irisqo.jobs.in_flight` | up-down counter | attempts running on the instance |
 | `irisqo.queue.depth` | gauge | `state` (`scheduled`, `enqueued`, `processing`), the whole queue, every 15 s |
 | `irisqo.queue.lag` | gauge, s | how long the oldest due job has been waiting to start |

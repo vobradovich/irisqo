@@ -6,7 +6,8 @@ CREATE TABLE instances (
     version     text NOT NULL,
     started_at  timestamptz NOT NULL DEFAULT now(),
     seen_at     timestamptz NOT NULL DEFAULT now(),
-    stopped_at  timestamptz NULL
+    stopped_at  timestamptz NULL,
+    flow_cursor text NULL
 );
 
 CREATE TABLE flows (
@@ -369,7 +370,8 @@ RETURNS TABLE (
     body        bytea,
     schedule_id text,
     key         text,
-    attempt     int
+    attempt     int,
+    waited      float8
 )
 LANGUAGE sql SET search_path FROM CURRENT AS $$
     WITH b AS (
@@ -380,19 +382,19 @@ LANGUAGE sql SET search_path FROM CURRENT AS $$
                              ORDER BY e.priority DESC, e.attempt, e.id
                              LIMIT p_limit
                              FOR UPDATE SKIP LOCKED))
-        RETURNING id, attempt, priority
+        RETURNING id, attempt, priority, at
     ), hist AS (
         INSERT INTO history (id, attempt, kind, instance_id)
         SELECT b.id, b.attempt, 'claimed', p_instance_id FROM b
     ), c AS (
         INSERT INTO claimed (id, attempt, priority, instance_id, until)
         SELECT b.id, b.attempt, b.priority, p_instance_id, now() + p_lease FROM b
-        RETURNING claimed.id, claimed.attempt, claimed.priority
     )
-    SELECT j.id, j.meta, j.headers, j.body, j.schedule_id, j.key, c.attempt
-    FROM c
-    INNER JOIN jobs AS j ON j.id = c.id
-    ORDER BY c.priority DESC, c.attempt, c.id
+    SELECT j.id, j.meta, j.headers, j.body, j.schedule_id, j.key, b.attempt,
+           extract(epoch FROM now() - b.at)::float8
+    FROM b
+    INNER JOIN jobs AS j ON j.id = b.id
+    ORDER BY b.priority DESC, b.attempt, b.id
 $$;
 
 CREATE FUNCTION flow_rate_free_v1(p_rate int, p_period int, p_next_at timestamptz)
@@ -405,7 +407,114 @@ LANGUAGE sql STABLE PARALLEL SAFE AS $$
     END
 $$;
 
-CREATE FUNCTION claim_flow_v1(p_instance_id text, p_limit int, p_lease interval)
+CREATE FUNCTION claim_declared_ids_v1(p_limit int)
+RETURNS bigint[]
+LANGUAGE plpgsql SET search_path FROM CURRENT SET jit = off AS $$
+DECLARE
+    v_keys text[];
+    v_ids  bigint[];
+BEGIN
+    WITH waiting AS MATERIALIZED (
+        SELECT f.flow_id, f.concurrency
+        FROM flows f
+        WHERE NOT f.paused
+          AND flow_rate_free_v1(f.rate, f.rate_period, f.next_at) >= 1
+          AND EXISTS (SELECT 1 FROM enqueued e WHERE e.flow_key = f.flow_id)
+    ), ready AS MATERIALIZED (
+        SELECT w.flow_id
+        FROM waiting w
+        CROSS JOIN LATERAL (SELECT count(*) AS n FROM claimed c WHERE c.flow_key = w.flow_id) r
+        WHERE r.n < w.concurrency
+        ORDER BY r.n::float8 / w.concurrency, random()
+    )
+    SELECT coalesce(array_agg(l.flow_id), '{}')
+    INTO v_keys
+    FROM (SELECT ready.flow_id
+          FROM ready
+          WHERE pg_try_advisory_xact_lock(hashtextextended(current_schema() || ':' || ready.flow_id, 0))
+          LIMIT p_limit) l;
+
+    SELECT coalesce(array_agg(t.id), '{}')
+    INTO v_ids
+    FROM (
+        SELECT x.id
+        FROM unnest(v_keys) WITH ORDINALITY AS u(name, ord)
+        INNER JOIN flows f ON f.flow_id = u.name
+        CROSS JOIN LATERAL (SELECT count(*) AS n FROM claimed c WHERE c.flow_key = u.name) r
+        CROSS JOIN LATERAL (
+            SELECT h.id, row_number() OVER (ORDER BY h.priority DESC, h.attempt, h.id) AS k
+            FROM (SELECT e.id, e.priority, e.attempt
+                  FROM enqueued e
+                  WHERE e.flow_key = u.name
+                  ORDER BY e.priority DESC, e.attempt, e.id
+                  LIMIT least(greatest(f.concurrency - r.n, 0),
+                              flow_rate_free_v1(f.rate, f.rate_period, f.next_at),
+                              p_limit)) h
+        ) x
+        ORDER BY (r.n + x.k)::float8 / f.concurrency, u.ord, x.k
+        LIMIT p_limit
+    ) t;
+    RETURN v_ids;
+END $$;
+
+CREATE FUNCTION claim_undeclared_ids_v1(p_limit int, p_flow_cursor text, OUT o_ids bigint[], OUT o_after text)
+LANGUAGE plpgsql SET search_path FROM CURRENT SET jit = off SET enable_seqscan = off AS $$
+DECLARE
+    v_keys text[];
+BEGIN
+    WITH RECURSIVE fwd(flow_key) AS (
+        (SELECT e.flow_key FROM enqueued e WHERE e.flow_key > coalesce(p_flow_cursor, '') ORDER BY e.flow_key LIMIT 1)
+        UNION ALL
+        SELECT (SELECT e.flow_key FROM enqueued e WHERE e.flow_key > fwd.flow_key ORDER BY e.flow_key LIMIT 1)
+        FROM fwd
+        WHERE fwd.flow_key IS NOT NULL
+    ), wrap(flow_key) AS (
+        (SELECT e.flow_key FROM enqueued e
+         WHERE p_flow_cursor IS NOT NULL AND e.flow_key IS NOT NULL ORDER BY e.flow_key LIMIT 1)
+        UNION ALL
+        SELECT (SELECT e.flow_key FROM enqueued e WHERE e.flow_key > wrap.flow_key ORDER BY e.flow_key LIMIT 1)
+        FROM wrap
+        WHERE wrap.flow_key <= p_flow_cursor
+    ), names AS (
+        SELECT fwd.flow_key, 1 AS pass FROM fwd WHERE fwd.flow_key IS NOT NULL
+        UNION ALL
+        SELECT wrap.flow_key, 2 FROM wrap WHERE wrap.flow_key <= p_flow_cursor
+    ), seen AS (
+        SELECT n.flow_key, n.pass FROM names n LIMIT p_limit * 4
+    ), ready AS MATERIALIZED (
+        SELECT s.flow_key, s.pass
+        FROM seen s
+        WHERE NOT EXISTS (SELECT 1 FROM flows f WHERE f.flow_id = s.flow_key OFFSET 0)
+          AND NOT EXISTS (SELECT 1 FROM claimed c WHERE c.flow_key = s.flow_key OFFSET 0)
+    ), locked AS (
+        SELECT ready.flow_key, ready.pass
+        FROM ready
+        WHERE pg_try_advisory_xact_lock(hashtextextended(current_schema() || ':' || ready.flow_key, 0))
+        LIMIT p_limit
+    )
+    SELECT coalesce(array_agg(l.flow_key), '{}'),
+           CASE WHEN count(*) = p_limit
+                THEN (array_agg(l.flow_key ORDER BY l.pass DESC, l.flow_key DESC))[1]
+                ELSE coalesce((SELECT s.flow_key FROM seen s ORDER BY s.pass DESC, s.flow_key DESC LIMIT 1), p_flow_cursor)
+           END
+    INTO v_keys, o_after
+    FROM locked l;
+
+    SELECT coalesce(array_agg(x.id), '{}')
+    INTO o_ids
+    FROM unnest(v_keys) AS u(name)
+    CROSS JOIN LATERAL (
+        SELECT e.id
+        FROM enqueued e
+        WHERE e.flow_key = u.name
+        ORDER BY e.priority DESC, e.attempt, e.id
+        LIMIT 1
+    ) x
+    WHERE NOT EXISTS (SELECT 1 FROM flows f WHERE f.flow_id = u.name)
+      AND NOT EXISTS (SELECT 1 FROM claimed c WHERE c.flow_key = u.name);
+END $$;
+
+CREATE FUNCTION claim_flow_v1(p_instance_id text, p_limit int, p_lease interval, p_declared_share int)
 RETURNS TABLE (
     id          bigint,
     meta        jsonb,
@@ -413,55 +522,43 @@ RETURNS TABLE (
     body        bytea,
     schedule_id text,
     key         text,
-    attempt     int
+    attempt     int,
+    waited      float8,
+    flow_declared boolean
 )
 LANGUAGE plpgsql SET search_path FROM CURRENT SET jit = off AS $$
 #variable_conflict use_column
 DECLARE
-    v_flows text[];
+    v_declared bigint[] := '{}';
+    v_ids      bigint[] := '{}';
+    v_before   text;
+    v_after    text;
 BEGIN
-    WITH RECURSIVE names(flow_key) AS (
-        (SELECT e.flow_key FROM enqueued e WHERE e.flow_key IS NOT NULL ORDER BY e.flow_key LIMIT 1)
-        UNION ALL
-        SELECT (SELECT e.flow_key FROM enqueued e WHERE e.flow_key > names.flow_key ORDER BY e.flow_key LIMIT 1)
-        FROM names
-        WHERE names.flow_key IS NOT NULL
-    ), ready AS MATERIALIZED (
-        SELECT names.flow_key
-        FROM names
-        LEFT JOIN flows f ON f.flow_id = names.flow_key
-        WHERE names.flow_key IS NOT NULL
-          AND NOT coalesce(f.paused, false)
-          AND flow_rate_free_v1(f.rate, f.rate_period, f.next_at) >= 1
-          AND NOT EXISTS (SELECT 1 FROM claimed c WHERE c.flow_key = names.flow_key
-                          OFFSET coalesce(f.concurrency, 1) - 1 LIMIT 1)
-    )
-    SELECT coalesce(array_agg(l.flow_key), '{}')
-    INTO v_flows
-    FROM (SELECT ready.flow_key
-          FROM ready
-          WHERE pg_try_advisory_xact_lock(hashtextextended(current_schema() || ':' || ready.flow_key, 0))
-          LIMIT p_limit) l;
+    SELECT i.flow_cursor INTO v_before FROM instances i WHERE i.instance_id = p_instance_id;
+    v_after := v_before;
+    IF random() * 100 < p_declared_share THEN
+        v_declared := claim_declared_ids_v1(p_limit);
+        IF cardinality(v_declared) < p_limit THEN
+            SELECT u.o_ids, u.o_after INTO v_ids, v_after
+            FROM claim_undeclared_ids_v1(p_limit - cardinality(v_declared), v_before) u;
+        END IF;
+    ELSE
+        SELECT u.o_ids, u.o_after INTO v_ids, v_after
+        FROM claim_undeclared_ids_v1(p_limit, v_before) u;
+        IF cardinality(v_ids) < p_limit THEN
+            v_declared := claim_declared_ids_v1(p_limit - cardinality(v_ids));
+        END IF;
+    END IF;
+    IF v_after IS DISTINCT FROM v_before THEN
+        UPDATE instances i SET flow_cursor = v_after WHERE i.instance_id = p_instance_id;
+    END IF;
+    IF cardinality(v_declared) + cardinality(v_ids) = 0 THEN
+        RETURN;
+    END IF;
 
     RETURN QUERY
-    WITH a AS (
-        SELECT x.id
-        FROM unnest(v_flows) AS u(name)
-        LEFT JOIN flows f ON f.flow_id = u.name
-        CROSS JOIN LATERAL (
-            SELECT e.id
-            FROM enqueued e
-            WHERE e.flow_key = u.name
-            ORDER BY e.priority DESC, e.attempt, e.id
-            LIMIT least(greatest(coalesce(f.concurrency, 1)
-                                 - (SELECT count(*) FROM (SELECT 1 FROM claimed cl WHERE cl.flow_key = u.name
-                                                          LIMIT coalesce(f.concurrency, 1)) n), 0),
-                        flow_rate_free_v1(f.rate, f.rate_period, f.next_at))
-        ) x
-        ORDER BY x.id
-        LIMIT p_limit
-    ), b AS (
-        DELETE FROM enqueued WHERE id = ANY(ARRAY(SELECT a.id FROM a)) RETURNING id, attempt, flow_key, priority
+    WITH b AS (
+        DELETE FROM enqueued WHERE id = ANY(v_declared || v_ids) RETURNING id, attempt, flow_key, priority, at
     ), hist AS (
         INSERT INTO history (id, attempt, kind, instance_id)
         SELECT b.id, b.attempt, 'claimed', p_instance_id FROM b
@@ -473,15 +570,17 @@ BEGIN
     ), c AS (
         INSERT INTO claimed (id, attempt, flow_key, priority, instance_id, until)
         SELECT b.id, b.attempt, b.flow_key, b.priority, p_instance_id, now() + p_lease FROM b
-        RETURNING claimed.id, claimed.attempt, claimed.priority
     )
-    SELECT j.id, j.meta, j.headers, j.body, j.schedule_id, j.key, c.attempt
-    FROM c
-    INNER JOIN jobs AS j ON j.id = c.id
-    ORDER BY c.priority DESC, c.attempt, c.id;
+    SELECT j.id, j.meta, j.headers, j.body, j.schedule_id, j.key, b.attempt,
+           extract(epoch FROM now() - b.at)::float8,
+           b.id = ANY(v_declared)
+    FROM b
+    INNER JOIN jobs AS j ON j.id = b.id
+    ORDER BY b.priority DESC, b.attempt, b.id;
 END $$;
 
-CREATE FUNCTION claim_v1(p_instance_id text, p_limit int, p_lease interval)
+CREATE FUNCTION claim_v1(p_instance_id text, p_limit int, p_lease interval,
+                         p_flow_share int DEFAULT 25, p_declared_share int DEFAULT 50)
 RETURNS TABLE (
     id          bigint,
     meta        jsonb,
@@ -489,15 +588,26 @@ RETURNS TABLE (
     body        bytea,
     schedule_id text,
     key         text,
-    attempt     int
+    attempt     int,
+    waited      float8,
+    flow_declared boolean
 )
 LANGUAGE plpgsql SET search_path FROM CURRENT SET jit = off AS $$
 DECLARE
-    v_plain bigint;
+    v_n bigint;
 BEGIN
-    RETURN QUERY SELECT * FROM claim_plain_v1(p_instance_id, p_limit, p_lease);
-    GET DIAGNOSTICS v_plain = ROW_COUNT;
-    IF v_plain < p_limit THEN
-        RETURN QUERY SELECT * FROM claim_flow_v1(p_instance_id, p_limit - v_plain::int, p_lease);
+    IF random() * 100 < p_flow_share
+       AND (SELECT e.flow_key FROM enqueued e WHERE e.flow_key IS NOT NULL ORDER BY e.flow_key LIMIT 1) IS NOT NULL THEN
+        RETURN QUERY SELECT * FROM claim_flow_v1(p_instance_id, p_limit, p_lease, p_declared_share);
+        GET DIAGNOSTICS v_n = ROW_COUNT;
+        IF v_n < p_limit THEN
+            RETURN QUERY SELECT p.*, NULL::boolean FROM claim_plain_v1(p_instance_id, p_limit - v_n::int, p_lease) p;
+        END IF;
+    ELSE
+        RETURN QUERY SELECT p.*, NULL::boolean FROM claim_plain_v1(p_instance_id, p_limit, p_lease) p;
+        GET DIAGNOSTICS v_n = ROW_COUNT;
+        IF v_n < p_limit THEN
+            RETURN QUERY SELECT * FROM claim_flow_v1(p_instance_id, p_limit - v_n::int, p_lease, p_declared_share);
+        END IF;
     END IF;
 END $$;

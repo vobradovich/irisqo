@@ -3,7 +3,8 @@ use std::{net::SocketAddr, sync::Arc};
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
 use irisqo::{
-    AppState, db,
+    AppState,
+    db::{self, jobqueue::ClaimShares},
     models::{JobWithAttempt, new_instance_id},
     services::jobrunner,
 };
@@ -98,11 +99,36 @@ pub async fn text(response: hyper::Response<hyper::body::Incoming>) -> String {
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
-/// Assigns up to `limit` enqueued jobs to this instance.
+/// Assigns up to `limit` enqueued jobs to this instance, in a fixed order: the jobs without a
+/// flow first, then the declared flows, then the undeclared ones from the start of the names.
 pub async fn fetch(state: &AppState, limit: i32) -> Vec<JobWithAttempt> {
-    db::jobqueue::fetch_job_with_attempt(&state.pool, &state.instance_id, limit)
+    let shares = ClaimShares {
+        flows: 0,
+        declared: 100,
+    };
+    fetch_with(state, limit, Some(shares)).await
+}
+
+/// [`fetch`] that orders the batch by `shares` (`None`: the defaults of `claim_v1`). The walk
+/// over the undeclared flows goes on from the previous claim only once the instance has its row
+/// (`features::instances::live`).
+pub async fn fetch_with(
+    state: &AppState,
+    limit: i32,
+    shares: Option<ClaimShares>,
+) -> Vec<JobWithAttempt> {
+    db::jobqueue::fetch_job_with_attempt(&state.pool, &state.instance_id, limit, shares)
         .await
         .expect("fetch_job_with_attempt")
+}
+
+/// The cursor of the walk over the undeclared flows of this instance.
+pub async fn flow_cursor(state: &AppState) -> Option<String> {
+    sqlx::query_scalar("SELECT flow_cursor FROM instances WHERE instance_id = $1")
+        .bind(&state.instance_id)
+        .fetch_one(&state.pool)
+        .await
+        .expect("flow_cursor")
 }
 
 /// Fetches and runs every enqueued job once; returns how many ran.

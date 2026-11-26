@@ -28,15 +28,18 @@ CREATE TABLE instances (
     version     text NOT NULL,
     started_at  timestamptz NOT NULL DEFAULT now(),
     seen_at     timestamptz NOT NULL DEFAULT now(),  -- heartbeat
-    stopped_at  timestamptz NULL                     -- NULL while the instance is live
+    stopped_at  timestamptz NULL,                    -- NULL while the instance is live
+    flow_cursor text NULL                            -- the cursor of the walk over the undeclared flows
 );
 ```
+
+`flow_cursor` is written by the claim of the instance (`claim_flow_v1`), only when it moves.
 
 ### Flows
 
 A flow is the key of a job that limits concurrency and start rate; it promises no order. Only flows with settings
 have a row. A name without a row is undeclared and has the defaults: concurrency 1, not paused, no rate limit.
-A declaration, a pause, a resume and a removal take the advisory lock of the flow that `claim_flow_v1` takes
+A declaration, a pause, a resume and a removal take the advisory lock of the flow that the claim takes
 (`pg_advisory_xact_lock`, until the commit): a change waits for a claim in flight, and a claim sees the limits either
 before or after it, never a mix (the jobs by the old rate and the debt by the new one).
 
@@ -124,13 +127,17 @@ A retry with a delay goes back to `scheduled`, whatever its flow.
 
 A job may have both a flow and a priority: the priority orders the rows inside the flow (and the rows without a flow among themselves); it does not rank a flow against others.
 
-`claim_v1` claims a batch in one call (one transaction): first the jobs without a flow (`claim_plain_v1`), then the
-flows get the room that is left (`claim_flow_v1`).
+`claim_v1` claims a batch in one call (one transaction). By chance (25 % by default) the flows go first, otherwise the
+jobs without a flow do; the other part gets the room that is left. Among the flows the declared and the undeclared take
+turns the same way (50 %).
 
 - rows without a flow_key: `priority DESC`, `attempt` (new jobs before retries), `id`;
-- flows, only when the first part did not fill the batch. A flow is locked with `pg_try_advisory_xact_lock`
-  (one worker at a time) and gives `concurrency - running` rows (`priority DESC`, `attempt`, `id`), at most `rate`, nothing
-  before `next_at`. A flow promises no order beyond its priority.
+- declared flows: the least loaded first (`running / concurrency`), the places shared in proportion to `concurrency`;
+- undeclared flows: one job each, in turn by name from where the previous claim of the instance stopped.
+
+A flow is locked with `pg_try_advisory_xact_lock` (one worker at a time) and gives `concurrency - running` rows
+(`priority DESC`, `attempt`, `id`), at most `rate`, nothing before `next_at`. A flow promises no order beyond its
+priority.
 
 Every row of `enqueued` is due: a job with a delay waits in `scheduled`. `at` is when the job became due.
 
@@ -228,7 +235,8 @@ of their flow: concurrency, rate, pause, or for a worker), so `enqueued - held` 
 ignores the held jobs: a flow keeps its jobs back by design, so only a job without a flow that waits is a lack of
 workers. A job of a flow that has a free place and waits for a worker is counted as held too (a flow's jobs are not
 told apart by whether the flow is blocked). The same numbers go to `irisqo.queue.depth{state=enqueued}`,
-`irisqo.queue.held` and `irisqo.queue.lag`.
+`irisqo.queue.held` and `irisqo.queue.lag`. How long the jobs of the flows wait is `irisqo.job.queue.duration`, recorded
+at each claim by the class of the flow.
 
 ## Functions
 
@@ -272,34 +280,49 @@ Only the format is checked, not the target (no DNS, no private-address check). N
 
 ### claim_v1
 
-`claim_v1(p_instance_id text, p_limit int, p_lease interval) RETURNS TABLE (id, meta, headers, body, schedule_id, key, attempt)`: claims
-up to `p_limit` jobs for a worker, `enqueued` -> `claimed`, and returns them with the columns of `jobs` that a worker
-needs: the jobs without a flow first, then the flows with what is left (one call, one transaction). Each claim has
-the lease `now() + p_lease` (`claimed.until`).
+`claim_v1(p_instance_id text, p_limit int, p_lease interval, p_flow_share int DEFAULT 25, p_declared_share int DEFAULT
+50) RETURNS TABLE (id, meta, headers, body, schedule_id, key, attempt, waited, flow_declared)`: claims up to `p_limit`
+jobs for a worker, `enqueued` -> `claimed`, and returns them with the columns of `jobs` that a worker needs (one call,
+one transaction). Each claim has the lease `now() + p_lease` (`claimed.until`). `waited` is the seconds from
+`enqueued.at` to the claim; `flow_declared` is `true` for a declared flow, `false` for an undeclared one and `NULL`
+without a flow. The service records them as `irisqo.job.queue.duration` (`job.flow`: `declared`, `undeclared`, `none`).
 
 ```sql
 SELECT * FROM claim_v1($1, $2, interval '30 seconds')
 ```
 
-It calls `claim_plain_v1` and, when that gave less than `p_limit` rows, `claim_flow_v1` with the rest (`GET DIAGNOSTICS
-ROW_COUNT` counts the first part). `jit` is off: the planner overestimates the flow part and JIT compilation took about
+With the chance `p_flow_share` percent it calls `claim_flow_v1` first and `claim_plain_v1` with the rest, otherwise the
+other way round (`GET DIAGNOSTICS ROW_COUNT` counts the first part). A fixed order starved the second part: while the
+jobs without a flow filled every batch, no flow started at all; a chance per claim (as Sidekiq orders its queues) gives
+the flows about one claim in four, and the first part of a claim may take the whole batch. The flows go first only
+when `enqueued` has a job of a flow (one probe of `ix_enqueued_flow`): without one, the walk over the flows found
+nothing and cost a claim of jobs without a flow about 0.3 ms. The probe is `ORDER BY flow_key LIMIT 1`, not `EXISTS`:
+before the first `ANALYZE` of `enqueued` the planner took `EXISTS` for a seq scan, which reads every row when no
+job has a flow (8 ms for 200 000). `jit` is off: the planner overestimates the flow part and JIT compilation took about
 250 ms per call.
 
-Each of the two is one statement after its checks: it deletes the rows from `enqueued`, writes `history`, inserts into `claimed` and returns the jobs
-(`priority DESC`, `attempt`, `id`); `claim_flow_v1` also moves `next_at` of a rate-limited flow.
+Each part is one statement after its checks: it deletes the rows from `enqueued`, writes `history`, inserts into
+`claimed` and returns the jobs (`priority DESC`, `attempt`, `id`); the flow part also moves `next_at` of a rate-limited
+flow. The jobs without a flow keep their own one-statement function: they are the fast path of most claims.
 
 ### claim_plain_v1
 
-`claim_plain_v1(p_instance_id text, p_limit int, p_lease interval) RETURNS TABLE (id, meta, headers, body, schedule_id, key, attempt)`:
+`claim_plain_v1(p_instance_id text, p_limit int, p_lease interval) RETURNS TABLE (id, meta, headers, body, schedule_id, key, attempt, waited)`:
 the jobs without a flow. Claims up to `p_limit` jobs (`priority DESC`, `attempt`, `id`; `FOR UPDATE SKIP LOCKED`, the
 partial index `ix_enqueued_candidates`) in one statement: `enqueued` -> `claimed`, `history`, and the jobs are returned.
 
 ### claim_flow_v1
 
-`claim_flow_v1(p_instance_id text, p_limit int, p_lease interval)` returns the same columns: the jobs of the flows. A flow runs at most
-`concurrency` jobs at once (1 when it is not declared), starts nothing while it is paused, and limits the start rate by
-GCRA (below). No order is promised: a flow gives its jobs by `id`, but a retry or a released job goes back with its
-place lost.
+`claim_flow_v1(p_instance_id text, p_limit int, p_lease interval, p_declared_share int)` returns the
+columns of `claim_v1`: the jobs of the flows. A flow runs at most `concurrency` jobs at once (1 when it is not declared), starts
+nothing while it is paused, and limits the start rate by GCRA (below). No order is promised: a flow gives its jobs by
+`priority DESC`, `attempt`, `id`, but a retry or a released job goes back with its place lost.
+
+The declared and the undeclared flows are picked by their own functions, which only lock flows and choose the ids:
+with the chance `p_declared_share` percent `claim_declared_ids_v1` goes first and `claim_undeclared_ids_v1` gets the
+rest, otherwise the other way round. Ahead of the undeclared ones without that, a declared flow with a high
+`concurrency` and a backlog would take every batch. Then one statement claims all the chosen ids. The class of a name is
+found at the claim, not stored: declaring or removing a name with waiting jobs changes nothing else.
 
 The rate is a leaky bucket kept in one timestamp, `next_at`: the time by which the starts so far are paid off. Every
 start adds `T = rate_period / rate` to it (`next_at = greatest(next_at, now()) + n * T`). The debt is
@@ -314,15 +337,35 @@ and the claim agree. It has no `SET search_path` on purpose: a SQL function with
 query that calls it, and it uses only built-ins. Within any window of one period
 at most about `2 * rate` jobs can start (a full bucket, then its refill); the long-run rate is `rate / rate_period`.
 
-Step 1 locks the flows that can start a job (`v_flows`). The locks are taken in a statement of their own: the next
-statement reads `claimed` after them, so two workers never fill the same free place. Inside it, the recursive `names`
-finds the distinct waiting flows (index skip scan on `ix_enqueued_flow`, one probe per name), `ready` keeps the ones
-that are not paused, have a free start (`remaining >= 1`) and are not full (`MATERIALIZED`, so the lock is taken after these checks).
+Both functions work in two steps. Step 1 locks the flows that can start a job. The locks are taken in a statement of
+their own: the next statement reads `claimed` after them, so two workers never fill the same free place. Step 2 reads
+`claimed`, `concurrency` and the rate again with its own snapshot, taken after the locks, and chooses the ids; `paused` is
+not checked again on purpose: a pause that commits between the two steps may let this claim start jobs, the next claim
+sees it.
 
-Step 2 takes the free places of the locked flows (`concurrency - running`, at most `remaining`) and the ids of that many
-jobs per flow (`priority DESC`, `attempt`, `id`), at most `p_limit` in all, deletes them from `enqueued`, writes `history`, inserts into `claimed`, moves `next_at` of a rate-limited flow and returns the jobs. It reads `concurrency` and the rate again with its own
-snapshot, taken after the locks; `paused` is not checked again on purpose: a pause that commits between the two steps
-may let this claim start jobs, the next claim sees it.
+`claim_declared_ids_v1(p_limit int) RETURNS bigint[]` walks the rows of `flows` (there are few). Step 1 keeps the flows
+that are not paused, have a free start (`remaining >= 1`), have waiting jobs and are not full, and tries their locks
+from the least loaded (`running / concurrency`, ties by chance, so that no name wins every tie). Step 2 takes up to
+`least(concurrency - running, remaining)` jobs of each locked flow (`priority DESC`, `attempt`, `id`) and fills the
+batch "by water level": every candidate job is ranked by the load its flow would have with it, `(running + k) /
+concurrency` for the `k`-th job of the flow, and the `p_limit` lowest ranks win. So the places are shared in proportion
+to `concurrency` within one claim: with 100 and 10 free and 64 places, 59 and 5. The weight is `concurrency` for now.
+
+`claim_undeclared_ids_v1(p_limit int, p_flow_cursor text, OUT o_ids bigint[], OUT o_after text)` walks the distinct waiting
+names (index skip scan on `ix_enqueued_flow`, one probe per name) in turn: first after `p_flow_cursor`, then from the start up
+to `p_flow_cursor`. It looks at `p_limit * 4` names at most (`seen`): a name whose job runs is passed over, and thousands of
+busy names made a claim walk them all (65 ms for 10 000 instead of 2 ms). `ready` keeps the names without a row in
+`flows` and without a job in `claimed`; the walk is lazy and stops after `p_limit` locked names. Step 2 takes one job of
+each locked name, again only when it has no row in `flows` and no job in `claimed`: a declaration that commits between
+the steps moves the name to the declared part. `o_after` is where the walk stopped: the last locked name when the places
+ran out, otherwise the last name looked at (`p_flow_cursor` when there was none). So an empty claim moves on too, and a free
+name behind many busy ones is reached within a few claims. `claim_flow_v1` reads `p_flow_cursor` from `instances.flow_cursor`
+of the instance and writes `o_after` back when it moved: each instance keeps its own, so a name waits about (ready names
+/ batch) claims, not behind the names before it in the alphabet. An instance without a row walks from the start every
+time. In
+`ready` the `NOT EXISTS` checks carry `OFFSET 0`: without it the planner turns them into an anti join that hashes the
+whole walk, reads every name and loses the order. The function runs with `enable_seqscan` off: the planner scanned the
+small `flows` once per name (150 ms for 10 000 names instead of 50 ms).
 
 ### Why the jobs are returned by the claim
 

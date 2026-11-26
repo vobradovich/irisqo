@@ -18,6 +18,10 @@ const HTTP_BUCKETS: [f64; 14] = [
 const JOB_BUCKETS: [f64; 14] = [
     0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 300.0,
 ];
+/// Seconds; a job of a rate-limited flow may wait for minutes or hours.
+const WAIT_BUCKETS: [f64; 16] = [
+    0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 300.0, 900.0, 3600.0,
+];
 
 #[derive(Debug)]
 pub struct Metrics {
@@ -32,6 +36,8 @@ pub struct Metrics {
     pub jobs_created: Counter<u64>,
     /// `irisqo.job.attempt.duration` {job.outcome: completed | failed | retry}
     pub job_attempt_duration: Histogram<f64>,
+    /// `irisqo.job.queue.duration` {job.flow: none | declared | undeclared}: from due to claimed
+    pub job_queue_duration: Histogram<f64>,
     /// `irisqo.jobs.in_flight`: attempts running on this instance
     pub jobs_in_flight: UpDownCounter<i64>,
     /// `irisqo.locks.expired`: jobs released by the lock reaper
@@ -82,6 +88,14 @@ pub fn metrics() -> &'static Metrics {
                 .with_unit("s")
                 .with_description("Duration of job attempts, by outcome")
                 .with_boundaries(JOB_BUCKETS.to_vec())
+                .build(),
+            job_queue_duration: meter
+                .f64_histogram("irisqo.job.queue.duration")
+                .with_unit("s")
+                .with_description(
+                    "How long a job waited from due (enqueued) to claimed, by the class of its flow",
+                )
+                .with_boundaries(WAIT_BUCKETS.to_vec())
                 .build(),
             jobs_in_flight: meter
                 .i64_up_down_counter("irisqo.jobs.in_flight")

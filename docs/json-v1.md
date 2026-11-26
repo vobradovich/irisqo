@@ -44,7 +44,7 @@ returns. `/to/` and the "New job" form take the same fields as flat parameters.
 | `retry` | object or string | no retries | See [Retry](#retry). |
 | `timeout` | number | `--timeout` (3000) | Milliseconds, at least 1. |
 | `flow_key` | string | — | 1 to 128 characters of `a-z 0-9 . _ : -`, starting with a letter or digit. Empty is none. |
-| `priority` | number | 0 | 32-bit integer. Higher runs first, among the jobs of its flow if it has one. |
+| `priority` | number | 0 | 32-bit integer. Higher runs first within its flow, or among the jobs without a flow; the flows and the jobs without a flow take turns, the priority does not rank across them. |
 | `callback` | object | no callback | See [Callback](#callback). |
 | `cron` | string | — | See [Schedules](#schedules). |
 | `interval` | number | — | See [Schedules](#schedules). |
