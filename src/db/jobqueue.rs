@@ -3,7 +3,9 @@ use crate::features::callbacks::JobOutcome;
 use crate::features::results::{self, JobResult};
 use crate::models::{CLAIM_LEASE, Error, JobCreateRow, JobEntry, JobMeta, JobWithAttempt};
 use crate::models::{JobCreate, JobRow};
+use crate::otel::metrics::metrics;
 use chrono::{DateTime, Utc};
+use opentelemetry::KeyValue;
 use sqlx::{FromRow, Pool, Postgres, Row, types::Json};
 
 /// Creates a job or declares a schedule, returning the row and whether the resource is new.
@@ -304,8 +306,20 @@ pub async fn reap_expired_locks(
     Ok(res.rows_affected())
 }
 
-/// Claims up to `prefetch` enqueued jobs for `instance_id` and returns them (`claim_v1`: the
-/// jobs without a flow first, the flows get what is left, in one call and one transaction).
+/// How `claim_v1` orders the parts of a batch, in percent: the chance that the flows go before
+/// the jobs without a flow, and that the declared flows go before the undeclared ones.
+#[derive(Debug, Clone, Copy)]
+pub struct ClaimShares {
+    pub flows: i32,
+    pub declared: i32,
+}
+
+/// Claims up to `prefetch` enqueued jobs for `instance_id` and returns them (`claim_v1`, one
+/// call and one transaction): by chance the jobs without a flow or the flows go first, the
+/// other part gets what is left. `shares` `None` keeps the defaults of `claim_v1`.
+///
+/// The walk over the undeclared flows goes on from where the previous claim of the instance
+/// stopped: `claim_v1` keeps that in `instances.flow_cursor`.
 ///
 /// `claim_v1` reads the jobs in the statement that claims them: a join with `jobs` outside
 /// would use an older snapshot and miss a job enqueued meanwhile, which would stay claimed and
@@ -315,16 +329,36 @@ pub async fn fetch_job_with_attempt(
     pool: &Pool<Postgres>,
     instance_id: &str,
     prefetch: i32,
+    shares: Option<ClaimShares>,
 ) -> Result<Vec<JobWithAttempt>, Error> {
-    const SQL: &str = "SELECT * FROM claim_v1($2, $1, $3)";
-    let rows = sqlx::query(SQL)
+    let sql = if shares.is_some() {
+        "SELECT * FROM claim_v1($2, $1, $3, $4, $5)"
+    } else {
+        "SELECT * FROM claim_v1($2, $1, $3)"
+    };
+    let mut query = sqlx::query(sql)
         .bind(prefetch)
         .bind(instance_id)
-        .bind(CLAIM_LEASE)
-        .fetch_all(pool)
-        .await?;
+        .bind(CLAIM_LEASE);
+    if let Some(shares) = shares {
+        query = query.bind(shares.flows).bind(shares.declared);
+    }
+    let rows = query.fetch_all(pool).await?;
     let mut jobs = Vec::with_capacity(rows.len());
     for row in rows {
+        if let (Ok(waited), Ok(declared)) = (
+            row.try_get("waited"),
+            row.try_get::<Option<bool>, _>("flow_declared"),
+        ) {
+            let class = match declared {
+                None => "none",
+                Some(true) => "declared",
+                Some(false) => "undeclared",
+            };
+            metrics()
+                .job_queue_duration
+                .record(waited, &[KeyValue::new("job.flow", class)]);
+        }
         match JobWithAttempt::from_row(&row) {
             Ok(job) => jobs.push(job),
             // an unreadable job (a bad URL, say) fails alone, it must not hold the batch

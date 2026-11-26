@@ -101,7 +101,8 @@ pub struct JobMeta {
     /// Flow key of the job.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub flow_key: Option<FlowKey>,
-    /// Higher runs first, among the jobs of its flow if it has one (0 when absent).
+    /// Higher runs first within its flow, or among the jobs without a flow (0 when absent);
+    /// the flows and the jobs without a flow take turns, the priority does not rank across them.
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub priority: Option<i32>,
     /// W3C trace context of the request that created the job: the parent of every

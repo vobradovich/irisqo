@@ -2,7 +2,7 @@ use std::{sync::Arc, time::Duration};
 
 use hyper::{Method, StatusCode};
 use irisqo::{
-    db,
+    db::{self, jobqueue::ClaimShares},
     services::{
         jobrunner, retentionservice::RetentionService, schedulerservice::SchedulerService,
         workerservice::WorkerService,
@@ -1086,6 +1086,271 @@ async fn a_full_flow_does_not_cost_its_backlog(pool: PgPool) -> anyhow::Result<(
         "the claim read the backlog: {:?}",
         started.elapsed()
     );
+    Ok(())
+}
+
+/// Inserts `n` noop jobs of the flow `flow` straight into `enqueued`.
+async fn insert_in_flow(pool: &PgPool, flow: &str, n: i32) {
+    sqlx::query(
+        "WITH a AS (
+            INSERT INTO jobs(meta) SELECT '{\"sink\": \"noop\", \"timeout\": 1000}'::jsonb
+            FROM generate_series(1, $2) RETURNING id
+        )
+        INSERT INTO enqueued(id, flow_key) SELECT id, $1 FROM a",
+    )
+    .bind(flow)
+    .bind(n)
+    .execute(pool)
+    .await
+    .expect("insert in flow");
+}
+
+/// The claimed jobs by flow, by name (`None` for the jobs without a flow).
+async fn claimed_by_flow(pool: &PgPool) -> Vec<(Option<String>, i64)> {
+    sqlx::query_as("SELECT flow_key, count(*) FROM claimed GROUP BY 1 ORDER BY 1")
+        .fetch_all(pool)
+        .await
+        .expect("claimed by flow")
+}
+
+const FLOWS_FIRST: ClaimShares = ClaimShares {
+    flows: 100,
+    declared: 100,
+};
+const UNDECLARED_FIRST: ClaimShares = ClaimShares {
+    flows: 100,
+    declared: 0,
+};
+
+#[sqlx::test(migrations = "./sql/migrations")]
+async fn a_backlog_without_a_flow_does_not_starve_the_flows(pool: PgPool) -> anyhow::Result<()> {
+    let state = common::state(pool.clone());
+    common::insert_enqueued(&pool, 2000).await;
+    enqueue_in_flow(&pool, "q").await;
+
+    // the default shares: the flows go first in about one claim of four
+    let mut claims = 0;
+    while common::count(&pool, "SELECT count(*) FROM claimed WHERE flow_key = 'q'").await == 0 {
+        assert!(!common::fetch_with(&state, 10, None).await.is_empty());
+        claims += 1;
+    }
+    let plain_left = common::count(&pool, "SELECT count(*) FROM enqueued").await;
+    assert!(plain_left > 0, "the flow waited for the whole backlog");
+    assert!(claims < 100, "{claims} claims");
+    Ok(())
+}
+
+#[sqlx::test(migrations = "./sql/migrations")]
+async fn the_declared_flows_share_the_places_by_concurrency(pool: PgPool) -> anyhow::Result<()> {
+    let state = common::state(pool.clone());
+    sqlx::query("INSERT INTO flows(flow_id, concurrency) VALUES ('big', 100), ('small', 10)")
+        .execute(&pool)
+        .await?;
+    insert_in_flow(&pool, "big", 200).await;
+    insert_in_flow(&pool, "small", 200).await;
+
+    // 64 places, 100 + 10 free: both fill to the same share of their concurrency
+    common::fetch_with(&state, 64, Some(FLOWS_FIRST)).await;
+    assert_eq!(
+        claimed_by_flow(&pool).await,
+        [(Some("big".into()), 59), (Some("small".into()), 5)]
+    );
+    // the next claim tops up the less loaded one first
+    common::fetch_with(&state, 10, Some(FLOWS_FIRST)).await;
+    assert_eq!(
+        claimed_by_flow(&pool).await,
+        [(Some("big".into()), 68), (Some("small".into()), 6)]
+    );
+    Ok(())
+}
+
+#[sqlx::test(migrations = "./sql/migrations")]
+async fn the_undeclared_part_leaves_the_declared_flows_alone(pool: PgPool) -> anyhow::Result<()> {
+    let state = common::state(pool.clone());
+    sqlx::query("INSERT INTO flows(flow_id, concurrency, paused) VALUES ('d', 2, true)")
+        .execute(&pool)
+        .await?;
+    insert_in_flow(&pool, "d", 5).await;
+    insert_in_flow(&pool, "u", 5).await;
+
+    // a paused declared flow gives nothing, whichever part goes first
+    common::fetch_with(&state, 10, Some(UNDECLARED_FIRST)).await;
+    assert_eq!(claimed_by_flow(&pool).await, [(Some("u".into()), 1)]);
+    // resumed, it gives its concurrency and no more
+    sqlx::query("UPDATE flows SET paused = false")
+        .execute(&pool)
+        .await?;
+    common::fetch_with(&state, 10, Some(UNDECLARED_FIRST)).await;
+    assert_eq!(
+        claimed_by_flow(&pool).await,
+        [(Some("d".into()), 2), (Some("u".into()), 1)]
+    );
+    Ok(())
+}
+
+#[sqlx::test(migrations = "./sql/migrations")]
+async fn a_claim_tells_how_long_each_job_waited_and_its_class(pool: PgPool) -> anyhow::Result<()> {
+    sqlx::query("INSERT INTO flows(flow_id, concurrency) VALUES ('d', 5)")
+        .execute(&pool)
+        .await?;
+    insert_in_flow(&pool, "d", 2).await;
+    insert_in_flow(&pool, "u", 1).await;
+    common::insert_enqueued(&pool, 1).await;
+    sqlx::query("UPDATE enqueued SET at = now() - interval '10 seconds'")
+        .execute(&pool)
+        .await?;
+
+    let rows: Vec<(Option<bool>, f64)> = sqlx::query_as(
+        "SELECT flow_declared, waited FROM claim_v1('i', 10, interval '30 seconds', 100, 100)
+         ORDER BY 1 NULLS FIRST",
+    )
+    .fetch_all(&pool)
+    .await?;
+    let declared: Vec<_> = rows.iter().map(|r| r.0).collect();
+    assert_eq!(declared, [None, Some(false), Some(true), Some(true)]);
+    assert!(rows.iter().all(|r| (10.0..11.0).contains(&r.1)), "{rows:?}");
+    Ok(())
+}
+
+#[sqlx::test(migrations = "./sql/migrations")]
+async fn the_undeclared_flows_take_turns(pool: PgPool) -> anyhow::Result<()> {
+    let state = common::state(pool.clone());
+    for name in ["k0", "k1", "k2", "k3", "k4", "k5"] {
+        insert_in_flow(&pool, name, 2).await;
+    }
+    irisqo::features::instances::live(&pool, &state.instance_id, &["worker"]).await?;
+    let mut turns = Vec::new();
+    for _ in 0..4 {
+        common::fetch_with(&state, 2, Some(UNDECLARED_FIRST)).await;
+        let names: Vec<String> = sqlx::query_scalar(
+            "WITH d AS (DELETE FROM claimed RETURNING flow_key) SELECT flow_key FROM d ORDER BY 1",
+        )
+        .fetch_all(&pool)
+        .await?;
+        turns.push((names, common::flow_cursor(&state).await));
+    }
+    let turn = |a: &str, b: &str| (vec![a.to_owned(), b.to_owned()], Some(b.to_owned()));
+    assert_eq!(
+        turns,
+        [
+            turn("k0", "k1"),
+            turn("k2", "k3"),
+            turn("k4", "k5"),
+            turn("k0", "k1")
+        ]
+    );
+    Ok(())
+}
+
+/// Moves the first job of every flow to `claimed` of the instance `x` that never ends: each
+/// flow is busy and keeps its other jobs waiting.
+async fn hold_one_job_per_flow(pool: &PgPool) {
+    sqlx::query(
+        "WITH r AS (SELECT DISTINCT ON (flow_key) id FROM enqueued WHERE flow_key IS NOT NULL
+                    ORDER BY flow_key, id),
+              d AS (DELETE FROM enqueued e USING r WHERE e.id = r.id RETURNING e.id, e.flow_key)
+         INSERT INTO claimed(id, attempt, flow_key, instance_id, until)
+         SELECT id, 0, flow_key, 'x', now() + interval '1 hour' FROM d",
+    )
+    .execute(pool)
+    .await
+    .expect("hold one job per flow");
+}
+
+#[sqlx::test(migrations = "./sql/migrations")]
+async fn the_walk_over_busy_undeclared_flows_moves_on_without_a_claim(
+    pool: PgPool,
+) -> anyhow::Result<()> {
+    let state = common::state(pool.clone());
+    irisqo::features::instances::live(&pool, &state.instance_id, &["worker"]).await?;
+    for name in ["a1", "a2", "a3", "a4", "a5", "a6", "a7", "a8", "a9"] {
+        insert_in_flow(&pool, name, 2).await;
+    }
+    hold_one_job_per_flow(&pool).await;
+    insert_in_flow(&pool, "z", 1).await;
+
+    // a claim of 1 looks at 4 names at most; an empty one still moves the cursor
+    let mut turns = Vec::new();
+    for _ in 0..3 {
+        let jobs = common::fetch_with(&state, 1, Some(UNDECLARED_FIRST)).await;
+        turns.push((jobs.len(), common::flow_cursor(&state).await));
+    }
+    let turn = |n: usize, after: &str| (n, Some(after.to_owned()));
+    assert_eq!(turns, [turn(0, "a4"), turn(0, "a8"), turn(1, "z")]);
+    Ok(())
+}
+
+/// Mean milliseconds of `n` claims of 64 that try the undeclared flows first.
+async fn mean_claim_ms(state: &irisqo::AppState, n: u32) -> f64 {
+    let start = std::time::Instant::now();
+    for _ in 0..n {
+        common::fetch_with(state, 64, Some(UNDECLARED_FIRST)).await;
+    }
+    start.elapsed().as_secs_f64() * 1000.0 / f64::from(n)
+}
+
+#[sqlx::test(migrations = "./sql/migrations")]
+async fn a_claim_does_not_slow_down_with_thousands_of_busy_undeclared_flows(
+    pool: PgPool,
+) -> anyhow::Result<()> {
+    let state = common::state(pool.clone());
+    irisqo::features::instances::live(&pool, &state.instance_id, &["worker"]).await?;
+    common::insert_enqueued(&pool, 64 * 60).await;
+    sqlx::query(
+        "WITH a AS (INSERT INTO jobs(meta) SELECT '{\"sink\": \"noop\", \"timeout\": 1000}'::jsonb
+                    FROM generate_series(1, 20000) RETURNING id)
+         INSERT INTO enqueued(id, flow_key) SELECT id, 'f' || lpad((id % 10000)::text, 5, '0') FROM a",
+    )
+    .execute(&pool)
+    .await?;
+    hold_one_job_per_flow(&pool).await;
+    sqlx::query("ANALYZE").execute(&pool).await?;
+
+    mean_claim_ms(&state, 3).await;
+    let busy = mean_claim_ms(&state, 20).await;
+    assert_eq!(
+        common::count(
+            &pool,
+            "SELECT count(*) FROM claimed WHERE instance_id <> 'x' AND flow_key IS NOT NULL"
+        )
+        .await,
+        0
+    );
+    sqlx::raw_sql("DELETE FROM enqueued WHERE flow_key IS NOT NULL; DELETE FROM claimed WHERE instance_id = 'x'")
+        .execute(&pool)
+        .await?;
+    let idle = mean_claim_ms(&state, 20).await;
+    // a walk over all 10 000 busy names took ~65 ms a claim
+    assert!(
+        busy < idle * 2.0 + 3.0,
+        "busy {busy:.1} ms, idle {idle:.1} ms"
+    );
+    Ok(())
+}
+
+#[sqlx::test(migrations = "./sql/migrations")]
+async fn concurrent_claims_start_one_job_of_an_undeclared_flow(pool: PgPool) -> anyhow::Result<()> {
+    let state = common::state(pool.clone());
+    insert_in_flow(&pool, "u", 20).await;
+    for _ in 0..5 {
+        let claims: Vec<_> = (0..8)
+            .map(|_| {
+                let state = Arc::clone(&state);
+                tokio::spawn(async move {
+                    common::fetch_with(&state, 10, Some(UNDECLARED_FIRST))
+                        .await
+                        .len()
+                })
+            })
+            .collect();
+        let mut started = 0;
+        for claim in claims {
+            started += claim.await?;
+        }
+        assert_eq!(started, 1);
+        assert_eq!(claimed_by_flow(&pool).await, [(Some("u".into()), 1)]);
+        sqlx::query("DELETE FROM claimed").execute(&pool).await?;
+    }
     Ok(())
 }
 

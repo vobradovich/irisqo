@@ -80,6 +80,7 @@ impl WorkerService {
                 &app_state.pool,
                 instance_id,
                 i32::try_from(batch).unwrap_or(i32::MAX),
+                None,
             )
             .await
             .inspect_err(|err| {
