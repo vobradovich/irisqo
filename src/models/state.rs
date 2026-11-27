@@ -99,7 +99,7 @@ impl AppState {
         let pool = setup::connect(&options.db, &instance_id).await;
         // with --no-migrate the schema and the migrations are `irisqo migrations run`'s job
         if !options.no_migrate {
-            setup::migrate_schema(&pool, &options.db.schema).await;
+            setup::migrate_schema(&pool, &options.db).await;
         }
         warn_on_clock_skew(&pool).await;
 

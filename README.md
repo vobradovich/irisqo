@@ -320,8 +320,20 @@ IRISQO_DB_URL=postgres://user:pass@localhost/irisqo cargo run --release -- --hel
 | `--api-token` | — | bearer tokens of the API, comma separated, see [Authentication](#authentication) |
 | `--allow-targets` | — | private addresses and networks a job may call anyway, see [Targets](#targets) |
 | `--env` | production | `development`, `staging` or `production`: development serves `/echo` and `/error`; also `deployment.environment.name` in the telemetry |
-| `--no-migrate` | — | do not create the schema or run the migrations: apply them first with `irisqo migrations run` |
+| `--no-migrate` | — | do not create the schema or run the migrations: apply them first with `irisqo migrations run`, see [Migrations](docs/migrations.md) |
+| `--no-create-schema` | — | the schema exists, do not create it: for a role without `CREATE` on the database, which `CREATE SCHEMA IF NOT EXISTS` needs even for an existing schema, see [Privileges](docs/migrations.md#privileges) |
 | `--roles` | all | what this process does: `api`, `ui`, `worker`, `scheduler`, `retention`, comma separated; see [Roles](#roles) |
+
+Each option can also be set by an `IRISQO_` variable, in the environment or a `.env` file:
+`--max-timeout` is `IRISQO_MAX_TIMEOUT`, `--env` is `IRISQO_ENV`. The command line wins.
+
+`--max-body-size` (`IRISQO_MAX_BODY_SIZE`) limits the full HTTP request body when submitting a job.
+The default is 65536 bytes (64 KiB). For JSON jobs this includes the metadata, target headers and payload.
+`--max-response-size` (`IRISQO_MAX_RESPONSE_SIZE`) limits the target's response body, in the bytes it
+sends (a compressed body counts compressed). The default is 65536 bytes (64 KiB). A longer response fails
+the job with `Response Too Large`, and it is not retried: the target has already got the request.
+
+The database URL is required: set `IRISQO_DB_URL` (better than `--db-url`: a flag shows the password in `ps`).
 
 ### Roles
 
@@ -354,35 +366,12 @@ only `retention` with `--retention-hours 0`, is an error.
 ### Migrations
 
 By default every instance creates the schema and runs the migrations at the start. To do it as a separate
-deploy step, run `irisqo migrations run` (it takes `--db-url`, `--db-connections`, `--db-schema`, then exits) and
-start the servers with `--no-migrate`.
+deploy step, run `irisqo migrations run` and start the servers with `--no-migrate`; do so when the servers
+connect through a `transaction` pooler (PgBouncer, PgDog, Odyssey, Supavisor): the lock of the migrations
+does not work there. `irisqo migrations sql` prints them as one script for Flyway, Liquibase, EF or `psql`.
 
-To run the migrations with another tool (Flyway, Liquibase, EF, plain `psql`), `irisqo migrations sql`
-prints them to stdout as one script, with no database needed: it first creates the schema (`--db-schema`,
-`IRISQO_DB_SCHEMA`, `irisqo` by default) and makes it the default one, as the connections of the server
-do, because the migrations name no schema. Start the servers with `--no-migrate` then. A database that
-`irisqo` has already migrated needs a baseline at its version in the other tool: it keeps its own
-history table, and `irisqo` keeps `_sqlx_migrations`.
-
-```bash
-irisqo migrations sql --db-schema irisqo | psql "$DATABASE_URL" -v ON_ERROR_STOP=1
-```
-
-`irisqo migrations run --recreate --env development` **drops the schema with all its data** and creates it anew, for
-development and tests. It is refused in `production`, which is the default: the environment comes from
-`--env` or `IRISQO_ENV` (a `.env` file too), so it cannot tell a production database that is declared
-as `development`. It never drops `public`.
-
-Each option can also be set by an `IRISQO_` variable, in the environment or a `.env` file:
-`--max-timeout` is `IRISQO_MAX_TIMEOUT`, `--env` is `IRISQO_ENV`. The command line wins.
-
-`--max-body-size` (`IRISQO_MAX_BODY_SIZE`) limits the full HTTP request body when submitting a job.
-The default is 65536 bytes (64 KiB). For JSON jobs this includes the metadata, target headers and payload.
-`--max-response-size` (`IRISQO_MAX_RESPONSE_SIZE`) limits the target's response body, in the bytes it
-sends (a compressed body counts compressed). The default is 65536 bytes (64 KiB). A longer response fails
-the job with `Response Too Large`, and it is not retried: the target has already got the request.
-
-The database URL is required: set `IRISQO_DB_URL` (better than `--db-url`: a flag shows the password in `ps`).
+[docs/migrations.md](docs/migrations.md) covers how a run works, versions and rollback, the privileges
+(`--no-create-schema`), the poolers that work and their settings, `--recreate` for development, and the errors.
 
 ### Telemetry
 Traces, metrics and logs go out over OTLP (HTTP/protobuf), configured by the standard env vars:

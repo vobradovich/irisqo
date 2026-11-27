@@ -249,6 +249,9 @@ pub struct DbOptions {
     pub connections: u32,
     /// Postgres schema of the tables and functions, created when missing.
     pub schema: String,
+    /// Create the schema when missing; false when it exists already and the role may not
+    /// create schemas (`CREATE` on the database).
+    pub create_schema: bool,
 }
 
 impl DbOptions {
@@ -258,6 +261,7 @@ impl DbOptions {
             url: url.into(),
             connections: DEFAULT_DB_CONNECTIONS,
             schema: DEFAULT_SCHEMA.to_owned(),
+            create_schema: true,
         }
     }
 }
@@ -270,11 +274,13 @@ impl fmt::Debug for DbOptions {
             url: _,
             connections,
             schema,
+            create_schema,
         } = self;
         f.debug_struct("DbOptions")
             .field("url", &"<redacted>")
             .field("connections", connections)
             .field("schema", schema)
+            .field("create_schema", create_schema)
             .finish()
     }
 }
