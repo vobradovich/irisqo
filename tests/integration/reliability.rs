@@ -938,11 +938,7 @@ async fn a_schedule_with_a_running_run_is_not_idle(pool: PgPool) -> anyhow::Resu
 /// the way `main` does: its own schema, created and migrated by `AppState::new`.
 #[sqlx::test(migrations = false)]
 async fn the_app_creates_and_uses_its_own_schema(pool: PgPool) -> anyhow::Result<()> {
-    let database: String = sqlx::query_scalar("SELECT current_database()")
-        .fetch_one(&pool)
-        .await?;
-    let mut url = url::Url::parse(&std::env::var("DATABASE_URL")?)?;
-    url.set_path(&database);
+    let url = common::database_url(&pool);
     let mut options = irisqo::models::Options::new(url.to_string());
     options.db.schema = "mine".to_owned();
     options.environment = irisqo::models::Environment::Development;
@@ -967,10 +963,66 @@ async fn the_app_creates_and_uses_its_own_schema(pool: PgPool) -> anyhow::Result
     Ok(())
 }
 
+/// `--no-create-schema`: a role without `CREATE` on the database cannot run even
+/// `CREATE SCHEMA IF NOT EXISTS` on an existing schema, and migrates it with the flag.
+#[sqlx::test(migrations = false)]
+async fn a_role_without_create_migrates_an_existing_schema(pool: PgPool) -> anyhow::Result<()> {
+    use irisqo::db::setup;
+
+    // roles are of the cluster and outlive a failed run; sqlx drops the database of the test before
+    // the next one, so the role owns nothing then and goes
+    let role = "irisqo_test_no_create";
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+        "DROP ROLE IF EXISTS \"{role}\";
+         CREATE SCHEMA given;
+         CREATE ROLE \"{role}\" LOGIN PASSWORD 'secret';
+         GRANT USAGE, CREATE ON SCHEMA given TO \"{role}\";"
+    )))
+    .execute(&pool)
+    .await?;
+    let mut url = common::database_url(&pool);
+    url.set_username(role).expect("username");
+    url.set_password(Some("secret")).expect("password");
+    let mut db = irisqo::models::DbOptions::new(url.to_string());
+    db.schema = "given".to_owned();
+
+    let creating = setup::connect(&db, "test").await;
+    let refused = tokio::spawn({
+        let db = db.clone();
+        async move { setup::migrate_schema(&creating, &db).await }
+    })
+    .await
+    .expect_err("CREATE on the database is needed");
+    let message = refused.into_panic();
+    let message = message.downcast_ref::<String>().map_or("", String::as_str);
+    assert!(
+        message.contains("permission denied for database"),
+        "{message}"
+    );
+
+    db.create_schema = false;
+    let existing = setup::connect(&db, "test").await;
+    setup::migrate_schema(&existing, &db).await;
+    existing.close().await;
+
+    let tables = common::count(
+        &pool,
+        "SELECT count(*) FROM information_schema.tables WHERE table_schema = 'given'",
+    )
+    .await;
+    assert!(tables >= 9, "the tables are in the schema: {tables}");
+    sqlx::raw_sql(sqlx::AssertSqlSafe(format!(
+        "DROP OWNED BY \"{role}\"; DROP ROLE \"{role}\";"
+    )))
+    .execute(&pool)
+    .await?;
+    Ok(())
+}
+
 /// The script of `irisqo migrations sql` builds the schema on its own, like `irisqo migrate`.
 #[sqlx::test(migrations = false)]
 async fn the_printed_migrations_build_the_schema(pool: PgPool) -> anyhow::Result<()> {
-    let script = irisqo::db::setup::migrations_sql("printed");
+    let script = irisqo::db::setup::migrations_sql("printed", true);
     sqlx::raw_sql(sqlx::AssertSqlSafe(script))
         .execute(&pool)
         .await?;

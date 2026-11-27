@@ -30,6 +30,8 @@ xflags::xflags! {
         optional --db-connections n: u32
         /// Postgres schema of the tables and functions, created when missing. Default: irisqo
         optional --db-schema name: String
+        /// The schema exists: do not create it (a role without CREATE on the database).
+        optional --no-create-schema
         /// Worker tasks; each holds and runs up to --prefetch jobs at once. Default: 16
         optional -w,--workers n: usize
         /// Pause before the first re-poll of an empty queue, in milliseconds; it doubles while the queue stays empty. Default: 200
@@ -86,6 +88,8 @@ xflags::xflags! {
                 optional --db-connections n: u32
                 /// Postgres schema of the tables and functions, created when missing. Default: irisqo
                 optional --db-schema name: String
+                /// The schema exists: do not create it (a role without CREATE on the database).
+                optional --no-create-schema
                 /// DROPS the schema with all its data (jobs, schedules, history) and creates it anew:
                 /// for development and tests. Refused when --env is production, which is the default:
                 /// pass --env development or staging.
@@ -98,6 +102,8 @@ xflags::xflags! {
             cmd sql {
                 /// Postgres schema the script creates and uses. Default: irisqo
                 optional --db-schema name: String
+                /// The schema exists: the script does not create it.
+                optional --no-create-schema
             }
         }
     }
@@ -115,6 +121,7 @@ pub enum Command {
     /// `irisqo migrations sql`: print the SQL of the migrations for `schema`.
     MigrationsSql {
         schema: String,
+        create_schema: bool,
     },
 }
 
@@ -186,6 +193,7 @@ impl Serve {
             roles,
             // flags only: they have no variable
             no_migrate: _,
+            no_create_schema: _,
             no_wake: _,
         } = self;
         take(port, "IRISQO_PORT", &var)?;
@@ -226,6 +234,7 @@ impl Serve {
                 url: d.db.url,
                 connections: self.db_connections.unwrap_or(d.db.connections),
                 schema: self.db_schema.unwrap_or(d.db.schema),
+                create_schema: !self.no_create_schema,
             },
             port: self.port.unwrap_or(d.port),
             environment: self.env.unwrap_or(d.environment),
@@ -282,9 +291,15 @@ impl Run {
         let mut options = Options::new(url);
         options.db.connections = self.db_connections.unwrap_or(options.db.connections);
         options.db.schema = self.db_schema.unwrap_or(options.db.schema);
+        options.db.create_schema = !self.no_create_schema;
         options.environment = self.env.unwrap_or(options.environment);
         options.validate()?;
         if self.recreate {
+            if self.no_create_schema {
+                return Err(
+                    "--recreate creates the schema anew: not with --no-create-schema".to_owned(),
+                );
+            }
             if options.environment == Environment::Production {
                 return Err(format!(
                     "--recreate drops the schema {:?} with all its data and is refused in production \
@@ -310,7 +325,10 @@ impl Sql {
         take(&mut self.db_schema, "IRISQO_DB_SCHEMA", &var)?;
         let schema = self.db_schema.unwrap_or_else(|| DEFAULT_SCHEMA.to_owned());
         check_schema(&schema)?;
-        Ok(Command::MigrationsSql { schema })
+        Ok(Command::MigrationsSql {
+            schema,
+            create_schema: !self.no_create_schema,
+        })
     }
 }
 
@@ -423,6 +441,7 @@ mod tests {
             "--trace-url",
             "http://t/",
             "--no-migrate",
+            "--no-create-schema",
             "--no-wake",
         ])
         .expect("flags")
@@ -432,6 +451,8 @@ mod tests {
         assert_eq!(options.worker.workers, 1);
         assert_eq!(options.trace_url, None);
         assert!(options.no_migrate);
+        assert!(!options.db.create_schema);
+        assert!(defaults.db.create_schema);
         assert!(!options.worker.wake);
 
         let roles = |args: &[&str], var: Option<&str>| {
@@ -499,6 +520,10 @@ mod tests {
         let public = ["--recreate", "--env", "dev", "--db-schema", "public"];
         let err = migrate(&public, None).expect_err("public");
         assert!(err.contains("public"), "{err}");
+        let err =
+            migrate(&["--recreate", "--env", "dev", "--no-create-schema"], None).expect_err("both");
+        assert!(err.contains("--no-create-schema"), "{err}");
+        assert!(migrate(&["--no-create-schema"], None).is_ok());
     }
 
     #[test]
@@ -520,16 +545,23 @@ mod tests {
                     .map(str::to_owned)
             })
             .map(|command| match command {
-                Command::MigrationsSql { schema } => schema,
+                Command::MigrationsSql {
+                    schema,
+                    create_schema,
+                } => (schema, create_schema),
                 Command::Serve(_) | Command::MigrationsRun { .. } => unreachable!(),
             })
         };
-        assert_eq!(sql(&[], None), Ok("irisqo".to_owned()));
+        assert_eq!(sql(&[], None), Ok(("irisqo".to_owned(), true)));
         assert_eq!(
             sql(&["--db-schema", "mine"], Some("env")),
-            Ok("mine".to_owned())
+            Ok(("mine".to_owned(), true))
         );
-        assert_eq!(sql(&[], Some("env")), Ok("env".to_owned()));
+        assert_eq!(sql(&[], Some("env")), Ok(("env".to_owned(), true)));
+        assert_eq!(
+            sql(&["--no-create-schema"], None),
+            Ok(("irisqo".to_owned(), false))
+        );
         assert!(sql(&["--db-schema", "Bad"], None).is_err());
     }
 }

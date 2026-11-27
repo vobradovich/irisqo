@@ -184,6 +184,14 @@ pub async fn enqueue_all_scheduled(state: &AppState) -> u64 {
         .expect("enqueue_scheduled")
 }
 
+/// `DATABASE_URL` pointed at the database of the test, for a pool of the app's own.
+pub fn database_url(pool: &PgPool) -> url::Url {
+    let mut url = url::Url::parse(&std::env::var("DATABASE_URL").expect("DATABASE_URL"))
+        .expect("DATABASE_URL");
+    url.set_path(pool.connect_options().get_database().expect("database"));
+    url
+}
+
 pub async fn count(pool: &PgPool, sql: &'static str) -> i64 {
     sqlx::query_scalar(sql)
         .fetch_one(pool)

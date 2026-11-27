@@ -18,7 +18,10 @@ async fn main() {
     match Command::load() {
         Command::Serve(options) => serve(options).await,
         // only the SQL on stdout: no telemetry, which may log there
-        Command::MigrationsSql { schema } => print!("{}", setup::migrations_sql(&schema)),
+        Command::MigrationsSql {
+            schema,
+            create_schema,
+        } => print!("{}", setup::migrations_sql(&schema, create_schema)),
         Command::MigrationsRun { options, recreate } => {
             let telemetry = Telemetry::init(options.environment);
             migrate(&options.db, recreate).await;
@@ -35,7 +38,7 @@ async fn migrate(db: &DbOptions, recreate: bool) {
         tracing::warn!(schema, "--recreate: dropping the schema with all its data");
         setup::drop_schema(&pool, schema).await;
     }
-    setup::migrate_schema(&pool, schema).await;
+    setup::migrate_schema(&pool, db).await;
     pool.close().await;
     tracing::info!(schema, "migrations applied");
 }
